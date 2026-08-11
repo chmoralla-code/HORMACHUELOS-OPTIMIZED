@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-forge"
+name = "hormachuelos-optimized"
 version = "1.0.0"
 dependencies = [
  "anyhow",

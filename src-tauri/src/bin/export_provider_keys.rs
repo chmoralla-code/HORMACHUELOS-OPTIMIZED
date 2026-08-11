@@ -12,7 +12,7 @@ fn main() {
         "gemini",
         "glm",
     ] {
-        match Entry::new("ai-forge", p).and_then(|e| e.get_password()) {
+        match Entry::new("hormachuelos-optimized", p).and_then(|e| e.get_password()) {
             Ok(k) if !k.trim().is_empty() => {
                 let env_name = match p {
                     "deepseek" => "DEEPSEEK_API_KEY",

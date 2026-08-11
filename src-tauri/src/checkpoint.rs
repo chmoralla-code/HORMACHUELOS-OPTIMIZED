@@ -152,7 +152,7 @@ fn now_ms() -> u64 {
 }
 
 fn checkpoint_base_directory() -> PathBuf {
-    directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")
+    directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")
         .map(|dirs| dirs.data_local_dir().join("run-checkpoints"))
         .unwrap_or_else(|| std::env::temp_dir().join("ai-forge-run-checkpoints"))
 }

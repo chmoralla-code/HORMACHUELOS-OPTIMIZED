@@ -32,7 +32,7 @@ fn emit_progress(app: &AppHandle, phase: &'static str, percent: Option<u8>, mess
 }
 
 fn update_backup_path() -> Result<PathBuf, String> {
-    let dirs = directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")
+    let dirs = directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")
         .ok_or_else(|| "Could not locate the persistent Hormachuelos data folder.".to_string())?;
     let dir = dirs.config_dir();
     std::fs::create_dir_all(dir)
@@ -41,12 +41,12 @@ fn update_backup_path() -> Result<PathBuf, String> {
 }
 
 fn update_cache_path(version: &str, extension: &str) -> Result<PathBuf, String> {
-    let dirs = directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")
+    let dirs = directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")
         .ok_or_else(|| "Could not locate the Hormachuelos update cache.".to_string())?;
     let dir = dirs.cache_dir().join("updates");
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("Could not prepare the update cache: {error}"))?;
-    Ok(dir.join(format!("Hormachuelos_{version}_x64-update.{extension}")))
+    Ok(dir.join(format!("Hormachuelos_Optimized_{version}_x64-update.{extension}")))
 }
 
 #[cfg(windows)]
@@ -176,10 +176,7 @@ fn lowercase_host(url: &reqwest::Url) -> String {
 }
 
 fn is_owned_download_host(host: &str) -> bool {
-    matches!(
-        host,
-        "hormachuelos.vercel.app" | "mketkzycxmtvgdbwzsvh.supabase.co"
-    )
+    host == "chmoralla-code.github.io"
 }
 
 fn is_trusted_redirect_host(host: &str) -> bool {
@@ -210,8 +207,8 @@ fn validate_download_url(
         .path_segments()
         .and_then(|mut segments| segments.next_back())
         .unwrap_or_default();
-    let exe_name = format!("Hormachuelos_{version}_x64-setup.exe");
-    let msi_name = format!("Hormachuelos_{version}_x64_en-US.msi");
+    let exe_name = format!("Hormachuelos_Optimized_{version}_x64-setup.exe");
+    let msi_name = format!("Hormachuelos_Optimized_{version}_x64.msi");
     let extension = if filename.eq_ignore_ascii_case(&exe_name) {
         "exe"
     } else if filename.eq_ignore_ascii_case(&msi_name) {
@@ -226,7 +223,7 @@ fn validate_download_url(
     }
     if host == "github.com" {
         let expected_path =
-            format!("/chmoralla-code/HORMACHUELOS/releases/download/v{version}/{filename}");
+            format!("/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v{version}/{filename}");
         if url.path() == expected_path {
             return Ok((url, extension));
         }
@@ -623,7 +620,7 @@ function Get-HormachuelosCandidates {
         $entry = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
         if ($null -eq $entry) { continue }
         $displayNameProperty = $entry.PSObject.Properties['DisplayName']
-        if ($null -ne $displayNameProperty -and [string]$displayNameProperty.Value -eq 'Hormachuelos') {
+        if ($null -ne $displayNameProperty -and [string]$displayNameProperty.Value -eq 'Hormachuelos Optimized') {
           $installLocationProperty = $entry.PSObject.Properties['InstallLocation']
           if ($null -ne $installLocationProperty) {
             $candidates += [string]$installLocationProperty.Value
@@ -635,11 +632,11 @@ function Get-HormachuelosCandidates {
 
   foreach ($baseDirectory in @($env:ProgramW6432, $env:ProgramFiles)) {
     if (![string]::IsNullOrWhiteSpace($baseDirectory)) {
-      $candidates += Join-Path -Path $baseDirectory -ChildPath 'Hormachuelos'
+      $candidates += Join-Path -Path $baseDirectory -ChildPath 'Hormachuelos Optimized'
     }
   }
   if (![string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-    $candidates += Join-Path -Path $env:LOCALAPPDATA -ChildPath 'Hormachuelos'
+    $candidates += Join-Path -Path $env:LOCALAPPDATA -ChildPath 'Hormachuelos Optimized'
     $candidates += Join-Path -Path $env:LOCALAPPDATA -ChildPath 'Programs\Hormachuelos'
   }
   return $candidates
@@ -667,7 +664,7 @@ function Resolve-HormachuelosPath {
     if ([string]::IsNullOrWhiteSpace($candidateValue)) { continue }
     $candidate = $candidateValue.Trim().Trim('"')
     if ([IO.Path]::GetExtension($candidate).ToLowerInvariant() -ne '.exe') {
-      $candidate = Join-Path -Path $candidate -ChildPath 'ai-forge.exe'
+      $candidate = Join-Path -Path $candidate -ChildPath 'hormachuelos-optimized.exe'
     }
     if (Test-HormachuelosVersion -Path $candidate -RequireExpectedVersion $RequireExpectedVersion) {
       return $candidate
@@ -861,7 +858,7 @@ try {
 
 #[cfg(windows)]
 fn update_helper_log_path() -> Result<PathBuf, String> {
-    let dirs = directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")
+    let dirs = directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")
         .ok_or_else(|| "Could not locate the Hormachuelos update log folder.".to_string())?;
     let directory = dirs.data_local_dir().join("logs");
     std::fs::create_dir_all(&directory)
@@ -1184,39 +1181,34 @@ mod tests {
     }
 
     #[test]
-    fn restricts_updates_to_owned_https_hosts_and_installer_types() {
+    fn restricts_updates_to_the_optimized_release_channel() {
         assert!(validate_download_url(
-            "https://hormachuelos.vercel.app/downloads/Hormachuelos_0.1.9_x64-setup.exe",
+            "https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/downloads/Hormachuelos_Optimized_0.1.9_x64-setup.exe",
             "0.1.9"
         )
         .is_ok());
         assert!(validate_download_url(
-            "https://mketkzycxmtvgdbwzsvh.supabase.co/storage/v1/object/public/public-assets/downloads/Hormachuelos_0.1.9_x64_en-US.msi",
+            "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v0.1.9/Hormachuelos_Optimized_0.1.9_x64.msi",
             "0.1.9"
         )
         .is_ok());
+        assert!(validate_download_url(
+            "http://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/downloads/Hormachuelos_Optimized_0.1.9_x64-setup.exe",
+            "0.1.9"
+        )
+        .is_err());
         assert!(validate_download_url(
             "https://github.com/chmoralla-code/HORMACHUELOS/releases/download/v0.1.9/Hormachuelos_0.1.9_x64-setup.exe",
             "0.1.9"
         )
-        .is_ok());
+        .is_err());
         assert!(validate_download_url(
-            "http://hormachuelos.vercel.app/downloads/Hormachuelos_0.1.9_x64-setup.exe",
+            "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v0.1.8/Hormachuelos_Optimized_0.1.8_x64-setup.exe",
             "0.1.9"
         )
         .is_err());
         assert!(validate_download_url(
-            "https://example.com/Hormachuelos_0.1.9_x64-setup.exe",
-            "0.1.9"
-        )
-        .is_err());
-        assert!(validate_download_url(
-            "https://hormachuelos.vercel.app/downloads/Hormachuelos_0.1.8_x64-setup.exe",
-            "0.1.9"
-        )
-        .is_err());
-        assert!(validate_download_url(
-            "https://github.com/example/HORMACHUELOS/releases/download/v0.1.9/Hormachuelos_0.1.9_x64-setup.exe",
+            "https://example.com/Hormachuelos_Optimized_0.1.9_x64-setup.exe",
             "0.1.9"
         )
         .is_err());
@@ -1274,7 +1266,7 @@ mod tests {
     fn update_helper_is_started_as_a_real_powershell_file() {
         let helper = std::path::Path::new(r"C:\Temp Folder\update-helper.ps1");
         let installer = std::path::Path::new(r"C:\Temp Folder\Hormachuelos update.exe");
-        let app = std::path::Path::new(r"C:\Program Files\Hormachuelos\ai-forge.exe");
+        let app = std::path::Path::new(r"C:\Program Files\Hormachuelos Optimized\hormachuelos-optimized.exe");
         let bootstrap = std::path::Path::new(r"C:\Temp Folder\update-elevation.ps1");
         let ready = std::path::Path::new(r"C:\Temp Folder\update.ready");
         let log = std::path::Path::new(r"C:\Temp Folder\update.log");
@@ -1345,7 +1337,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let app = directory.join("ai-forge.exe");
+        let app = directory.join("hormachuelos-optimized.exe");
         std::fs::write(&app, []).unwrap();
 
         assert_eq!(super::install_kind_for_executable(&app), "msi");

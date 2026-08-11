@@ -42,7 +42,7 @@ fn project_key(root: &Path) -> String {
 }
 
 fn cache_path(root: &Path) -> Option<PathBuf> {
-    let dirs = directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")?;
+    let dirs = directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")?;
     let dir = dirs.cache_dir().join("project-intelligence");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join(format!("{}.json", project_key(root))))

@@ -25,7 +25,7 @@ const BUILTIN_PROVIDER_IDS: &[&str] = &[
 ];
 
 fn settings_path() -> Result<PathBuf> {
-    let proj = directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")
+    let proj = directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")
         .context("could not determine config dir")?;
     let dir = proj.config_dir().to_path_buf();
     std::fs::create_dir_all(&dir)?;
@@ -449,7 +449,7 @@ pub fn validate_provider_id(provider: &str) -> Result<()> {
 
 fn keyring_entry(provider: &str) -> Result<keyring::Entry> {
     validate_provider_id(provider)?;
-    Ok(keyring::Entry::new("ai-forge", provider)?)
+    Ok(keyring::Entry::new("hormachuelos-optimized", provider)?)
 }
 
 pub fn store_api_key(provider: &str, key: &str) -> Result<()> {
@@ -580,7 +580,7 @@ pub fn delete_api_key(provider: &str) -> Result<()> {
 }
 
 fn website_session_entry() -> Result<keyring::Entry> {
-    Ok(keyring::Entry::new("ai-forge", "website_session")?)
+    Ok(keyring::Entry::new("hormachuelos-optimized", "website_session")?)
 }
 
 pub fn store_website_session(token: &str) -> Result<()> {

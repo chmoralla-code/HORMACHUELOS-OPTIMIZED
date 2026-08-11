@@ -154,7 +154,7 @@ fn keyring_entry(id: &str) -> Result<keyring::Entry> {
 }
 
 fn extras_path() -> Result<PathBuf> {
-    let proj = directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")
+    let proj = directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")
         .context("could not determine config dir")?;
     let dir = proj.config_dir().to_path_buf();
     std::fs::create_dir_all(&dir)?;
