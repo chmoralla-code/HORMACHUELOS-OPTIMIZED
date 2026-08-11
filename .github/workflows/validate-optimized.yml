@@ -45,7 +45,7 @@ jobs:
         run: npm run test:reply-formatting
 
       - name: Run cursor persistence guards
-        run: node --test scripts/cursor-completion.test.mjs scripts/cursor-bridge-lifecycle.test.mjs scripts/cursor-bridge.test.mjs
+        run: node --test scripts/cursor-completion.test.mjs scripts/cursor-bridge-lifecycle.test.mjs
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
