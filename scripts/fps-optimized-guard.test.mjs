@@ -33,10 +33,14 @@ test("live rendering is frame-bounded and incremental", () => {
 
 test("session persistence backs off and history is paint-contained", () => {
   const session = read("src/components/session.ts");
+  const chat = read("src/components/chat.ts");
   const css = read("src/app.css");
   assert.match(session, /SESSION_SAVE_DELAY_MS = 1_500/);
   assert.match(session, /SESSION_SAVE_MAX_BACKOFF_MS = 60_000/);
-  assert.match(css, /#chat > \.msg,/);
+  assert.match(css, /#chat > \.msg\.history-virtualized/);
+  assert.doesNotMatch(css, /#chat > \.msg,\s*\n#chat > \.thinking-wrap/);
+  assert.match(chat, /scheduleStableMessageVirtualization/);
+  assert.match(chat, /getBoundingClientRect\(\)\.height/);
   assert.match(css, /Hormachuelos Optimized FPS profile/);
 });
 

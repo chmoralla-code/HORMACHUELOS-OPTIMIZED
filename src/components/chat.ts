@@ -176,6 +176,8 @@ export class Chat {
   private pinToBottom = true;
   private chatScrollFrame: number | null = null;
   private chatScrollForce = false;
+  /** Add content virtualization only after complete message heights are known. */
+  private historyVirtualizationFrame: number | null = null;
   private escHandler: ((e: KeyboardEvent) => void) | null = null;
   /** Internal visual profile; model identity is rendered separately. */
   private replyProfile: "default" | "sol" | "claude" = "default";
@@ -1941,6 +1943,7 @@ export class Chat {
       this.sealAiTimestamp(terminal.at, terminal.workMs);
     }
     this.scrollToBottom(true);
+    this.scheduleStableMessageVirtualization();
   }
 
   appendUser(text: string, at?: number) {
@@ -3828,8 +3831,38 @@ export class Chat {
       cancelAnimationFrame(this.assistantPaintFrame);
       this.assistantPaintFrame = null;
     }
+    if (this.historyVirtualizationFrame !== null) {
+      cancelAnimationFrame(this.historyVirtualizationFrame);
+      this.historyVirtualizationFrame = null;
+    }
     this.assistantPaintTargets.clear();
   }
+
+  /**
+   * `content-visibility` is only safe after a reply has finished painting. Measure
+   * each stable message first so Chromium never substitutes a short placeholder
+   * for a live, growing Markdown answer.
+   */
+  private scheduleStableMessageVirtualization() {
+    if (this.historyVirtualizationFrame !== null) return;
+    this.historyVirtualizationFrame = requestAnimationFrame(() => {
+      this.historyVirtualizationFrame = null;
+      const messages = Array.from(this.node.children).filter(
+        (child): child is HTMLElement =>
+          child instanceof HTMLElement &&
+          child.classList.contains("msg") &&
+          !child.classList.contains("history-virtualized"),
+      );
+      const heights = messages.map((message) =>
+        Math.max(1, Math.ceil(message.getBoundingClientRect().height)),
+      );
+      messages.forEach((message, index) => {
+        message.style.setProperty("--history-item-height", `${heights[index]}px`);
+        message.classList.add("history-virtualized");
+      });
+    });
+  }
+
   private clearToolStreams() {
     for (const stream of this.toolStreams.values()) {
       if (stream.paintFrame !== null) cancelAnimationFrame(stream.paintFrame);
@@ -4556,6 +4589,7 @@ export class Chat {
       });
     });
     this.scrollToBottom();
+    this.scheduleStableMessageVirtualization();
   }
 
   /**
@@ -4695,6 +4729,7 @@ export class Chat {
     this.pendingAssistant = null;
     this.pendingAssistantMsg = null;
     this.scrollToBottom();
+    this.scheduleStableMessageVirtualization();
   }
 
   showQuestion(id: string, question: string, options: string[], allowOther: boolean, savedAnswer: string | null = null, at?: number) {
@@ -4828,11 +4863,11 @@ export class Chat {
         e.kind === "console_chunk";
       if (!allowed) return;
     }
-    if (!this.replaying) this.recordEvent(e);
-    this.renderEvent(e);
+    const mergedAssistantChunk = !this.replaying && this.recordEvent(e);
+    this.renderEvent(e, mergedAssistantChunk);
   }
 
-  private recordEvent(e: AgentEvent) {
+  private recordEvent(e: AgentEvent): boolean {
     const at = this.now();
     switch (e.kind) {
       case "start":
@@ -4858,15 +4893,13 @@ export class Chat {
         }
         break;
       }
-      case "text": {
-        appendAssistantTranscriptChunk(
+      case "text":
+        return appendAssistantTranscriptChunk(
           this.messages,
           e.payload.text,
           at,
           e.payload.continuation === true,
         );
-        break;
-      }
       case "tool_call": this.messages.push({ type: "tool_call", id: e.payload.id, name: e.payload.name, arguments: redactToolArguments(e.payload.name, e.payload.arguments), at }); break;
       case "tool_result": {
         const qIdx = this.messages.findIndex((m) => m.type === "question" && m.id === e.payload.id);
@@ -4906,9 +4939,10 @@ export class Chat {
         break;
       case "question": this.messages.push({ type: "question", id: e.payload.id, question: e.payload.question, options: e.payload.options, allow_other: e.payload.allow_other, answer: null, at }); break;
     }
+    return false;
   }
 
-  private renderEvent(e: AgentEvent) {
+  private renderEvent(e: AgentEvent, mergedAssistantChunk = false) {
     switch (e.kind) {
       case "start":
         this.runCompleted = false;
@@ -4933,7 +4967,12 @@ export class Chat {
         this.clearIdleActivityTimer();
         this.appendThinkingText(e.payload.text);
         break;
-      case "text": this.appendAssistantText(e.payload.text, e.payload.continuation === true); break;
+      case "text":
+        this.appendAssistantText(
+          e.payload.text,
+          e.payload.continuation === true || mergedAssistantChunk,
+        );
+        break;
       case "tool_preview":
         this.previewTool(
           e.payload.id,
