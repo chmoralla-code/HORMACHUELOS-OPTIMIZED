@@ -1793,7 +1793,7 @@ export class Chat {
     this.setActivePermissionMode("plan");
     clear(this.node);
     const empty = div("chat-empty");
-    empty.appendChild(el("div", { class: "chat-empty-mark", "aria-hidden": "true" }, ["Hormachuelos"]));
+    empty.appendChild(el("div", { class: "chat-empty-mark", "aria-hidden": "true" }, ["Hormachuelos Optimized"]));
     empty.appendChild(el("h2", {}, ["What would you like to build?"]));
     if (!this.providerReady) {
       empty.appendChild(el("p", { class: "chat-empty-provider" }, [
