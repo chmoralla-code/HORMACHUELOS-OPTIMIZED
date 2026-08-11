@@ -3030,12 +3030,12 @@ export class Chat {
     const body =
       (wrap?.querySelector(".thinking-body") as HTMLElement | null) ||
       this.thinkingBody;
-    if (!body || body.classList.contains("is-empty")) return;
-    requestAnimationFrame(() => {
-      body.scrollTop = body.scrollHeight;
+    if (!body || body.classList.contains("is-empty") || this.thinkingScrollFrame !== null) return;
+    this.thinkingScrollFrame = requestAnimationFrame(() => {
+      this.thinkingScrollFrame = null;
+      if (body.isConnected) body.scrollTop = body.scrollHeight;
     });
   }
-
   /**
    * Typewriter for **real** model reasoning only — character-by-character as tokens arrive.
    */
@@ -3047,52 +3047,39 @@ export class Chat {
       return;
     }
     const tick = () => {
-      if (!this.thinkingHasReasoning) {
-        this.typewriterId = null;
-        return;
-      }
-      if (this.thinkingRevealed >= this.thinkingTarget.length) {
-        this.typewriterId = null;
+      this.typewriterId = null;
+      if (!this.thinkingHasReasoning) return;
+      const backlog = this.thinkingTarget.length - this.thinkingRevealed;
+      if (backlog <= 0) {
         this.paintThinkingBody();
         this.flushDeferredAssistant();
         return;
       }
-      const backlog = this.thinkingTarget.length - this.thinkingRevealed;
-      // Stay close to realtime stream: type char-by-char, catch up if model is fast
-      let step = 1;
+
+      let step = 2;
       if (this.thoughtRevealUrgent) {
-        if (backlog > 200) step = 64;
-        else if (backlog > 80) step = 24;
-        else if (backlog > 24) step = 8;
-        else step = 3;
-      } else if (backlog > 400) step = 24;
-      else if (backlog > 160) step = 10;
-      else if (backlog > 60) step = 4;
-      else if (backlog > 24) step = 2;
+        if (backlog > 200) step = 96;
+        else if (backlog > 80) step = 40;
+        else if (backlog > 24) step = 16;
+        else step = 6;
+      } else if (backlog > 400) step = 48;
+      else if (backlog > 160) step = 24;
+      else if (backlog > 60) step = 10;
+      else if (backlog > 24) step = 4;
 
-      const nextIdx = Math.min(this.thinkingTarget.length, this.thinkingRevealed + step);
-      const justTyped = this.thinkingTarget.slice(this.thinkingRevealed, nextIdx);
-      this.thinkingRevealed = nextIdx;
+      this.thinkingRevealed = Math.min(
+        this.thinkingTarget.length,
+        this.thinkingRevealed + step,
+      );
       this.paintThinkingBody();
-      // Prefer internal thought scroll so long reasoning doesn't blow up the chat
-      if (this.thinkingBodyOpen) this.scrollThinkingBody();
-
-      const last = justTyped[justTyped.length - 1] || "";
-      let delay = this.thoughtRevealUrgent ? 4 : 18;
-      if (!this.thoughtRevealUrgent) {
-        if (last === "\n") delay = 42;
-        else if (/[.!?]/.test(last)) delay = 32;
-        else if (/[,;:]/.test(last)) delay = 22;
-        else if (backlog > 200) delay = 6;
-        else if (backlog > 80) delay = 10;
-        else if (backlog > 30) delay = 14;
+      if (this.thinkingRevealed < this.thinkingTarget.length) {
+        this.typewriterId = requestAnimationFrame(tick);
+      } else {
+        this.flushDeferredAssistant();
       }
-
-      this.typewriterId = window.setTimeout(tick, delay);
     };
-    tick();
+    this.typewriterId = requestAnimationFrame(tick);
   }
-
   /** True when thought text is still being typed out and the reply should wait. */
   private shouldDeferAssistantForThought(): boolean {
     if (this.replaying) return false;
