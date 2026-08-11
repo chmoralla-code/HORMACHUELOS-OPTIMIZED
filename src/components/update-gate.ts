@@ -1,7 +1,7 @@
 import { api, onAppUpdateProgress, type AppUpdateProgress } from "../ipc";
 import { el } from "./util";
 
-const UPDATE_MANIFEST_URL = "https://chmoralla-code.github.io/HORMACHUELOS OPTIMIZED-OPTIMIZED/latest.json";
+const UPDATE_MANIFEST_URL = "https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/latest.json";
 
 export type AppRelease = {
   version: string;
@@ -128,6 +128,7 @@ export async function restoreUpdateState(): Promise<number> {
 function versionParts(value: string): [number, number, number] | null {
   const parts = value.trim().replace(/^v/, "").split(".");
   if (parts.length !== 3) return null;
+  if (!parts.every((part) => /^\d+$/.test(part))) return null;
   const numbers = parts.map((part) => Number.parseInt(part, 10));
   if (numbers.some((part) => !Number.isSafeInteger(part) || part < 0)) return null;
   return numbers as [number, number, number];
