@@ -194,9 +194,16 @@ fn original_model_selection_from_json(raw: &str) -> Result<OriginalModelSelectio
     let mut candidate = Settings::default();
     candidate.provider = source.provider.trim().to_ascii_lowercase();
     candidate.model = source.model.trim().to_string();
-    // The original endpoint is intentionally not copied. The optimized app uses
-    // its own safe default endpoint for the selected provider.
-    candidate.base_url = None;
+    // The original endpoint is intentionally not copied. Use only the optimized
+    // app's canonical protected endpoint where validation requires one.
+    candidate.base_url = match candidate.provider.as_str() {
+        "hormachuelos_free" => Some("https://hormachuelos.vercel.app/api/v1".into()),
+        "commandcode" => Some(crate::license::hosted_chat_base_url()),
+        _ if is_custom_hosted_provider_alias(&candidate.provider) => {
+            Some(crate::license::hosted_chat_base_url())
+        }
+        _ => None,
+    };
     candidate.model_effort = normalize_model_effort(&source.model_effort);
     candidate.validate()?;
 
