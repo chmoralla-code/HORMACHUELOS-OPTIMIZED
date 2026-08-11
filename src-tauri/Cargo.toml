@@ -1,7 +1,7 @@
 [package]
 name = "ai-forge"
-version = "0.1.76"
-description = "Monochrome agentic desktop studio — hidden PowerShell + LLM tool-calling"
+version = "1.0.0"
+description = "Independent FPS-optimized Hormachuelos desktop AI studio"
 authors = ["AI-Forge"]
 edition = "2021"
 rust-version = "1.88"
