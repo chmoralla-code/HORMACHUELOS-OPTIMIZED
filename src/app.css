@@ -1330,6 +1330,7 @@
 /* Skip paint/layout for sealed history outside the scroll viewport. Chromium
    remembers the measured height after first render, so long chats stay smooth
    without changing their scroll geometry. */
+#chat > .msg,
 #chat > .thinking-wrap.thinking-done,
 #chat > .tool-batch-wrap.is-done,
 #chat > .tool-card-wrap,
@@ -5422,4 +5423,44 @@
     opacity: 0.45 !important;
     transform: none !important;
   }
+}
+
+/* Hormachuelos Optimized FPS profile */
+body.fps-optimized .msg-body,
+body.fps-optimized .pending-chip,
+body.fps-optimized .modal-overlay,
+body.fps-optimized .chat-image-viewer-overlay,
+body.fps-optimized .client-success-overlay,
+body.fps-optimized .auth-gate-overlay,
+body.fps-optimized .smart-agent-card {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+body.fps-optimized .activity-shimmer,
+body.fps-optimized .thinking-wrap:not(.thinking-done) .thinking-simple-label,
+body.fps-optimized .thinking-running .thinking-simple-label,
+body.fps-optimized .tool-batch-wrap.is-running .tool-batch-label,
+body.fps-optimized .tool-card.pending .tool-name,
+body.fps-optimized .chip-cap-agentic::after,
+body.fps-optimized .multi-agent-batch::before,
+body.fps-optimized .chip-btn.chip-mode-multi-agent::before,
+body.fps-optimized .multi-agent-tool.working .multi-agent-tool-pulse,
+body.fps-optimized .sb-status .pulse,
+body.fps-optimized .sb-session-running {
+  animation: none !important;
+  will-change: auto !important;
+  text-shadow: none !important;
+}
+
+body.fps-optimized .thinking-simple .dots span,
+body.fps-optimized .thinking-running .dots span,
+body.fps-optimized .thinking-dots-btn .dots span,
+body.fps-optimized .thinking-wrap.thinking-wave-live .dots span,
+body.fps-optimized .tool-wave-dots span {
+  animation: none !important;
+  box-shadow: none !important;
+  opacity: 0.72 !important;
+  transform: none !important;
+  will-change: auto !important;
 }

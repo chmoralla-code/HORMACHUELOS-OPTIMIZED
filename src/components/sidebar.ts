@@ -149,7 +149,7 @@ export class Sidebar {
     this.accountIdentityRoot = null;
 
     this.node.appendChild(div("sb-brand",
-      `<div class="sb-logo">H</div><div class="sb-title">Hormachuelos</div><div class="sb-version">v${version}</div>`));
+      `<div class="sb-logo">H</div><div class="sb-title">Hormachuelos Optimized</div><div class="sb-version">FPS · v${version}</div>`));
 
     const actions = el("div", { class: "sb-actions" });
     const updateBtn = this.actionBtn("refresh", "Update", this.onCheckForUpdates);

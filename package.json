@@ -1,7 +1,7 @@
 {
-  "name": "ai-forge",
+  "name": "hormachuelos-optimized",
   "private": true,
-  "version": "0.1.76",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,7 +19,8 @@
     "desktop:build": "cargo tauri build",
     "desktop:debug": "npm run build && cargo tauri build --debug",
     "installer:art": "powershell -ExecutionPolicy Bypass -File scripts/generate-installer-art.ps1",
-    "release": "node scripts/publish-release.mjs"
+    "release": "node scripts/publish-release.mjs",
+    "test:fps": "node --test scripts/fps-optimized-guard.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.1.0",

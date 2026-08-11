@@ -267,7 +267,7 @@ fn remove_recent_project_path(list: &mut Vec<String>, path: &str) -> bool {
 }
 
 fn recent_path() -> Option<std::path::PathBuf> {
-    let proj = directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")?;
+    let proj = directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")?;
     let dir = proj.config_dir().to_path_buf();
     let _ = std::fs::create_dir_all(&dir);
     Some(dir.join("recent.json"))

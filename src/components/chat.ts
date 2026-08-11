@@ -92,9 +92,11 @@ export class Chat {
   pendingAssistant: HTMLElement | null = null;
   /** Message shell for the current assistant bubble (for timestamps). */
   private pendingAssistantMsg: HTMLElement | null = null;
-  /** Assistant Markdown bodies waiting for one batched paint on the next frame. */
+  /** Assistant Markdown bodies waiting for a throttled, batched paint. */
   private assistantPaintTargets = new Set<HTMLElement>();
   private assistantPaintFrame: number | null = null;
+  private assistantPaintTimer: ReturnType<typeof setTimeout> | null = null;
+  private assistantLastPaintAt = 0;
   thinking: HTMLElement | null = null;
   thinkingBody: HTMLElement | null = null;
   thinkingText: string = "";
@@ -142,7 +144,8 @@ export class Chat {
   private thinkingTarget = "";
   /** How many characters of thinkingTarget are currently revealed. */
   private thinkingRevealed = 0;
-  private typewriterId: ReturnType<typeof setTimeout> | null = null;
+  private typewriterId: number | null = null;
+  private thinkingScrollFrame: number | null = null;
   /** True once real model reasoning (not status placeholders) is in the thought body. */
   private thinkingHasReasoning = false;
   /** Hold assistant reply chunks until the thought typewriter catches up. */
@@ -171,6 +174,8 @@ export class Chat {
    * Becomes false as soon as the user scrolls up; free scrolling is allowed while AI works.
    */
   private pinToBottom = true;
+  private chatScrollFrame: number | null = null;
+  private chatScrollForce = false;
   private escHandler: ((e: KeyboardEvent) => void) | null = null;
   /** Internal visual profile; model identity is rendered separately. */
   private replyProfile: "default" | "sol" | "claude" = "default";
@@ -1793,7 +1798,7 @@ export class Chat {
     this.setActivePermissionMode("plan");
     clear(this.node);
     const empty = div("chat-empty");
-    empty.appendChild(el("div", { class: "chat-empty-mark", "aria-hidden": "true" }, ["Hormachuelos"]));
+    empty.appendChild(el("div", { class: "chat-empty-mark", "aria-hidden": "true" }, ["Hormachuelos Optimized"]));
     empty.appendChild(el("h2", {}, ["What would you like to build?"]));
     if (!this.providerReady) {
       empty.appendChild(el("p", { class: "chat-empty-provider" }, [
@@ -2802,7 +2807,7 @@ export class Chat {
 
   private stopTypewriter() {
     if (this.typewriterId != null) {
-      clearTimeout(this.typewriterId);
+      cancelAnimationFrame(this.typewriterId);
       this.typewriterId = null;
     }
   }
@@ -2943,6 +2948,10 @@ export class Chat {
   private paintThinkingBody() {
     if (!this.thinkingBody) return;
     const raw = this.thinkingTarget.slice(0, this.thinkingRevealed);
+    const live =
+      !!this.thinking &&
+      !this.thinking.classList.contains("thinking-done") &&
+      this.running;
     const typing =
       this.thinkingHasReasoning &&
       (this.typewriterId != null ||
@@ -2950,25 +2959,26 @@ export class Chat {
           !this.thinking.classList.contains("thinking-done") &&
           this.thinkingRevealed < this.thinkingTarget.length));
 
-    this.thinkingBody.textContent = "";
+    let textSpan = this.thinkingBody.querySelector(".thinking-stream") as
+      | (HTMLElement & { __raw?: string })
+      | null;
+    let caret = this.thinkingBody.querySelector(".thinking-caret") as HTMLElement | null;
 
     if (!this.thinkingHasReasoning || !this.thinkingTarget.trim()) {
-      const live =
-        !!this.thinking &&
-        !this.thinking.classList.contains("thinking-done") &&
-        this.running;
+      textSpan?.remove();
       if (live) {
-        // Waiting for first reasoning token — keep a live caret under Thinking…
         this.thinkingBody.classList.remove("is-empty");
-        const c = document.createElement("span");
-        c.className = "thinking-caret";
-        c.setAttribute("aria-hidden", "true");
-        this.thinkingBody.appendChild(c);
+        if (!caret) {
+          caret = document.createElement("span");
+          caret.className = "thinking-caret";
+          caret.setAttribute("aria-hidden", "true");
+          this.thinkingBody.appendChild(caret);
+        }
         this.thinking?.classList.add("is-typing");
         this.thinking?.classList.remove("has-detail");
         return;
       }
-      // No real reasoning yet — keep panel empty (no "Planning next step" typing)
+      caret?.remove();
       this.thinkingBody.classList.add("is-empty");
       this.thinking?.classList.remove("is-typing");
       this.thinking?.classList.toggle("has-detail", false);
@@ -2976,45 +2986,56 @@ export class Chat {
     }
 
     this.thinkingBody.classList.remove("is-empty");
-    const textSpan = document.createElement("span");
-    textSpan.className = "thinking-stream";
-    textSpan.textContent = raw;
-    this.thinkingBody.appendChild(textSpan);
+    if (!textSpan) {
+      textSpan = document.createElement("span") as HTMLElement & { __raw?: string };
+      textSpan.className = "thinking-stream";
+      textSpan.__raw = "";
+      this.thinkingBody.prepend(textSpan);
+    }
 
-    if (typing) {
-      const c = document.createElement("span");
-      c.className = "thinking-caret";
-      c.setAttribute("aria-hidden", "true");
-      this.thinkingBody.appendChild(c);
-    } else if (
-      this.running &&
-      this.thinking &&
-      !this.thinking.classList.contains("thinking-done")
-    ) {
-      // Live stream caught up — keep caret so it still feels like realtime typing
-      const c = document.createElement("span");
-      c.className = "thinking-caret";
-      c.setAttribute("aria-hidden", "true");
-      this.thinkingBody.appendChild(c);
-      this.thinking.classList.add("is-typing");
+    const rendered = textSpan.__raw || "";
+    if (raw.startsWith(rendered)) {
+      const addition = raw.slice(rendered.length);
+      if (addition) {
+        const onlyChild = textSpan.childNodes.length === 1 ? textSpan.firstChild : null;
+        if (onlyChild?.nodeType === Node.TEXT_NODE) {
+          (onlyChild as Text).appendData(addition);
+        } else if (textSpan.childNodes.length === 0) {
+          textSpan.appendChild(document.createTextNode(addition));
+        } else {
+          textSpan.textContent = raw;
+        }
+      }
+    } else {
+      textSpan.textContent = raw;
+    }
+    textSpan.__raw = raw;
+
+    const showCaret = typing || live;
+    if (showCaret && !caret) {
+      caret = document.createElement("span");
+      caret.className = "thinking-caret";
+      caret.setAttribute("aria-hidden", "true");
+      this.thinkingBody.appendChild(caret);
+    } else if (!showCaret) {
+      caret?.remove();
     }
 
     this.thinking?.classList.toggle("has-detail", true);
-    this.thinking?.classList.toggle("is-typing", typing || (!!this.running && !!this.thinking && !this.thinking.classList.contains("thinking-done")));
+    this.thinking?.classList.toggle("is-typing", showCaret);
     this.scrollThinkingBody();
   }
-
   /** Keep the live thought stream pinned to the bottom of its invisible scroll box. */
   private scrollThinkingBody(wrap?: HTMLElement | null) {
     const body =
       (wrap?.querySelector(".thinking-body") as HTMLElement | null) ||
       this.thinkingBody;
-    if (!body || body.classList.contains("is-empty")) return;
-    requestAnimationFrame(() => {
-      body.scrollTop = body.scrollHeight;
+    if (!body || body.classList.contains("is-empty") || this.thinkingScrollFrame !== null) return;
+    this.thinkingScrollFrame = requestAnimationFrame(() => {
+      this.thinkingScrollFrame = null;
+      if (body.isConnected) body.scrollTop = body.scrollHeight;
     });
   }
-
   /**
    * Typewriter for **real** model reasoning only — character-by-character as tokens arrive.
    */
@@ -3026,52 +3047,39 @@ export class Chat {
       return;
     }
     const tick = () => {
-      if (!this.thinkingHasReasoning) {
-        this.typewriterId = null;
-        return;
-      }
-      if (this.thinkingRevealed >= this.thinkingTarget.length) {
-        this.typewriterId = null;
+      this.typewriterId = null;
+      if (!this.thinkingHasReasoning) return;
+      const backlog = this.thinkingTarget.length - this.thinkingRevealed;
+      if (backlog <= 0) {
         this.paintThinkingBody();
         this.flushDeferredAssistant();
         return;
       }
-      const backlog = this.thinkingTarget.length - this.thinkingRevealed;
-      // Stay close to realtime stream: type char-by-char, catch up if model is fast
-      let step = 1;
+
+      let step = 2;
       if (this.thoughtRevealUrgent) {
-        if (backlog > 200) step = 64;
-        else if (backlog > 80) step = 24;
-        else if (backlog > 24) step = 8;
-        else step = 3;
-      } else if (backlog > 400) step = 24;
-      else if (backlog > 160) step = 10;
-      else if (backlog > 60) step = 4;
-      else if (backlog > 24) step = 2;
+        if (backlog > 200) step = 96;
+        else if (backlog > 80) step = 40;
+        else if (backlog > 24) step = 16;
+        else step = 6;
+      } else if (backlog > 400) step = 48;
+      else if (backlog > 160) step = 24;
+      else if (backlog > 60) step = 10;
+      else if (backlog > 24) step = 4;
 
-      const nextIdx = Math.min(this.thinkingTarget.length, this.thinkingRevealed + step);
-      const justTyped = this.thinkingTarget.slice(this.thinkingRevealed, nextIdx);
-      this.thinkingRevealed = nextIdx;
+      this.thinkingRevealed = Math.min(
+        this.thinkingTarget.length,
+        this.thinkingRevealed + step,
+      );
       this.paintThinkingBody();
-      // Prefer internal thought scroll so long reasoning doesn't blow up the chat
-      if (this.thinkingBodyOpen) this.scrollThinkingBody();
-
-      const last = justTyped[justTyped.length - 1] || "";
-      let delay = this.thoughtRevealUrgent ? 4 : 18;
-      if (!this.thoughtRevealUrgent) {
-        if (last === "\n") delay = 42;
-        else if (/[.!?]/.test(last)) delay = 32;
-        else if (/[,;:]/.test(last)) delay = 22;
-        else if (backlog > 200) delay = 6;
-        else if (backlog > 80) delay = 10;
-        else if (backlog > 30) delay = 14;
+      if (this.thinkingRevealed < this.thinkingTarget.length) {
+        this.typewriterId = requestAnimationFrame(tick);
+      } else {
+        this.flushDeferredAssistant();
       }
-
-      this.typewriterId = window.setTimeout(tick, delay);
     };
-    tick();
+    this.typewriterId = requestAnimationFrame(tick);
   }
-
   /** True when thought text is still being typed out and the reply should wait. */
   private shouldDeferAssistantForThought(): boolean {
     if (this.replaying) return false;
@@ -3768,15 +3776,26 @@ export class Chat {
     }
   }
 
-  /** Render at most once per display frame even when the provider emits many tiny chunks. */
+  /** Limit full Markdown reparses to about 20 FPS while keeping the UI responsive. */
   private scheduleAssistantPaint(body: HTMLElement) {
     this.assistantPaintTargets.add(body);
-    if (this.assistantPaintFrame !== null) return;
+    if (this.assistantPaintFrame !== null || this.assistantPaintTimer !== null) return;
+    const remaining = 48 - (performance.now() - this.assistantLastPaintAt);
+    if (remaining > 1) {
+      this.assistantPaintTimer = window.setTimeout(() => {
+        this.assistantPaintTimer = null;
+        if (this.assistantPaintFrame === null) {
+          this.assistantPaintFrame = requestAnimationFrame(() => this.paintAssistantTargets());
+        }
+      }, remaining);
+      return;
+    }
     this.assistantPaintFrame = requestAnimationFrame(() => this.paintAssistantTargets());
   }
 
   private paintAssistantTargets() {
     this.assistantPaintFrame = null;
+    this.assistantLastPaintAt = performance.now();
     const targets = [...this.assistantPaintTargets];
     this.assistantPaintTargets.clear();
     let painted = false;
@@ -3789,6 +3808,10 @@ export class Chat {
   }
 
   private flushAssistantPaints() {
+    if (this.assistantPaintTimer !== null) {
+      clearTimeout(this.assistantPaintTimer);
+      this.assistantPaintTimer = null;
+    }
     if (this.assistantPaintFrame !== null) {
       cancelAnimationFrame(this.assistantPaintFrame);
       this.assistantPaintFrame = null;
@@ -3797,13 +3820,16 @@ export class Chat {
   }
 
   private cancelAssistantPaints() {
+    if (this.assistantPaintTimer !== null) {
+      clearTimeout(this.assistantPaintTimer);
+      this.assistantPaintTimer = null;
+    }
     if (this.assistantPaintFrame !== null) {
       cancelAnimationFrame(this.assistantPaintFrame);
       this.assistantPaintFrame = null;
     }
     this.assistantPaintTargets.clear();
   }
-
   private clearToolStreams() {
     for (const stream of this.toolStreams.values()) {
       if (stream.paintFrame !== null) cancelAnimationFrame(stream.paintFrame);
@@ -5011,8 +5037,13 @@ export class Chat {
    * so they can freely scroll up while the AI is working.
    */
   scrollToBottom(force = false) {
-    requestAnimationFrame(() => {
-      if (!force && !this.pinToBottom) {
+    this.chatScrollForce = this.chatScrollForce || force;
+    if (this.chatScrollFrame !== null) return;
+    this.chatScrollFrame = requestAnimationFrame(() => {
+      this.chatScrollFrame = null;
+      const shouldForce = this.chatScrollForce;
+      this.chatScrollForce = false;
+      if (!shouldForce && !this.pinToBottom) {
         this.syncJumpToLatestButton();
         return;
       }

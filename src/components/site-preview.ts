@@ -2814,7 +2814,7 @@ export class SitePreview {
     probe: DesignTargetProbe,
     signature: string,
     onResolved: (resolution: DesignTargetResolution) => void,
-    delay = 120,
+    delay = 220,
   ) {
     if (!this.sourceLensMode) return;
     if (this.sourceHoverSignature === signature && this.sourceHoverResolution) {
@@ -3404,7 +3404,7 @@ export class SitePreview {
         outline-offset: 2px !important;
         box-shadow: 0 0 0 6px rgba(90, 160, 255, 0.35), 0 4px 24px rgba(0, 0, 0, 0.3) !important;
         transition: outline-color 0.15s ease, box-shadow 0.15s ease !important;
-        animation: hormaDesignPulse 1.6s ease-in-out infinite !important;
+        animation: none !important;
       }
       @keyframes hormaDesignPulse {
         0%, 100% { outline-color: #5aa0ff; }
@@ -3471,14 +3471,10 @@ export class SitePreview {
     let ringTargetY = 0;
     let ringRaf = 0;
     const moveRing = () => {
-      ringX += (ringTargetX - ringX) * 0.28;
-      ringY += (ringTargetY - ringY) * 0.28;
+      ringRaf = 0;
+      ringX = ringTargetX;
+      ringY = ringTargetY;
       cursorRing.style.transform = `translate3d(${ringX}px, ${ringY}px, 0)`;
-      if (Math.abs(ringTargetX - ringX) > 0.5 || Math.abs(ringTargetY - ringY) > 0.5) {
-        ringRaf = requestAnimationFrame(moveRing);
-      } else {
-        ringRaf = 0;
-      }
     };
     // An element qualifies as a "feature" when it is interactive or has a
     // meaningful visible box. Nested spans/icons/emojis inside buttons, cards
@@ -3520,15 +3516,27 @@ export class SitePreview {
       }
       return "style" in n ? n : null;
     };
+    let hoveredFeature: Element | null = null;
+    let lastRawTarget: Element | null = null;
+    const clearHoveredFeature = () => {
+      hoveredFeature?.classList.remove("horma-design-hover");
+      hoveredFeature = null;
+      lastRawTarget = null;
+    };
     const onMove = (e: MouseEvent) => {
       const raw = e.target as Element | null;
       if (!raw || raw === doc.body || raw === doc.documentElement) {
+        clearHoveredFeature();
         cursorRing.classList.remove("is-visible", "is-hovering");
         if (this.sourceLensMode) doc.querySelector(".horma-source-hud")?.remove();
         return;
       }
-      const feature = featureFromTarget(raw);
+      const feature = raw === lastRawTarget && hoveredFeature?.isConnected
+        ? hoveredFeature
+        : featureFromTarget(raw);
+      lastRawTarget = raw;
       if (!feature) {
+        clearHoveredFeature();
         cursorRing.classList.remove("is-visible", "is-hovering");
         if (this.sourceLensMode) doc.querySelector(".horma-source-hud")?.remove();
         return;
@@ -3539,10 +3547,15 @@ export class SitePreview {
       ringTargetX = e.clientX;
       ringTargetY = e.clientY;
       if (!ringRaf) ringRaf = requestAnimationFrame(moveRing);
-      doc.querySelectorAll(".horma-design-hover").forEach((n) => n.classList.remove("horma-design-hover"));
-      feature.classList.add("horma-design-hover");
+
+      const featureChanged = hoveredFeature !== feature;
+      if (featureChanged) {
+        hoveredFeature?.classList.remove("horma-design-hover");
+        feature.classList.add("horma-design-hover");
+        hoveredFeature = feature;
+      }
       const featureElement = feature as HTMLElement;
-      if (this.sourceLensMode && featureElement?.nodeType === 1) {
+      if (this.sourceLensMode && featureChanged && featureElement?.nodeType === 1) {
         const hoverSelection: SelectedEl = {
           tag: (featureElement.tagName || "el").toLowerCase(),
           text: (featureElement.innerText || featureElement.textContent || "").trim().replace(/\s+/g, " ").slice(0, 180),
@@ -3668,6 +3681,7 @@ export class SitePreview {
       doc.removeEventListener("mousemove", onMove, true);
       doc.removeEventListener("click", onClick, true);
       if (ringRaf) cancelAnimationFrame(ringRaf);
+      clearHoveredFeature();
       cursorRing.remove();
       doc.querySelector(".horma-source-hud")?.remove();
       const chip = doc.querySelector(".horma-edit-chip") as (HTMLElement & { __hormaReposition?: () => void }) | null;

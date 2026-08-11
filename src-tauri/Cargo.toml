@@ -1,15 +1,15 @@
 [package]
-name = "ai-forge"
-version = "0.1.76"
-description = "Monochrome agentic desktop studio — hidden PowerShell + LLM tool-calling"
-authors = ["AI-Forge"]
+name = "hormachuelos-optimized"
+version = "1.0.0"
+description = "Independent FPS-optimized Hormachuelos desktop AI studio"
+authors = ["Hormachuelos Optimized"]
 edition = "2021"
 rust-version = "1.88"
-default-run = "ai-forge"
+default-run = "hormachuelos-optimized"
 autobins = false
 
 [[bin]]
-name = "ai-forge"
+name = "hormachuelos-optimized"
 path = "src/main.rs"
 
 [[bin]]
@@ -78,8 +78,8 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [profile.release]
-opt-level = "z"
-lto = true
+opt-level = 3
+lto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"

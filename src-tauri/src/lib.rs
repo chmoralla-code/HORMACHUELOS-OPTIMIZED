@@ -101,8 +101,9 @@ fn quick_session_workspace_in(base: &std::path::Path) -> Result<std::path::PathB
 fn ensure_quick_session_workspace(
     state: tauri::State<'_, state::AppState>,
 ) -> Result<String, String> {
-    let directories = directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")
-        .ok_or_else(|| "Could not determine the Hormachuelos data folder.".to_string())?;
+    let directories =
+        directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")
+            .ok_or_else(|| "Could not determine the Hormachuelos data folder.".to_string())?;
     let root = quick_session_workspace_in(directories.data_local_dir())?;
     let canonical = workspace::display_project_root(&root);
     *state.project_root.lock().unwrap() = Some(canonical.clone());

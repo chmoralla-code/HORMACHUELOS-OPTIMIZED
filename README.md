@@ -1,3 +1,27 @@
+# Hormachuelos Optimized
+
+The independent, installable FPS-focused edition of Hormachuelos. It starts from the verified v0.1.76 source and has its own product identifier, WebView profile, release channel, installers, and download page. The existing Hormachuelos repository and release remain separate.
+
+[Download Hormachuelos Optimized](https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/) · [Optimized releases](https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases)
+
+## FPS edition changes
+
+- Incremental reasoning text instead of rebuilding the entire reasoning DOM on each tick.
+- Full Markdown streaming limited to roughly 20 paints per second so the surrounding UI can sustain display cadence.
+- Chat and reasoning scroll writes coalesced to one animation frame.
+- All off-screen chat messages use paint containment.
+- Session saves are less frequent and exponentially back off after quota failures.
+- Source Lens hover work is frame-throttled, cached, and uses a smaller CSS-rule scan budget.
+- Expensive blur, glow, orbit, pulse, and status animations are disabled by the default FPS profile.
+- Rust release builds favor execution speed instead of minimum binary size.
+
+## Independent installation
+
+`Hormachuelos Optimized` uses `com.hormachuelos.optimized`, so it does not reuse the standard edition's WebView local storage. Both editions can be installed without sharing chat/session storage.
+
+---
+
+## Upstream project documentation
 # AI-Forge
 
 A monochrome agentic desktop studio. Natural language in → websites, games, and apps out.

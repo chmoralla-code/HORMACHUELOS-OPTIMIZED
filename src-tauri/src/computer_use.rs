@@ -573,7 +573,10 @@ mod platform {
 
     fn classify_blocked(title: &str, process: &str) -> Option<&'static str> {
         let process = process.to_ascii_lowercase();
-        if process == "ai-forge.exe" {
+        if matches!(
+            process.as_str(),
+            "ai-forge.exe" | "hormachuelos-optimized.exe"
+        ) {
             return Some("Cannot control the Hormachuelos app itself.");
         }
         if matches!(
@@ -1280,6 +1283,9 @@ mod platform {
         #[test]
         fn protected_apps_are_blocked() {
             assert!(classify_blocked("Hormachuelos", "ai-forge.exe").is_some());
+            assert!(
+                classify_blocked("Hormachuelos Optimized", "hormachuelos-optimized.exe").is_some()
+            );
             assert!(classify_blocked("Terminal", "WindowsTerminal.exe").is_some());
             assert!(classify_blocked("Run", "explorer.exe").is_some());
             assert!(classify_blocked("ChatGPT", "chrome.exe").is_some());

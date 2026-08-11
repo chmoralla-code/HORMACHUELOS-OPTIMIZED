@@ -189,9 +189,12 @@ const STORAGE_KEY = "ai-forge:sessions";
 /** Project-wide token usage — shared across all sessions in a project. */
 const PROJECT_USAGE_KEY = "ai-forge:project-usage";
 /** Coalesce streamed transcript updates before touching synchronous localStorage. */
-const SESSION_SAVE_DELAY_MS = 300;
+const SESSION_SAVE_DELAY_MS = 1_500;
+const SESSION_SAVE_MAX_BACKOFF_MS = 60_000;
 const pendingSessionSaves = new Map<string, Session>();
 let sessionSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let sessionSaveFailureCount = 0;
+let sessionSaveBlockedUntil = 0;
 const CREDENTIAL_REDACTION = "[credential removed — enter it only in Settings → Integrations]";
 const PREFIXED_CREDENTIAL =
   /\b(?:gh[pousr]_[a-z0-9_]{16,}|github_pat_[a-z0-9_]{16,}|glpat-[a-z0-9_-]{16,}|vercel_[a-z0-9_-]{16,}|sk-[a-z0-9_-]{16,}|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})\b/gi;
@@ -723,6 +726,7 @@ function sanitizeSessionModelId(value: unknown, max: number): string | undefined
 
 /** Write one or more sessions with a single parse/stringify/localStorage cycle. */
 function writeSessions(nextSessions: Iterable<Session>): boolean {
+  if (Date.now() < sessionSaveBlockedUntil) return false;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const all: Session[] = raw ? JSON.parse(raw) : [];
@@ -733,8 +737,15 @@ function writeSessions(nextSessions: Iterable<Session>): boolean {
       else all.push(safeSession);
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    sessionSaveFailureCount = 0;
+    sessionSaveBlockedUntil = 0;
     return true;
   } catch {
+    sessionSaveFailureCount = Math.min(6, sessionSaveFailureCount + 1);
+    sessionSaveBlockedUntil = Date.now() + Math.min(
+      SESSION_SAVE_MAX_BACKOFF_MS,
+      1_000 * (2 ** (sessionSaveFailureCount - 1)),
+    );
     return false;
   }
 }
@@ -756,9 +767,10 @@ export function saveSession(session: Session): void {
 export function scheduleSessionSave(session: Session): void {
   pendingSessionSaves.set(session.id, session);
   if (sessionSaveTimer !== null) return;
+  const delay = Math.max(SESSION_SAVE_DELAY_MS, sessionSaveBlockedUntil - Date.now());
   sessionSaveTimer = setTimeout(() => {
     flushSessionSaves();
-  }, SESSION_SAVE_DELAY_MS);
+  }, delay);
 }
 
 /** Flush queued saves before project/session transitions or app shutdown. */

@@ -1,7 +1,7 @@
 import { api, onAppUpdateProgress, type AppUpdateProgress } from "../ipc";
 import { el } from "./util";
 
-const HOSTED_API = "https://hormachuelos.vercel.app";
+const UPDATE_MANIFEST_URL = "https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/latest.json";
 
 export type AppRelease = {
   version: string;
@@ -125,21 +125,42 @@ export async function restoreUpdateState(): Promise<number> {
   return restored;
 }
 
+function versionParts(value: string): [number, number, number] | null {
+  const parts = value.trim().replace(/^v/, "").split(".");
+  if (parts.length !== 3) return null;
+  if (!parts.every((part) => /^\d+$/.test(part))) return null;
+  const numbers = parts.map((part) => Number.parseInt(part, 10));
+  if (numbers.some((part) => !Number.isSafeInteger(part) || part < 0)) return null;
+  return numbers as [number, number, number];
+}
+
+function isVersionNewer(candidate: string, current: string): boolean {
+  const next = versionParts(candidate);
+  const installed = versionParts(current);
+  if (!next || !installed) return false;
+  for (let index = 0; index < next.length; index += 1) {
+    if (next[index] !== installed[index]) return next[index] > installed[index];
+  }
+  return false;
+}
+
 export async function checkDesktopUpdate(): Promise<UpdateCheck> {
   const currentVersion = await api.appVersion().catch(() => "0.0.0");
-  const res = await fetch(
-    `${HOSTED_API}/api/update?current=${encodeURIComponent(currentVersion)}`,
-    { headers: { Accept: "application/json" }, cache: "no-store" },
-  );
-  const data = await res.json().catch(() => ({}));
+  const res = await fetch(UPDATE_MANIFEST_URL, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  const data = await res.json().catch(() => ({})) as Partial<AppRelease> & { error?: string };
   if (!res.ok) {
-    throw new Error((data as { error?: string }).error || `Update check failed (${res.status})`);
+    throw new Error(data.error || "Optimized update check failed (" + res.status + ")");
   }
+  const latest = typeof data.version === "string" ? data as AppRelease : null;
+  const updateAvailable = Boolean(latest && isVersionNewer(latest.version, currentVersion));
   return {
-    updateAvailable: Boolean((data as UpdateCheck).updateAvailable),
-    forceUpdate: Boolean((data as UpdateCheck).forceUpdate),
-    latest: (data as UpdateCheck).latest || null,
-    currentVersion: String((data as UpdateCheck).currentVersion || currentVersion),
+    updateAvailable,
+    forceUpdate: updateAvailable && Boolean(latest?.forceUpdate),
+    latest: updateAvailable ? latest : null,
+    currentVersion,
   };
 }
 
@@ -155,9 +176,9 @@ function progressMessage(event: AppUpdateProgress): string {
   if (event.phase === "installing") {
     return /administrator approval/i.test(String(event.message || ""))
       ? "Approve the Windows administrator prompt…"
-      : "Installing Hormachuelos…";
+      : "Installing Hormachuelos Optimized…";
   }
-  if (event.phase === "restarting") return "Relaunching Hormachuelos…";
+  if (event.phase === "restarting") return "Relaunching Hormachuelos Optimized…";
   const fallback = String(event.message || "Update paused").replace(/…$/, "");
   return `${fallback}…`;
 }
@@ -299,7 +320,7 @@ function buildInstallProgress(): InstallProgressView {
   });
   root.appendChild(stageList);
   root.appendChild(el("p", { class: "update-install-foot" }, [
-    "Keep Hormachuelos open — it will relaunch itself when the handoff is complete.",
+    "Keep Hormachuelos Optimized open — it will relaunch itself when the handoff is complete.",
   ]));
 
   const update = (message: string, event?: AppUpdateProgress) => {
@@ -421,7 +442,7 @@ async function installInsideApp(
     const restartingEvent: AppUpdateProgress = {
       phase: "restarting",
       percent: 100,
-      message: "Restarting Hormachuelos",
+      message: "Restarting Hormachuelos Optimized",
     };
     onProgress(progressMessage(restartingEvent), restartingEvent);
   } finally {
@@ -455,7 +476,7 @@ export function showUpdateDialog(options: UpdateInstallOptions = {}): HTMLElemen
   const top = el("div", { class: "update-dialog-top" });
   const brandRail = el("div", { class: "update-dialog-brand-rail" });
   brandRail.append(
-    el("div", { class: "auth-gate-brand" }, ["HORMACHUELOS"]),
+    el("div", { class: "auth-gate-brand" }, ["HORMACHUELOS OPTIMIZED"]),
     el("div", { class: "update-dialog-channel" }, [
       el("span", { class: "update-dialog-channel-dot", "aria-hidden": "true" }),
       "SECURE UPDATE",
@@ -552,7 +573,7 @@ export function showUpdateDialog(options: UpdateInstallOptions = {}): HTMLElemen
         id: "update-dialog-title",
       }, ["Update available"]);
       const subtitle = el("p", { class: "auth-gate-sub update-dialog-subtitle" }, [
-        "A fresh build is ready. Install it here and Hormachuelos will reopen on its own.",
+        "A fresh build is ready. Install it here and Hormachuelos Optimized will reopen on its own.",
       ]);
       content.append(kicker, title, subtitle);
 
@@ -612,7 +633,7 @@ export function showUpdateDialog(options: UpdateInstallOptions = {}): HTMLElemen
           laterBtn.disabled = false;
           actions.hidden = false;
           title.textContent = "Update paused";
-          subtitle.textContent = "Hormachuelos stayed open and no installed files were changed.";
+          subtitle.textContent = "Hormachuelos Optimized stayed open and no installed files were changed.";
           progress.fail(updateFailureMessage(error));
           installBtn.textContent = "Try installation again";
           laterBtn.textContent = "Close";
@@ -626,7 +647,7 @@ export function showUpdateDialog(options: UpdateInstallOptions = {}): HTMLElemen
     }
 
     addTitle("You're up to date");
-    addSub(`Hormachuelos v${check.currentVersion} is the latest version.`);
+    addSub(`Hormachuelos Optimized v${check.currentVersion} is the latest version.`);
     const doneBtn = el("button", { class: "btn primary", type: "button" }, ["Done"]);
     doneBtn.addEventListener("click", close);
     content.appendChild(doneBtn);
@@ -636,7 +657,7 @@ export function showUpdateDialog(options: UpdateInstallOptions = {}): HTMLElemen
   const runCheck = async () => {
     content.replaceChildren();
     addTitle("Checking for updates…");
-    addSub("Looking for the latest Hormachuelos release.");
+    addSub("Looking for the latest Hormachuelos Optimized release.");
     try {
       renderCheck(await checkDesktopUpdate());
     } catch {
@@ -668,7 +689,7 @@ export function showUpdateGate(
     "aria-labelledby": "required-update-title",
   });
   const card = el("div", { class: "auth-gate-card update-dialog-card update-required-card" });
-  card.appendChild(el("div", { class: "auth-gate-brand" }, ["HORMACHUELOS"]));
+  card.appendChild(el("div", { class: "auth-gate-brand" }, ["HORMACHUELOS OPTIMIZED"]));
   card.appendChild(el("div", { class: "update-dialog-kicker" }, [
     el("span", { "aria-hidden": "true" }, ["◆"]),
     "REQUIRED SECURE RELEASE",

@@ -1,0 +1,76 @@
+name: Release Hormachuelos Optimized
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: optimized-release
+  cancel-in-progress: false
+
+jobs:
+  windows-release:
+    name: Validate, build, and publish Windows installers
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run check
+
+      - name: Run FPS regression guards
+        run: npm run test:fps
+
+      - name: Run reply-formatting guard
+        run: npm run test:reply-formatting
+
+      - name: Run cursor regression suites
+        run: node --test scripts/cursor-completion.test.mjs scripts/cursor-bridge-lifecycle.test.mjs
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Run native tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Build and publish release-channel installers
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Hormachuelos Optimized v__VERSION__
+          releaseBody: |
+            Independent FPS-focused Windows edition.
+
+            Highlights:
+            - coalesced assistant Markdown painting and chat scrolling
+            - incremental reasoning output
+            - reduced Source Lens and browser-pointer inspection overhead
+            - contained offscreen messages and disabled perpetual visual effects
+            - coalesced session persistence with quota backoff
+            - separate executable, app identifier, data folders, credential service, and update channel
+
+            Download page: https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/
+          releaseDraft: false
+          prerelease: false
+          releaseAssetNamePattern: Hormachuelos_Optimized_[version]_x64[setup][ext]
+          uploadUpdaterSignatures: false
