@@ -10,6 +10,10 @@ test("optimized product identity is independent", () => {
   assert.equal(config.identifier, "com.hormachuelos.optimized");
   assert.equal(config.version, "1.0.0");
   assert.match(read("src/index.html"), /body class="fps-optimized"/);
+  assert.match(read("src-tauri/Cargo.toml"), /name = "hormachuelos-optimized"/);
+  assert.match(read("src-tauri/src/config.rs"), /hormachuelos-optimized/);
+  assert.match(read("src/components/update-gate.ts"), /HORMACHUELOS-OPTIMIZED\/latest\.json/);
+  assert.match(read("src-tauri/src/app_updater.rs"), /HORMACHUELOS-OPTIMIZED\/releases\/download/);
 });
 
 test("live rendering is frame-bounded and incremental", () => {
@@ -39,4 +43,12 @@ test("Source Lens uses reduced and frame-throttled hover work", () => {
   assert.match(browser, /requestAnimationFrame\(processPointerMove\)/);
   assert.match(preview, /const featureChanged = hoveredFeature !== feature/);
   assert.match(preview, /delay = 220/);
+});
+
+test("download page targets only the optimized release", () => {
+  const page = read("docs/index.html");
+  assert.match(page, /Download MSI/);
+  assert.match(page, /Download Setup EXE/);
+  assert.match(page, /HORMACHUELOS-OPTIMIZED\/releases\/latest\/download/);
+  assert.doesNotMatch(page, /HORMACHUELOS\/releases\/latest\/download/);
 });
