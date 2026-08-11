@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Hormachuelos",
-  "version": "0.1.76",
-  "identifier": "com.ai-forge.studio",
+  "productName": "Hormachuelos Optimized",
+  "version": "1.0.0",
+  "identifier": "com.hormachuelos.optimized",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Hormachuelos",
+        "title": "Hormachuelos Optimized",
         "width": 1280,
         "height": 832,
         "minWidth": 900,
@@ -54,9 +54,9 @@
     "publisher": "Hormachuelos",
     "copyright": "Copyright © Hormachuelos",
     "category": "DeveloperTool",
-    "shortDescription": "Pinoy-made desktop AI agent for builders",
-    "longDescription": "Hormachuelos is a local-first AI coding agent built for Filipino builders — GCash/Maya ready, PHP pricing, and models you control.",
-    "homepage": "https://hormachuelos.com",
+    "shortDescription": "FPS-optimized Hormachuelos desktop AI agent",
+    "longDescription": "Hormachuelos Optimized is the independent high-FPS edition with lower streaming, storage, animation, and preview overhead.",
+    "homepage": "https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/",
     "licenseFile": "installer/license.txt",
     "icon": [
       "icons/32x32.png",
@@ -87,4 +87,4 @@
       }
     }
   }
-}
+}`n
