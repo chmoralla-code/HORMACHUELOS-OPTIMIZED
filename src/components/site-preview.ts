@@ -2814,7 +2814,7 @@ export class SitePreview {
     probe: DesignTargetProbe,
     signature: string,
     onResolved: (resolution: DesignTargetResolution) => void,
-    delay = 120,
+    delay = 220,
   ) {
     if (!this.sourceLensMode) return;
     if (this.sourceHoverSignature === signature && this.sourceHoverResolution) {
@@ -3404,7 +3404,7 @@ export class SitePreview {
         outline-offset: 2px !important;
         box-shadow: 0 0 0 6px rgba(90, 160, 255, 0.35), 0 4px 24px rgba(0, 0, 0, 0.3) !important;
         transition: outline-color 0.15s ease, box-shadow 0.15s ease !important;
-        animation: hormaDesignPulse 1.6s ease-in-out infinite !important;
+        animation: none !important;
       }
       @keyframes hormaDesignPulse {
         0%, 100% { outline-color: #5aa0ff; }
