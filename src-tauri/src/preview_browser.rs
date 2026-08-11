@@ -31,6 +31,8 @@ const BROWSER_INSPECTION_SCRIPT: &str = r#"
     lastHoverSignature: '',
     feedback: null,
     raf: 0,
+    pointerRaf: 0,
+    pointerTarget: null,
   };
 
   const clip = (value, max = 180) => String(value || '')
@@ -245,9 +247,10 @@ const BROWSER_INSPECTION_SCRIPT: &str = r#"
     if (!state.raf) state.raf = requestAnimationFrame(draw);
   };
 
-  const onPointerMove = (event) => {
+  const processPointerMove = () => {
+    state.pointerRaf = 0;
     if (state.mode === 'off') return;
-    const node = featureFromTarget(event.target);
+    const node = featureFromTarget(state.pointerTarget);
     if (!node) return;
     state.hoverNode = node;
     if (state.selectedNode && state.selectedNode !== node) state.selectedNode = null;
@@ -261,6 +264,12 @@ const BROWSER_INSPECTION_SCRIPT: &str = r#"
     state.hoverTimer = window.setTimeout(() => {
       if (state.mode === 'source' && node.isConnected && state.lastHoverSignature === signature) report('hover', describe(node));
     }, 220);
+  };
+
+  const onPointerMove = (event) => {
+    if (state.mode === 'off') return;
+    state.pointerTarget = event.target;
+    if (!state.pointerRaf) state.pointerRaf = requestAnimationFrame(processPointerMove);
   };
 
   const onClick = (event) => {
