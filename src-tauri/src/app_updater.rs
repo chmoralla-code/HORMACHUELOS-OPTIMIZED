@@ -1026,7 +1026,7 @@ async fn launch_install_helper(
     // A Windows UAC consent prompt is intentionally shown before the app
     // exits. Give the user enough time to review and approve it instead of
     // treating a normal approval delay as an updater failure.
-    let helper_startup_timeout = if requires_elevation { 120 } else { 8 };
+    let helper_startup_timeout = if requires_elevation { 120 } else { 30 };
     let deadline =
         tokio::time::Instant::now() + std::time::Duration::from_secs(helper_startup_timeout);
     loop {
