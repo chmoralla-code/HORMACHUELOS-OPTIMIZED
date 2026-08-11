@@ -3680,7 +3680,8 @@ export class SitePreview {
     (doc as any).__hormaDesignCleanup = () => {
       doc.removeEventListener("mousemove", onMove, true);
       doc.removeEventListener("click", onClick, true);
-      if (ringRaf) cancelAnimationFrame(ringRaf);`n      clearHoveredFeature();
+      if (ringRaf) cancelAnimationFrame(ringRaf);
+      clearHoveredFeature();
       cursorRing.remove();
       doc.querySelector(".horma-source-hud")?.remove();
       const chip = doc.querySelector(".horma-edit-chip") as (HTMLElement & { __hormaReposition?: () => void }) | null;
