@@ -1,11 +1,11 @@
 {
-  "version": "1.0.1",
-  "title": "Hormachuelos Optimized v1.0.1",
-  "whatsNew": "Adds Match original app model: securely copies only the original app's provider, model, and reasoning effort. API keys, website sessions, license data, endpoints, projects, and other settings remain separate.",
-  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.1/Hormachuelos_Optimized_1.0.1_x64.msi",
-  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.1/Hormachuelos_Optimized_1.0.1_x64-setup.exe",
-  "msiSha256": "c2aeb36bc9125c3f44f14db80f3689c61dd46c07eaa68751954ae4c8064e3a35",
-  "exeSha256": "99f90c7d60bc8f82f6f4a05bb5288a9ccb32f72eceec7b439f1527d1ec19b683",
+  "version": "1.0.2",
+  "title": "Hormachuelos Optimized v1.0.2",
+  "whatsNew": "Fixes AI replies that could split into large blank gaps or expose broken Markdown. Live streamed text now stays in one organized reply, and completed messages are measured before FPS virtualization so scrolling remains fast without corrupting the layout.",
+  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.2/Hormachuelos_Optimized_1.0.2_x64.msi",
+  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.2/Hormachuelos_Optimized_1.0.2_x64-setup.exe",
+  "msiSha256": "00de4e3627362eb6bde2677c44768e028b9152a025932ffef7ba8ce8ce46f1c5",
+  "exeSha256": "c8bffe88970518cfe3c98861cbe896ed3012cb4511f33418be2e3b232ec1dad4",
   "forceUpdate": false,
-  "publishedAt": "2026-08-11T23:06:01Z"
+  "publishedAt": "2026-08-11T23:46:04Z"
 }
