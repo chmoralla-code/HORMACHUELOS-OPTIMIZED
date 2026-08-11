@@ -32,6 +32,14 @@ fn settings_path() -> Result<PathBuf> {
     Ok(dir.join("settings.json"))
 }
 
+/// Read-only compatibility path for the standard edition. This function never
+/// creates, modifies, or deletes anything in the original application's folder.
+fn original_settings_path() -> Result<PathBuf> {
+    let proj = directories::ProjectDirs::from("com", "ai-forge", "AI-Forge")
+        .context("could not determine original Hormachuelos config dir")?;
+    Ok(proj.config_dir().join("settings.json"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub provider: String,
@@ -72,6 +80,25 @@ pub struct Settings {
     pub flavour_enabled: bool,
 }
 
+/// A deliberately narrow, non-secret view of the standard app's model choice.
+/// API keys, website sessions, license data, and project settings are excluded.
+#[derive(Debug, Clone, Serialize)]
+pub struct OriginalModelSelection {
+    pub provider: String,
+    pub model: String,
+    pub model_effort: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OriginalModelSelectionFile {
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    model_effort: String,
+}
+
 fn default_permission_mode() -> String {
     "plan".into()
 }
@@ -82,6 +109,17 @@ fn default_capability_mode() -> String {
 
 fn default_model_effort() -> String {
     "high".into()
+}
+
+fn normalize_model_effort(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "low" | "light" => "light".into(),
+        "medium" => "medium".into(),
+        "high" => "high".into(),
+        "xhigh" | "extra" | "extra-high" | "extrahigh" => "xhigh".into(),
+        "ultra" | "max" => "ultra".into(),
+        _ => default_model_effort(),
+    }
 }
 
 fn default_smart_agent_enabled() -> bool {
@@ -150,6 +188,37 @@ impl Default for Settings {
     }
 }
 
+fn original_model_selection_from_json(raw: &str) -> Result<OriginalModelSelection> {
+    let source: OriginalModelSelectionFile =
+        serde_json::from_str(raw).context("could not parse original Hormachuelos settings")?;
+    let mut candidate = Settings::default();
+    candidate.provider = source.provider.trim().to_ascii_lowercase();
+    candidate.model = source.model.trim().to_string();
+    // The original endpoint is intentionally not copied. The optimized app uses
+    // its own safe default endpoint for the selected provider.
+    candidate.base_url = None;
+    candidate.model_effort = normalize_model_effort(&source.model_effort);
+    candidate.validate()?;
+
+    Ok(OriginalModelSelection {
+        provider: candidate.provider,
+        model: candidate.model,
+        model_effort: candidate.model_effort,
+    })
+}
+
+/// Return the standard edition's selected provider/model/effort without reading
+/// any credential, session, license, project, or general application data.
+pub fn load_original_model_selection() -> Result<Option<OriginalModelSelection>> {
+    let path = original_settings_path()?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| "could not read original Hormachuelos model selection")?;
+    original_model_selection_from_json(&raw).map(Some)
+}
+
 impl Settings {
     pub fn load() -> Result<Self> {
         let p = settings_path()?;
@@ -200,15 +269,7 @@ impl Settings {
             | "autonomous" | "max" => cap,
             _ => capability_for_mode(&s.permission_mode).into(),
         };
-        let effort = s.model_effort.trim().to_ascii_lowercase();
-        s.model_effort = match effort.as_str() {
-            "low" | "light" => "light".into(),
-            "medium" => "medium".into(),
-            "high" => "high".into(),
-            "xhigh" | "extra" | "extra-high" | "extrahigh" => "xhigh".into(),
-            "ultra" | "max" => "ultra".into(),
-            _ => default_model_effort(),
-        };
+        s.model_effort = normalize_model_effort(&s.model_effort);
         // Older builds stored a fabricated OpenAI/GPT label while sending the
         // request through Cursor/Grok. Migrate only that known alias.
         if s.provider.eq_ignore_ascii_case("openai")
@@ -619,7 +680,8 @@ pub fn clear_website_session() -> Result<()> {
 mod tests {
     use super::{
         capability_for_mode, is_custom_hosted_provider_alias, is_hormachuelos_model_alias,
-        should_migrate_cursor_grok_to_xai, validate_provider_id, Settings, XAI_API_BASE_URL,
+        original_model_selection_from_json, should_migrate_cursor_grok_to_xai,
+        validate_provider_id, Settings, XAI_API_BASE_URL,
     };
 
     #[test]
@@ -688,6 +750,29 @@ mod tests {
             ..Settings::default()
         };
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn imports_only_non_secret_original_model_selection() {
+        let selection = original_model_selection_from_json(
+            r#"{
+                "provider": "hormachuelos_free",
+                "model": "hormachuelos-v4",
+                "model_effort": "ultra",
+                "base_url": "https://hormachuelos.vercel.app/api/v1",
+                "api_key": "must-not-be-copied",
+                "website_session": "must-not-be-copied"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(selection.provider, "hormachuelos_free");
+        assert_eq!(selection.model, "hormachuelos-v4");
+        assert_eq!(selection.model_effort, "ultra");
+        let exported = serde_json::to_string(&selection).unwrap();
+        assert!(!exported.contains("api_key"));
+        assert!(!exported.contains("website_session"));
+        assert!(!exported.contains("base_url"));
     }
 
     #[test]

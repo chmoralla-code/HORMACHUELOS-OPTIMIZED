@@ -27,6 +27,13 @@ export type Settings = {
   model_effort?: string;
 };
 
+/** Non-secret provider/model/effort selection imported from the standard app. */
+export type OriginalModelSelection = {
+  provider: string;
+  model: string;
+  model_effort: string;
+};
+
 /** Host-side execution profile selected by an in-app surface. */
 export type AgentTaskProfile =
   | "default"
@@ -271,6 +278,9 @@ export const api = {
   /** Forget one recent project without deleting its folder or files. */
   removeRecentProject: (path: string): Promise<boolean> => invoke("remove_recent_project", { path }),
   getSettings: (): Promise<Settings> => invoke("get_settings"),
+  /** Copies only provider, model, and effort from the standard app; never credentials. */
+  getOriginalModelSelection: (): Promise<OriginalModelSelection | null> =>
+    invoke("get_original_model_selection"),
   saveSettings: (settings: Settings): Promise<void> => invoke("save_settings", { settings }),
   getComputerUseStatus: (): Promise<ComputerUseStatus> => invoke("get_computer_use_status"),
   setComputerUsePaused: (paused: boolean): Promise<ComputerUseStatus> =>

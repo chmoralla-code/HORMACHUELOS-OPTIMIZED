@@ -131,6 +131,11 @@ async fn get_settings(
 }
 
 #[tauri::command]
+async fn get_original_model_selection() -> Result<Option<config::OriginalModelSelection>, String> {
+    config::load_original_model_selection().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn save_settings(
     mut settings: config::Settings,
     state: tauri::State<'_, state::AppState>,
@@ -1482,6 +1487,7 @@ pub fn run() {
             list_recent_projects,
             remove_recent_project,
             get_settings,
+            get_original_model_selection,
             save_settings,
             get_computer_use_status,
             set_computer_use_paused,
