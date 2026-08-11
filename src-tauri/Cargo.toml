@@ -78,8 +78,7 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [profile.release]
-opt-level = "z"
-lto = true
+opt-level = 3`nlto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"
