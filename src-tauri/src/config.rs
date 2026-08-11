@@ -189,8 +189,8 @@ impl Default for Settings {
 }
 
 fn original_model_selection_from_json(raw: &str) -> Result<OriginalModelSelection> {
-    let source: OriginalModelSelectionFile = serde_json::from_str(raw)
-        .context("could not parse original Hormachuelos settings")?;
+    let source: OriginalModelSelectionFile =
+        serde_json::from_str(raw).context("could not parse original Hormachuelos settings")?;
     let mut candidate = Settings::default();
     candidate.provider = source.provider.trim().to_ascii_lowercase();
     candidate.model = source.model.trim().to_string();
