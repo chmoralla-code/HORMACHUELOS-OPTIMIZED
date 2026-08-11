@@ -4779,7 +4779,9 @@ mod security_tests {
         );
         assert!(result.contains("Started background command"));
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Cold hosted Windows runners can take several seconds to schedule the
+        // detached PowerShell child even though the launcher already returned.
+        let deadline = Instant::now() + Duration::from_secs(10);
         let child_pid = loop {
             if let Ok(value) = std::fs::read_to_string(&pid_file) {
                 if let Ok(pid) = value.trim().parse::<u32>() {
