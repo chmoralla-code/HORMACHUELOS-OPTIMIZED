@@ -41,14 +41,15 @@ export type SessionMultiAgentTool = {
  * boundaries. Provider recovery can insert thinking/status events between a
  * cut-off prefix and its resumed suffix; `resumePrevious` reconnects only that
  * explicitly marked suffix to the latest assistant message in the same run.
+ * Returns true when the chunk joined an existing transcript reply.
  */
 export function appendAssistantTranscriptChunk(
   messages: SessionMessage[],
   text: string,
   at?: number,
   resumePrevious = false,
-): void {
-  if (!text) return;
+): boolean {
+  if (!text) return false;
 
   let assistantIndex = -1;
   const lastIndex = messages.length - 1;
@@ -79,10 +80,11 @@ export function appendAssistantTranscriptChunk(
     const message = messages[assistantIndex] as Extract<SessionMessage, { type: "assistant" }>;
     message.text += text;
     message.at = at;
-    return;
+    return true;
   }
 
   messages.push({ type: "assistant", text, at });
+  return false;
 }
 
 /**
