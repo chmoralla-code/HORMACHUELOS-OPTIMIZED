@@ -46,7 +46,9 @@ fn update_cache_path(version: &str, extension: &str) -> Result<PathBuf, String> 
     let dir = dirs.cache_dir().join("updates");
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("Could not prepare the update cache: {error}"))?;
-    Ok(dir.join(format!("Hormachuelos_Optimized_{version}_x64-update.{extension}")))
+    Ok(dir.join(format!(
+        "Hormachuelos_Optimized_{version}_x64-update.{extension}"
+    )))
 }
 
 #[cfg(windows)]
@@ -222,8 +224,9 @@ fn validate_download_url(
         return Ok((url, extension));
     }
     if host == "github.com" {
-        let expected_path =
-            format!("/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v{version}/{filename}");
+        let expected_path = format!(
+            "/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v{version}/{filename}"
+        );
         if url.path() == expected_path {
             return Ok((url, extension));
         }
@@ -1266,7 +1269,9 @@ mod tests {
     fn update_helper_is_started_as_a_real_powershell_file() {
         let helper = std::path::Path::new(r"C:\Temp Folder\update-helper.ps1");
         let installer = std::path::Path::new(r"C:\Temp Folder\Hormachuelos update.exe");
-        let app = std::path::Path::new(r"C:\Program Files\Hormachuelos Optimized\hormachuelos-optimized.exe");
+        let app = std::path::Path::new(
+            r"C:\Program Files\Hormachuelos Optimized\hormachuelos-optimized.exe",
+        );
         let bootstrap = std::path::Path::new(r"C:\Temp Folder\update-elevation.ps1");
         let ready = std::path::Path::new(r"C:\Temp Folder\update.ready");
         let log = std::path::Path::new(r"C:\Temp Folder\update.log");

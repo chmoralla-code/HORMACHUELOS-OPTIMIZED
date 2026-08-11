@@ -580,7 +580,10 @@ pub fn delete_api_key(provider: &str) -> Result<()> {
 }
 
 fn website_session_entry() -> Result<keyring::Entry> {
-    Ok(keyring::Entry::new("hormachuelos-optimized", "website_session")?)
+    Ok(keyring::Entry::new(
+        "hormachuelos-optimized",
+        "website_session",
+    )?)
 }
 
 pub fn store_website_session(token: &str) -> Result<()> {

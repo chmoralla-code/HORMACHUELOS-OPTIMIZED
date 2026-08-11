@@ -599,7 +599,8 @@ impl Drop for FlavourRun {
 }
 
 fn private_flavour_root() -> Option<PathBuf> {
-    ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized").map(|dirs| dirs.config_dir().join("flavour"))
+    ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")
+        .map(|dirs| dirs.config_dir().join("flavour"))
 }
 
 fn project_identity(root: &Path) -> String {

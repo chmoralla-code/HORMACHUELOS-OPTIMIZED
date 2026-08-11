@@ -1283,11 +1283,9 @@ mod platform {
         #[test]
         fn protected_apps_are_blocked() {
             assert!(classify_blocked("Hormachuelos", "ai-forge.exe").is_some());
-            assert!(classify_blocked(
-                "Hormachuelos Optimized",
-                "hormachuelos-optimized.exe"
-            )
-            .is_some());
+            assert!(
+                classify_blocked("Hormachuelos Optimized", "hormachuelos-optimized.exe").is_some()
+            );
             assert!(classify_blocked("Terminal", "WindowsTerminal.exe").is_some());
             assert!(classify_blocked("Run", "explorer.exe").is_some());
             assert!(classify_blocked("ChatGPT", "chrome.exe").is_some());
