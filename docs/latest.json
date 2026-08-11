@@ -4,8 +4,8 @@
   "whatsNew": "Independent FPS-focused edition with coalesced streaming paints, incremental reasoning output, reduced Source Lens overhead, calmer persistence, and a speed-oriented native release profile.",
   "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.0/Hormachuelos_Optimized_1.0.0_x64.msi",
   "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.0/Hormachuelos_Optimized_1.0.0_x64-setup.exe",
-  "msiSha256": "",
-  "exeSha256": "",
+  "msiSha256": "dae581abde5fd1d67080193ae36ad4fa7d5b077aa884bc2d8b72e44860866088",
+  "exeSha256": "f24ed51d703b2f899e4fc56e9f2f7e6e527289bb653e862f4ac1d5f09f551475",
   "forceUpdate": false,
-  "publishedAt": "2026-08-11T00:00:00Z"
+  "publishedAt": "2026-08-11T12:56:23Z"
 }
