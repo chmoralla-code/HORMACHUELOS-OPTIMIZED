@@ -1,11 +1,11 @@
 {
-  "version": "1.0.0",
-  "title": "Hormachuelos Optimized v1.0.0",
-  "whatsNew": "Independent FPS-focused edition with coalesced streaming paints, incremental reasoning output, reduced Source Lens overhead, calmer persistence, and a speed-oriented native release profile.",
-  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.0/Hormachuelos_Optimized_1.0.0_x64.msi",
-  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.0/Hormachuelos_Optimized_1.0.0_x64-setup.exe",
-  "msiSha256": "dae581abde5fd1d67080193ae36ad4fa7d5b077aa884bc2d8b72e44860866088",
-  "exeSha256": "f24ed51d703b2f899e4fc56e9f2f7e6e527289bb653e862f4ac1d5f09f551475",
+  "version": "1.0.1",
+  "title": "Hormachuelos Optimized v1.0.1",
+  "whatsNew": "Adds Match original app model: securely copies only the original app's provider, model, and reasoning effort. API keys, website sessions, license data, endpoints, projects, and other settings remain separate.",
+  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.1/Hormachuelos_Optimized_1.0.1_x64.msi",
+  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.1/Hormachuelos_Optimized_1.0.1_x64-setup.exe",
+  "msiSha256": "c2aeb36bc9125c3f44f14db80f3689c61dd46c07eaa68751954ae4c8064e3a35",
+  "exeSha256": "99f90c7d60bc8f82f6f4a05bb5288a9ccb32f72eceec7b439f1527d1ec19b683",
   "forceUpdate": false,
-  "publishedAt": "2026-08-11T12:56:23Z"
+  "publishedAt": "2026-08-11T23:06:01Z"
 }
