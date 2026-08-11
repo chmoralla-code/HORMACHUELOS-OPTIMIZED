@@ -637,7 +637,7 @@ function Get-HormachuelosCandidates {
   }
   if (![string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
     $candidates += Join-Path -Path $env:LOCALAPPDATA -ChildPath 'Hormachuelos Optimized'
-    $candidates += Join-Path -Path $env:LOCALAPPDATA -ChildPath 'Programs\Hormachuelos'
+    $candidates += Join-Path -Path $env:LOCALAPPDATA -ChildPath 'Programs\Hormachuelos Optimized'
   }
   return $candidates
 }
