@@ -2948,6 +2948,10 @@ export class Chat {
   private paintThinkingBody() {
     if (!this.thinkingBody) return;
     const raw = this.thinkingTarget.slice(0, this.thinkingRevealed);
+    const live =
+      !!this.thinking &&
+      !this.thinking.classList.contains("thinking-done") &&
+      this.running;
     const typing =
       this.thinkingHasReasoning &&
       (this.typewriterId != null ||
@@ -2955,25 +2959,26 @@ export class Chat {
           !this.thinking.classList.contains("thinking-done") &&
           this.thinkingRevealed < this.thinkingTarget.length));
 
-    this.thinkingBody.textContent = "";
+    let textSpan = this.thinkingBody.querySelector(".thinking-stream") as
+      | (HTMLElement & { __raw?: string })
+      | null;
+    let caret = this.thinkingBody.querySelector(".thinking-caret") as HTMLElement | null;
 
     if (!this.thinkingHasReasoning || !this.thinkingTarget.trim()) {
-      const live =
-        !!this.thinking &&
-        !this.thinking.classList.contains("thinking-done") &&
-        this.running;
+      textSpan?.remove();
       if (live) {
-        // Waiting for first reasoning token — keep a live caret under Thinking…
         this.thinkingBody.classList.remove("is-empty");
-        const c = document.createElement("span");
-        c.className = "thinking-caret";
-        c.setAttribute("aria-hidden", "true");
-        this.thinkingBody.appendChild(c);
+        if (!caret) {
+          caret = document.createElement("span");
+          caret.className = "thinking-caret";
+          caret.setAttribute("aria-hidden", "true");
+          this.thinkingBody.appendChild(caret);
+        }
         this.thinking?.classList.add("is-typing");
         this.thinking?.classList.remove("has-detail");
         return;
       }
-      // No real reasoning yet — keep panel empty (no "Planning next step" typing)
+      caret?.remove();
       this.thinkingBody.classList.add("is-empty");
       this.thinking?.classList.remove("is-typing");
       this.thinking?.classList.toggle("has-detail", false);
@@ -2981,34 +2986,45 @@ export class Chat {
     }
 
     this.thinkingBody.classList.remove("is-empty");
-    const textSpan = document.createElement("span");
-    textSpan.className = "thinking-stream";
-    textSpan.textContent = raw;
-    this.thinkingBody.appendChild(textSpan);
+    if (!textSpan) {
+      textSpan = document.createElement("span") as HTMLElement & { __raw?: string };
+      textSpan.className = "thinking-stream";
+      textSpan.__raw = "";
+      this.thinkingBody.prepend(textSpan);
+    }
 
-    if (typing) {
-      const c = document.createElement("span");
-      c.className = "thinking-caret";
-      c.setAttribute("aria-hidden", "true");
-      this.thinkingBody.appendChild(c);
-    } else if (
-      this.running &&
-      this.thinking &&
-      !this.thinking.classList.contains("thinking-done")
-    ) {
-      // Live stream caught up — keep caret so it still feels like realtime typing
-      const c = document.createElement("span");
-      c.className = "thinking-caret";
-      c.setAttribute("aria-hidden", "true");
-      this.thinkingBody.appendChild(c);
-      this.thinking.classList.add("is-typing");
+    const rendered = textSpan.__raw || "";
+    if (raw.startsWith(rendered)) {
+      const addition = raw.slice(rendered.length);
+      if (addition) {
+        const onlyChild = textSpan.childNodes.length === 1 ? textSpan.firstChild : null;
+        if (onlyChild?.nodeType === Node.TEXT_NODE) {
+          (onlyChild as Text).appendData(addition);
+        } else if (textSpan.childNodes.length === 0) {
+          textSpan.appendChild(document.createTextNode(addition));
+        } else {
+          textSpan.textContent = raw;
+        }
+      }
+    } else {
+      textSpan.textContent = raw;
+    }
+    textSpan.__raw = raw;
+
+    const showCaret = typing || live;
+    if (showCaret && !caret) {
+      caret = document.createElement("span");
+      caret.className = "thinking-caret";
+      caret.setAttribute("aria-hidden", "true");
+      this.thinkingBody.appendChild(caret);
+    } else if (!showCaret) {
+      caret?.remove();
     }
 
     this.thinking?.classList.toggle("has-detail", true);
-    this.thinking?.classList.toggle("is-typing", typing || (!!this.running && !!this.thinking && !this.thinking.classList.contains("thinking-done")));
+    this.thinking?.classList.toggle("is-typing", showCaret);
     this.scrollThinkingBody();
   }
-
   /** Keep the live thought stream pinned to the bottom of its invisible scroll box. */
   private scrollThinkingBody(wrap?: HTMLElement | null) {
     const body =
