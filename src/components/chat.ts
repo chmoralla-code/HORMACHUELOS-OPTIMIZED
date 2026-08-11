@@ -3776,15 +3776,26 @@ export class Chat {
     }
   }
 
-  /** Render at most once per display frame even when the provider emits many tiny chunks. */
+  /** Limit full Markdown reparses to about 20 FPS while keeping the UI responsive. */
   private scheduleAssistantPaint(body: HTMLElement) {
     this.assistantPaintTargets.add(body);
-    if (this.assistantPaintFrame !== null) return;
+    if (this.assistantPaintFrame !== null || this.assistantPaintTimer !== null) return;
+    const remaining = 48 - (performance.now() - this.assistantLastPaintAt);
+    if (remaining > 1) {
+      this.assistantPaintTimer = window.setTimeout(() => {
+        this.assistantPaintTimer = null;
+        if (this.assistantPaintFrame === null) {
+          this.assistantPaintFrame = requestAnimationFrame(() => this.paintAssistantTargets());
+        }
+      }, remaining);
+      return;
+    }
     this.assistantPaintFrame = requestAnimationFrame(() => this.paintAssistantTargets());
   }
 
   private paintAssistantTargets() {
     this.assistantPaintFrame = null;
+    this.assistantLastPaintAt = performance.now();
     const targets = [...this.assistantPaintTargets];
     this.assistantPaintTargets.clear();
     let painted = false;
@@ -3797,6 +3808,10 @@ export class Chat {
   }
 
   private flushAssistantPaints() {
+    if (this.assistantPaintTimer !== null) {
+      clearTimeout(this.assistantPaintTimer);
+      this.assistantPaintTimer = null;
+    }
     if (this.assistantPaintFrame !== null) {
       cancelAnimationFrame(this.assistantPaintFrame);
       this.assistantPaintFrame = null;
@@ -3805,13 +3820,16 @@ export class Chat {
   }
 
   private cancelAssistantPaints() {
+    if (this.assistantPaintTimer !== null) {
+      clearTimeout(this.assistantPaintTimer);
+      this.assistantPaintTimer = null;
+    }
     if (this.assistantPaintFrame !== null) {
       cancelAnimationFrame(this.assistantPaintFrame);
       this.assistantPaintFrame = null;
     }
     this.assistantPaintTargets.clear();
   }
-
   private clearToolStreams() {
     for (const stream of this.toolStreams.values()) {
       if (stream.paintFrame !== null) cancelAnimationFrame(stream.paintFrame);
@@ -5019,8 +5037,13 @@ export class Chat {
    * so they can freely scroll up while the AI is working.
    */
   scrollToBottom(force = false) {
-    requestAnimationFrame(() => {
-      if (!force && !this.pinToBottom) {
+    this.chatScrollForce = this.chatScrollForce || force;
+    if (this.chatScrollFrame !== null) return;
+    this.chatScrollFrame = requestAnimationFrame(() => {
+      this.chatScrollFrame = null;
+      const shouldForce = this.chatScrollForce;
+      this.chatScrollForce = false;
+      if (!shouldForce && !this.pinToBottom) {
         this.syncJumpToLatestButton();
         return;
       }
