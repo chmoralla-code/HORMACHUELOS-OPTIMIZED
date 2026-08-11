@@ -87,7 +87,10 @@ const recoveryTranscript = [
   { type: "assistant", text: "The glob" },
   { type: "thinking", iteration: 2, text: "Resuming after the output limit." },
 ];
-appendAssistantTranscriptChunk(recoveryTranscript, "als.css update is complete.", 20, true);
+assert.equal(
+  appendAssistantTranscriptChunk(recoveryTranscript, "als.css update is complete.", 20, true),
+  true,
+);
 assert.equal(
   recoveryTranscript.filter((message) => message.type === "assistant").length,
   1,
@@ -95,7 +98,10 @@ assert.equal(
 assert.equal(recoveryTranscript[2].text, "The globals.css update is complete.");
 
 recoveryTranscript.push({ type: "tool_result", id: "build", name: "run_command", ok: true, content: "ok" });
-appendAssistantTranscriptChunk(recoveryTranscript, "A separate verified result.", 30, false);
+assert.equal(
+  appendAssistantTranscriptChunk(recoveryTranscript, "A separate verified result.", 30, false),
+  false,
+);
 assert.equal(
   recoveryTranscript.filter((message) => message.type === "assistant").length,
   2,
@@ -107,9 +113,47 @@ const priorRunBoundary = [
   { type: "run_start", permissionMode: "plan" },
   { type: "thinking", iteration: 0, text: "" },
 ];
-appendAssistantTranscriptChunk(priorRunBoundary, "Fresh answer.", 40, true);
+assert.equal(
+  appendAssistantTranscriptChunk(priorRunBoundary, "Fresh answer.", 40, true),
+  false,
+);
 assert.equal(priorRunBoundary[0].text, "Prior answer.");
 assert.equal(priorRunBoundary.at(-1).text, "Fresh answer.");
+
+// Tool previews are intentionally not persisted. If one temporarily clears the
+// live DOM pointer, the transcript merge result tells Chat to resume the same
+// rendered reply so Markdown markers cannot split across placeholder messages.
+const previewInterruptedTranscript = [
+  { type: "user", text: "Inspect this project." },
+  { type: "run_start", permissionMode: "multi_agent" },
+];
+assert.equal(
+  appendAssistantTranscriptChunk(previewInterruptedTranscript, "A company-owned **HR /", 50, false),
+  false,
+);
+assert.equal(
+  appendAssistantTranscriptChunk(previewInterruptedTranscript, " payroll portal** for staff.", 60, false),
+  true,
+);
+assert.equal(
+  previewInterruptedTranscript.at(-1).text,
+  "A company-owned **HR / payroll portal** for staff.",
+);
+
+const chatSource = readFileSync(new URL("../src/components/chat.ts", import.meta.url), "utf8");
+for (const requiredReplyStitch of [
+  "const mergedAssistantChunk = !this.replaying && this.recordEvent(e);",
+  "private renderEvent(e: AgentEvent, mergedAssistantChunk = false)",
+  "e.payload.continuation === true || mergedAssistantChunk",
+  "scheduleStableMessageVirtualization",
+  "--history-item-height",
+]) {
+  assert.ok(chatSource.includes(requiredReplyStitch), `missing live reply-layout guard: ${requiredReplyStitch}`);
+}
+
+const appCss = readFileSync(new URL("../src/app.css", import.meta.url), "utf8");
+assert.match(appCss, /#chat > \.msg\.history-virtualized\s*\{/);
+assert.doesNotMatch(appCss, /#chat > \.msg,\s*\n#chat > \.thinking-wrap/);
 
 // Keep the session-bound lock intact even if the toolbar is refactored.
 const modelBar = readFileSync(new URL("../src/components/modelbar.ts", import.meta.url), "utf8");
