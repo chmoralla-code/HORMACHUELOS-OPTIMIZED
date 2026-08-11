@@ -92,9 +92,11 @@ export class Chat {
   pendingAssistant: HTMLElement | null = null;
   /** Message shell for the current assistant bubble (for timestamps). */
   private pendingAssistantMsg: HTMLElement | null = null;
-  /** Assistant Markdown bodies waiting for one batched paint on the next frame. */
+  /** Assistant Markdown bodies waiting for a throttled, batched paint. */
   private assistantPaintTargets = new Set<HTMLElement>();
   private assistantPaintFrame: number | null = null;
+  private assistantPaintTimer: ReturnType<typeof setTimeout> | null = null;
+  private assistantLastPaintAt = 0;
   thinking: HTMLElement | null = null;
   thinkingBody: HTMLElement | null = null;
   thinkingText: string = "";
@@ -142,7 +144,8 @@ export class Chat {
   private thinkingTarget = "";
   /** How many characters of thinkingTarget are currently revealed. */
   private thinkingRevealed = 0;
-  private typewriterId: ReturnType<typeof setTimeout> | null = null;
+  private typewriterId: number | null = null;
+  private thinkingScrollFrame: number | null = null;
   /** True once real model reasoning (not status placeholders) is in the thought body. */
   private thinkingHasReasoning = false;
   /** Hold assistant reply chunks until the thought typewriter catches up. */
@@ -171,6 +174,8 @@ export class Chat {
    * Becomes false as soon as the user scrolls up; free scrolling is allowed while AI works.
    */
   private pinToBottom = true;
+  private chatScrollFrame: number | null = null;
+  private chatScrollForce = false;
   private escHandler: ((e: KeyboardEvent) => void) | null = null;
   /** Internal visual profile; model identity is rendered separately. */
   private replyProfile: "default" | "sol" | "claude" = "default";
@@ -2802,7 +2807,7 @@ export class Chat {
 
   private stopTypewriter() {
     if (this.typewriterId != null) {
-      clearTimeout(this.typewriterId);
+      cancelAnimationFrame(this.typewriterId);
       this.typewriterId = null;
     }
   }
