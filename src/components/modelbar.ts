@@ -234,6 +234,31 @@ export class ModelBar {
     }
   }
 
+  /** Match the original app's non-secret model choice without sharing credentials. */
+  private async matchOriginalAppModel() {
+    if (!this.settings || !this.allowModelSelection()) return;
+    try {
+      const selection = await api.getOriginalModelSelection();
+      if (!selection) {
+        this.setStatus("Original Hormachuelos model selection was not found on this computer.", true);
+        return;
+      }
+      const applied = await this.applySessionProfile({
+        provider: selection.provider,
+        model: selection.model,
+        effort: selection.model_effort,
+      });
+      if (!applied) return;
+      const provider = getProviderMeta(selection.provider)?.label || selection.provider;
+      this.setStatus(
+        `Matched original app: ${provider} · ${this.shortModel(selection.model, selection.provider)}. API keys and sign-in stay separate.`,
+      );
+    } catch (error) {
+      console.error(error);
+      this.setStatus("Could not read the original app model selection.", true);
+    }
+  }
+
   private modelSelectionLocked(): boolean {
     return this.activeRunProfile !== null;
   }
@@ -632,6 +657,21 @@ export class ModelBar {
         return;
       }
       const menu = el("div", { class: "chip-menu chip-menu-wide", role: "listbox", "aria-label": "Model" });
+
+      const syncHead = el("div", { class: "chip-menu-head" }, ["Quick action"]);
+      const syncOriginal = el("button", {
+        class: "chip-menu-item chip-menu-sync",
+        type: "button",
+        role: "option",
+        "aria-selected": "false",
+        title: "Copy the original app's provider, model, and effort. API keys and sign-in are not copied.",
+      }, ["↻ Match original app model"]) as HTMLButtonElement;
+      syncOriginal.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void this.matchOriginalAppModel();
+      });
+      menu.append(syncHead, syncOriginal);
 
       // Provider rows
       const provHead = el("div", { class: "chip-menu-head" }, ["Provider"]);
