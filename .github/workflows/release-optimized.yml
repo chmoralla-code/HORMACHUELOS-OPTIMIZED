@@ -36,6 +36,9 @@ jobs:
       - name: Type-check
         run: npm run check
 
+      - name: Build production webview
+        run: npm run build
+
       - name: Run FPS regression guards
         run: npm run test:fps
 
