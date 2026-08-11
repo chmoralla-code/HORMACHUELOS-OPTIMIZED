@@ -1327,10 +1327,13 @@
 }
 .msg { max-width: 880px; margin: 0 auto 14px; }
 
-/* Skip paint/layout for sealed history outside the scroll viewport. Chromium
-   remembers the measured height after first render, so long chats stay smooth
-   without changing their scroll geometry. */
-#chat > .msg,
+/* Keep complete history cheap to paint without virtualizing a reply while it is
+   still streaming. Message shells receive this class only after JS measures
+   their final height, preventing stale 72px placeholders and broken Markdown. */
+#chat > .msg.history-virtualized {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--history-item-height, 72px);
+}
 #chat > .thinking-wrap.thinking-done,
 #chat > .tool-batch-wrap.is-done,
 #chat > .tool-card-wrap,
