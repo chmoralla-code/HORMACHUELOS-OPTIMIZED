@@ -6,11 +6,16 @@ const read = (path) => readFileSync(path, "utf8");
 
 test("optimized product identity is independent", () => {
   const config = JSON.parse(read("src-tauri/tauri.conf.json"));
+  const packageManifest = JSON.parse(read("package.json"));
+  const cargo = read("src-tauri/Cargo.toml");
+  const escapedVersion = packageManifest.version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   assert.equal(config.productName, "Hormachuelos Optimized");
   assert.equal(config.identifier, "com.hormachuelos.optimized");
-  assert.equal(config.version, "1.0.0");
+  assert.match(packageManifest.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(config.version, packageManifest.version);
+  assert.match(cargo, new RegExp(`\\[package\\][\\s\\S]*?\\nversion = "${escapedVersion}"`));
   assert.match(read("src/index.html"), /body class="fps-optimized"/);
-  assert.match(read("src-tauri/Cargo.toml"), /name = "hormachuelos-optimized"/);
+  assert.match(cargo, /name = "hormachuelos-optimized"/);
   assert.match(read("src-tauri/src/config.rs"), /hormachuelos-optimized/);
   assert.match(read("src/components/update-gate.ts"), /HORMACHUELOS-OPTIMIZED\/latest\.json/);
   assert.match(read("src-tauri/src/app_updater.rs"), /HORMACHUELOS-OPTIMIZED\/releases\/download/);
