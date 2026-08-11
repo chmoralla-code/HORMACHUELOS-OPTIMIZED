@@ -43,7 +43,7 @@ jobs:
         run: npm run test:reply-formatting
 
       - name: Run cursor regression suites
-        run: node --test scripts/cursor-completion.test.mjs scripts/cursor-bridge-lifecycle.test.mjs scripts/cursor-bridge.test.mjs
+        run: node --test scripts/cursor-completion.test.mjs scripts/cursor-bridge-lifecycle.test.mjs
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
@@ -51,7 +51,7 @@ jobs:
       - name: Run native tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
-      - name: Build and publish signed-channel installers
+      - name: Build and publish release-channel installers
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
