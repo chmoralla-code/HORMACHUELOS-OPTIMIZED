@@ -105,12 +105,12 @@ const BROWSER_INSPECTION_SCRIPT: &str = r#"
         let rules;
         try { rules = Array.from(sheet.cssRules || []); } catch { continue; }
         for (const rule of rules) {
-          if (++visited > 2500 || styleSelectors.length >= 16) break;
+          if (++visited > 600 || styleSelectors.length >= 16) break;
           const selector = rule.selectorText;
           if (!selector) continue;
           try { if (node.matches(selector)) styleSelectors.push(clip(selector, 240)); } catch {}
         }
-        if (visited > 2500 || styleSelectors.length >= 16) break;
+        if (visited > 600 || styleSelectors.length >= 16) break;
       }
     }
     return {
@@ -216,7 +216,11 @@ const BROWSER_INSPECTION_SCRIPT: &str = r#"
     box.dataset.source = String(state.mode === 'source');
     box.dataset.selected = String(Boolean(state.selectedNode));
 
-    const target = describe(node, false);
+    const target = {
+      tag: clip(node.tagName, 40).toLowerCase(),
+      text: clip(node.innerText || node.textContent, 180),
+      selector: cssPath(node),
+    };
     let lines = state.feedback && state.feedback.selector === target.selector
       ? state.feedback.lines
       : [{ kind: 'target', text: `<${target.tag}>${target.text ? ` · ${target.text.slice(0, 62)}` : ''}` }];
@@ -256,7 +260,7 @@ const BROWSER_INSPECTION_SCRIPT: &str = r#"
     window.clearTimeout(state.hoverTimer);
     state.hoverTimer = window.setTimeout(() => {
       if (state.mode === 'source' && node.isConnected && state.lastHoverSignature === signature) report('hover', describe(node));
-    }, 110);
+    }, 220);
   };
 
   const onClick = (event) => {
