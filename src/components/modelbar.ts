@@ -34,8 +34,8 @@ const MODES: {
     chip: "ask",
     label: "Ask",
     title:
-      "Ask — explore code & answer with evidence; reads free, writes need Approve.",
-    capability: "Investigate",
+      "Ask — maximum answer reliability with evidence; reads free, writes need Approve.",
+    capability: "Answer Max",
   },
   {
     id: "full",
@@ -68,6 +68,11 @@ const CAPABILITIES: Record<
     { id: "balanced", label: "Balanced", title: "Build with smart defaults" },
   ],
   ask: [
+    {
+      id: "answer_max",
+      label: "Answer Max",
+      title: "Reliable, complete answers with evidence and automatic recovery",
+    },
     {
       id: "investigate",
       label: "Investigate",
@@ -483,7 +488,7 @@ export class ModelBar {
       const labels: Record<PermissionMode, string> = {
         plan: "Plan — refine, then execute with full permissions",
         auto: "Auto — build with defaults",
-        ask: "Ask — investigate with evidence",
+        ask: "Ask — Answer Max reliability",
         full: "Full — max autonomy",
         multi_agent: "Multi-Agent — parallel discovery",
       };
@@ -917,11 +922,11 @@ export class ModelBar {
       },
     });
     addItem("Ask", "ask", {
-      title: "Ask — answer with evidence, prefer reads",
-      active: mode === "ask" && cap === "brief",
+      title: "Ask — reliable complete answer with evidence",
+      active: mode === "ask" && cap === "answer_max",
       onClick: () => {
         this.closeMenus();
-        void this.applyPlusMode("ask", "brief", "Ask mode");
+        void this.applyPlusMode("ask", "answer_max", "Ask · Answer Max");
       },
     });
 
