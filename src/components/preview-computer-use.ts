@@ -887,9 +887,10 @@ class PreviewFrameComputerController {
     element.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
     const control = element as HTMLInputElement;
     const actualValue = "value" in control ? String(control.value) : compact(html.textContent, 240);
+    const sensitiveValue = isInputElement(element) && control.type.toLowerCase() === "password";
     const valid = typeof control.checkValidity === "function" ? control.checkValidity() : true;
     return {
-      value: actualValue,
+      value: sensitiveValue ? "[redacted]" : actualValue,
       inputType: isInputElement(element) ? control.type : tag,
       valid,
       validationMessage: valid ? "" : compact(control.validationMessage, 240),
@@ -906,9 +907,11 @@ class PreviewFrameComputerController {
         ? (element as HTMLInputElement).checked
         : false),
       text: compact(element?.innerText || element?.textContent, 500),
-      value: element && "value" in (element as HTMLInputElement)
-        ? String((element as HTMLInputElement).value)
-        : "",
+      value: element && isInputElement(element) && element.type.toLowerCase() === "password"
+        ? "[redacted]"
+        : element && "value" in (element as HTMLInputElement)
+          ? String((element as HTMLInputElement).value)
+          : "",
       url: this.document.location.href,
       title: this.document.title,
     };
@@ -1071,7 +1074,13 @@ class PreviewFrameComputerController {
       this.showTarget(active, "type");
       active.focus({ preventScroll: true });
       this.insertText(active, String(action.text ?? ""), Boolean(action.clear));
-      return { value: isInputElement(active) || isTextAreaElement(active) ? active.value : compact(active.textContent, 240) };
+      return {
+        value: isInputElement(active) && active.type.toLowerCase() === "password"
+          ? "[redacted]"
+          : isInputElement(active) || isTextAreaElement(active)
+            ? active.value
+            : compact(active.textContent, 240),
+      };
     }
     if (action.type === "key") {
       const element = target.element as HTMLElement;

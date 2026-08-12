@@ -177,6 +177,7 @@ test("Preview Computer Use can fill native controls and verify evidence", () => 
     assert.match(source, /check/);
     assert.match(source, /inputType/);
     assert.match(source, /validationMessage/);
+    assert.match(source, /\[redacted\]/);
     assert.match(source, /(?:MouseEvent|mouseEvent)/);
     assert.match(source, /(?:visibleSemanticContent|const semantic=)/);
   }
