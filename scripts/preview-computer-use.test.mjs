@@ -49,12 +49,17 @@ test("computer broker contains no native desktop input path", () => {
   assert.match(broker, /preview-computer-request/);
   assert.match(broker, /active-preview-tab-only/);
   assert.match(broker, /MAX_ACTIONS: usize = 48/);
+  assert.match(broker, /tauri::Url::parse/);
+  assert.match(broker, /credential-free http\(s\) URLs/);
+  assert.match(broker, /open_tab, navigate, and activate_tab must be the only action/);
 });
 
 test("model surface is reduced to observe plus bounded action batches", () => {
   assert.match(tools, /"computer_observe" \| "computer_actions"/);
   assert.match(tools, /"maxItems": 48/);
-  assert.match(tools, /active Preview tab/);
+  assert.match(tools, /inside Preview/);
+  assert.match(tools, /"open_tab", "navigate", "activate_tab"/);
+  assert.match(tools, /never launch the system browser/);
   for (const symbol of removedDesktopSymbols.slice(5)) assert.doesNotMatch(tools, new RegExp(symbol));
   assert.match(cursorBridge, /cursor_host_tool_schemas\(permission_mode, computer_use_active\)/);
   assert.match(cursorBridge, /"computerUseEnabled": false/);
@@ -78,6 +83,8 @@ test("all model runtimes receive the same Preview-only tool contract", () => {
   assert.match(agent, /playwright this website/);
   assert.match(agent, /drive the live Preview first/);
   assert.match(agent, /computer_observe \/ computer_actions: Preview-only control/);
+  assert.match(agent, /Never use open_url/);
+  assert.match(agent, /Hidden-tab page content remains unreadable/);
 });
 
 test("frontend always selects the active Preview tab and stops on tab changes", () => {
@@ -88,14 +95,24 @@ test("frontend always selects the active Preview tab and stops on tab changes", 
   assert.match(preview, /isCrossOriginFrame\(tab\.frame\)/);
   assert.match(preview, /promoteExternalPreviewTab\(tab/);
   assert.match(preview, /previewTabKindForEntry\(clean\) === "browser"/);
+  assert.match(preview, /computerUseTabList\(\)/);
+  assert.match(preview, /runComputerUseTabAction/);
+  assert.match(preview, /this\.openBrowserTab\(url/);
+  assert.match(preview, /this\.navigateBrowserTab\(current, url\)/);
+  assert.match(preview, /this\.activateTab\(tab\.id\)/);
+  assert.match(preview, /activeTabUrl: active\.entryPath/);
+  assert.match(preview, /needsObservation: true/);
   assert.doesNotMatch(preview, /frame\.src\s*=\s*tab\.entryPath/);
 });
 
 test("project and Browser tabs render a compositor-friendly in-preview cursor", () => {
   for (const source of [frameController, browserController]) {
     assert.match(source, /translate3d/);
-    assert.match(source, /will-change:transform|willChange/);
+    assert.match(source, /width:48px;height:48px/);
+    assert.match(source, /will-change:transform,opacity|willChange/);
     assert.match(source, /pointer-events:none/);
+    assert.match(source, /(?:cursor-label|browser_label)/);
+    assert.match(source, /(?:horma-pulse|horma_pulse)/);
     assert.match(source, /hover/);
     assert.match(source, /click/);
     assert.match(source, /scroll/);

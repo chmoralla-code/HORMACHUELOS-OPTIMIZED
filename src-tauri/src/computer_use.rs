@@ -100,7 +100,17 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
     ensure!(
         matches!(
             kind,
-            "move" | "hover" | "click" | "type" | "key" | "scroll" | "drag" | "wait"
+            "move"
+                | "hover"
+                | "click"
+                | "type"
+                | "key"
+                | "scroll"
+                | "drag"
+                | "wait"
+                | "open_tab"
+                | "navigate"
+                | "activate_tab"
         ),
         "Unsupported preview action type: {kind}."
     );
@@ -140,14 +150,46 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
             "Win/Meta keys are outside Preview Computer Use."
         );
     }
-    if kind == "wait" {
+    if matches!(kind, "wait" | "open_tab" | "navigate" | "activate_tab") {
         let duration = object
             .get("duration_ms")
             .and_then(Value::as_u64)
-            .unwrap_or(250);
+            .unwrap_or(if kind == "wait" { 250 } else { 8_000 });
         ensure!(
             duration <= 10_000,
-            "One preview wait may not exceed 10 seconds."
+            "One Preview wait may not exceed 10 seconds."
+        );
+    }
+    if matches!(kind, "open_tab" | "navigate") {
+        let raw = object
+            .get("url")
+            .and_then(Value::as_str)
+            .context("A Preview navigation action requires url.")?
+            .trim();
+        ensure!(
+            !raw.is_empty() && raw.len() <= 4_096 && !raw.contains('\0'),
+            "Invalid Preview navigation URL."
+        );
+        let url = tauri::Url::parse(raw).context("Invalid Preview navigation URL.")?;
+        ensure!(
+            matches!(url.scheme(), "http" | "https")
+                && url.username().is_empty()
+                && url.password().is_none(),
+            "Preview navigation allows only credential-free http(s) URLs."
+        );
+    }
+    if kind == "activate_tab" {
+        let tab_id = object
+            .get("tab_id")
+            .and_then(Value::as_str)
+            .context("activate_tab requires tab_id from computer_observe.")?;
+        ensure!(
+            tab_id.len() <= 128
+                && (tab_id.starts_with("preview-tab-") || tab_id.starts_with("preview-browser-"))
+                && tab_id
+                    .bytes()
+                    .all(|value| value.is_ascii_alphanumeric() || value == b'-'),
+            "Invalid Preview tab id."
         );
     }
     Ok(())
@@ -175,9 +217,20 @@ fn validate_tool_request(name: &str, args: &Value) -> Result<&'static str> {
                 "A preview action batch may contain at most {MAX_ACTIONS} actions."
             );
             let mut text_chars = 0usize;
+            let mut tab_action_count = 0usize;
             for (index, action) in actions.iter().enumerate() {
                 validate_action(action, index, &mut text_chars)?;
+                if matches!(
+                    action.get("type").and_then(Value::as_str),
+                    Some("open_tab") | Some("navigate") | Some("activate_tab")
+                ) {
+                    tab_action_count += 1;
+                }
             }
+            ensure!(
+                tab_action_count == 0 || (tab_action_count == 1 && actions.len() == 1),
+                "Preview open_tab, navigate, and activate_tab must be the only action in their batch; observe the newly active tab next."
+            );
             Ok("actions")
         }
         other => bail!("Unknown preview computer tool: {other}"),
@@ -362,6 +415,39 @@ mod tests {
             .unwrap(),
             "actions"
         );
+    }
+
+    #[test]
+    fn accepts_preview_native_tab_navigation_only_as_a_single_action() {
+        for action in [
+            json!({ "type": "open_tab", "url": "http://localhost:3100/supervisor" }),
+            json!({ "type": "navigate", "url": "https://example.com/path" }),
+            json!({ "type": "activate_tab", "tab_id": "preview-browser-42" }),
+        ] {
+            assert_eq!(
+                validate_tool_request("computer_actions", &json!({ "actions": [action] })).unwrap(),
+                "actions"
+            );
+        }
+        assert!(validate_tool_request(
+            "computer_actions",
+            &json!({ "actions": [
+                { "type": "navigate", "url": "https://example.com" },
+                { "type": "click", "ref": "p1" }
+            ] })
+        )
+        .is_err());
+        for unsafe_url in [
+            "javascript:alert(1)",
+            "file:///C:/Windows/System32/calc.exe",
+            "https://user:secret@example.com",
+        ] {
+            assert!(validate_tool_request(
+                "computer_actions",
+                &json!({ "actions": [{ "type": "open_tab", "url": unsafe_url }] })
+            )
+            .is_err());
+        }
     }
 
     #[test]
