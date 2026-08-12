@@ -118,11 +118,29 @@ function elementName(element: Element): string {
   );
 }
 
+function isHtmlElement(element: Element | null): element is HTMLElement {
+  return Boolean(element && typeof (element as HTMLElement).focus === "function");
+}
+
+function isInputElement(element: Element | null): element is HTMLInputElement {
+  return element?.tagName.toLowerCase() === "input";
+}
+
+function isTextAreaElement(element: Element | null): element is HTMLTextAreaElement {
+  return element?.tagName.toLowerCase() === "textarea";
+}
+
+function isButtonElement(element: Element | null): element is HTMLButtonElement {
+  return element?.tagName.toLowerCase() === "button";
+}
+
+function isAnchorElement(element: Element | null): element is HTMLAnchorElement {
+  return element?.tagName.toLowerCase() === "a";
+}
+
 function isEditable(element: Element | null): element is HTMLElement {
-  if (!(element instanceof HTMLElement)) return false;
-  return element instanceof HTMLInputElement
-    || element instanceof HTMLTextAreaElement
-    || element.isContentEditable;
+  return isHtmlElement(element)
+    && (isInputElement(element) || isTextAreaElement(element) || element.isContentEditable);
 }
 
 function abortError(): DOMException {
@@ -434,7 +452,7 @@ class PreviewFrameComputerController {
   }
 
   private insertText(element: HTMLElement, text: string, clear: boolean): void {
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    if (isInputElement(element) || isTextAreaElement(element)) {
       const current = element.value;
       const start = clear ? 0 : (element.selectionStart ?? current.length);
       const end = clear ? current.length : (element.selectionEnd ?? start);
@@ -476,7 +494,7 @@ class PreviewFrameComputerController {
 
   private applyKeyDefault(element: HTMLElement, key: string, init: KeyboardEventInit): void {
     if ((init.ctrlKey || init.metaKey) && key.toLowerCase() === "a" && isEditable(element)) {
-      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) element.select();
+      if (isInputElement(element) || isTextAreaElement(element)) element.select();
       else {
         const range = this.document.createRange();
         range.selectNodeContents(element);
@@ -493,11 +511,11 @@ class PreviewFrameComputerController {
       return;
     }
     if (key === "Enter") {
-      if (element instanceof HTMLButtonElement || element instanceof HTMLAnchorElement) element.click();
+      if (isButtonElement(element) || isAnchorElement(element)) element.click();
       else if (isEditable(element)) element.closest("form")?.requestSubmit();
       return;
     }
-    if ((key === "Backspace" || key === "Delete") && (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+    if ((key === "Backspace" || key === "Delete") && (isInputElement(element) || isTextAreaElement(element))) {
       const start = element.selectionStart ?? element.value.length;
       const end = element.selectionEnd ?? start;
       const from = start === end && key === "Backspace" ? Math.max(0, start - 1) : start;
