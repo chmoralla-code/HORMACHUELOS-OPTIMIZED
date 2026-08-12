@@ -1,5 +1,4 @@
-import { api, type AgentEvent, type AgentTaskProfile, type ComputerUseFxEvent } from "../ipc";
-import { privateTypingStatus } from "./computer-use-hud";
+import { api, type AgentEvent, type AgentTaskProfile } from "../ipc";
 import { icon } from "./icons";
 import {
   appendAssistantTranscriptChunk,
@@ -2193,15 +2192,8 @@ export class Chat {
       export_client_pack: "Client pack",
       connect_account: "Link account",
       integration_status: "Link status",
-      computer_list_windows: "Window list",
-      computer_observe: "Screen look",
-      computer_focus_window: "Window focus",
-      computer_click: "Desktop click",
-      computer_type_text: "Desktop type",
-      computer_press_key: "Key press",
-      computer_scroll: "Desktop scroll",
-      computer_drag: "Desktop drag",
-      computer_game_sequence: "Game controls",
+      computer_observe: "Preview look",
+      computer_actions: "Preview actions",
       ask_user: "Ask you",
       askquestion: "Ask you",
       todo_write: "Task list",
@@ -3417,42 +3409,6 @@ export class Chat {
         return "Wrapping up";
       default:
         return this.friendlyToolName(name) || "Working…";
-    }
-  }
-
-  /** Live desktop FX mirror inside the chat while Computer Use runs. */
-  handleComputerFx(event: ComputerUseFxEvent) {
-    if (this.replaying || event.kind === "clear") return;
-    let label = "Desktop control";
-    const isTyping = event.kind === "type_char" || event.kind === "type_done";
-    const typingStatus = isTyping ? privateTypingStatus(event) : null;
-    if (event.kind === "click") label = `Click at ${event.x}, ${event.y}`;
-    else if (isTyping && typingStatus) {
-      label = event.kind === "type_done" ? typingStatus.detail : `Typing… · ${typingStatus.detail}`;
-    } else if (event.kind === "drag") label = `Drag to ${event.x}, ${event.y}`;
-    else if (event.kind === "scroll") label = `Scroll at ${event.x}, ${event.y}`;
-    else if (event.kind === "cursor_move") label = `Cursor ${event.x}, ${event.y}`;
-
-    if (this.runningIndicator && this.runningIndicator.isConnected) {
-      const lab = this.runningIndicator.querySelector(".thinking-simple-label") as HTMLElement | null;
-      const detail = this.runningIndicator.querySelector(".computer-fx-live") as HTMLElement | null;
-      if (lab) setShimmerText(lab, label, true);
-      if (detail) {
-        detail.hidden = !typingStatus;
-        if (typingStatus) {
-          detail.textContent = typingStatus.progress
-            ? `${typingStatus.mask} (${typingStatus.progress})`
-            : typingStatus.mask;
-        }
-      } else if (typingStatus) {
-        const row = document.createElement("div");
-        row.className = "computer-fx-live";
-        row.textContent = typingStatus.progress
-          ? `${typingStatus.mask} (${typingStatus.progress})`
-          : typingStatus.mask;
-        this.runningIndicator.appendChild(row);
-      }
-      this.scrollToBottom();
     }
   }
 
