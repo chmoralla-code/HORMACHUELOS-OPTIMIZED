@@ -564,7 +564,7 @@ class PreviewFrameComputerController {
       element.setRangeText(text, start, end, "end");
       element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
       element.dispatchEvent(new Event("change", { bubbles: true }));
-      return {};
+      return;
     }
     if (clear) {
       const range = this.document.createRange();
@@ -606,18 +606,18 @@ class PreviewFrameComputerController {
         selection?.removeAllRanges();
         selection?.addRange(range);
       }
-      return {};
+      return;
     }
     if (key === "Tab") {
       const focusable = Array.from(this.document.querySelectorAll<HTMLElement>(INTERACTIVE_SELECTOR)).filter((item) => isVisible(item, this.view) && item.tabIndex >= 0);
       const index = Math.max(0, focusable.indexOf(element));
       focusable[(index + (init.shiftKey ? -1 : 1) + focusable.length) % focusable.length]?.focus();
-      return {};
+      return;
     }
     if (key === "Enter") {
       if (isButtonElement(element) || isAnchorElement(element)) element.click();
       else if (isEditable(element)) element.closest("form")?.requestSubmit();
-      return {};
+      return;
     }
     if ((key === "Backspace" || key === "Delete") && (isInputElement(element) || isTextAreaElement(element))) {
       const start = element.selectionStart ?? element.value.length;
