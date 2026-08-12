@@ -83,7 +83,9 @@ function elementScrollPosition(element: Element): PreviewScrollPosition {
 }
 
 function isScrollableElement(element: Element, view: Window): element is HTMLElement {
-  if (!isHtmlElement(element)) return false;
+  if (!isHtmlElement(element)
+    || element === view.document.body
+    || element === view.document.documentElement) return false;
   const position = elementScrollPosition(element);
   if (position.maxX <= 1 && position.maxY <= 1) return false;
   const style = view.getComputedStyle(element);
@@ -221,12 +223,18 @@ class PreviewFrameComputerController {
   observe(): Record<string, unknown> {
     const elements: ObservedElement[] = [];
     this.refs.clear();
-    const candidates = Array.from(new Set<Element>([
-      ...Array.from(this.document.querySelectorAll(INTERACTIVE_SELECTOR)),
-      ...Array.from(this.document.querySelectorAll("*"))
-        .filter((element) => isScrollableElement(element, this.view)),
-    ]));
-    for (const element of candidates) {
+    const interactive = Array.from(this.document.querySelectorAll(INTERACTIVE_SELECTOR));
+    const candidates = new Set<Element>(interactive);
+    const addScrollableAncestors = (seed: Element | null) => {
+      let node = seed;
+      while (node) {
+        if (isScrollableElement(node, this.view)) candidates.add(node);
+        node = node.parentElement;
+      }
+    };
+    addScrollableAncestors(this.document.elementFromPoint(this.cursorPoint.x, this.cursorPoint.y));
+    for (const element of interactive) addScrollableAncestors(element);
+    for (const element of Array.from(candidates)) {
       if (elements.length >= 80 || !isVisible(element, this.view)) continue;
       const rect = element.getBoundingClientRect();
       const ref = `p${elements.length + 1}`;
@@ -273,8 +281,35 @@ class PreviewFrameComputerController {
       },
       cursor: { x: Math.round(this.cursorPoint.x), y: Math.round(this.cursorPoint.y) },
       elements,
+      content: this.visibleSemanticContent(),
       hint: "Use element refs with computer_actions. Scrollable regions include scroll x/y/maxX/maxY; use their ref for nested panes. viewport.scrollY is page-only. Coordinates are relative to this preview viewport.",
     };
+  }
+
+  private visibleSemanticContent(): Array<Record<string, unknown>> {
+    const content: Array<Record<string, unknown>> = [];
+    const seen = new Set<string>();
+    let totalChars = 0;
+    const selector = "h1,h2,h3,h4,h5,h6,p,li,th,td,[role='heading'],[role='row'],[role='cell']";
+    for (const element of Array.from(this.document.querySelectorAll(selector))) {
+      if (content.length >= 40 || totalChars >= 6_000 || !isVisible(element, this.view)) continue;
+      const text = compact((element as HTMLElement).innerText || element.textContent, 300);
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      totalChars += text.length;
+      const rect = element.getBoundingClientRect();
+      content.push({
+        tag: element.tagName.toLowerCase(),
+        text,
+        rect: {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+      });
+    }
+    return content;
   }
 
   async runActions(actions: PreviewComputerAction[]): Promise<Record<string, unknown>> {
