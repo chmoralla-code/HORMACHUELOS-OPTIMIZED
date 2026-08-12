@@ -50,6 +50,9 @@ jobs:
       - name: Run Preview Computer Use isolation guards
         run: npm run test:computer-use
 
+      - name: Run Ask reliability and prompt-activation guards
+        run: npm run test:ask-mode
+
       - name: Run reply-formatting guard
         run: npm run test:reply-formatting
 
@@ -75,17 +78,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Preview Computer Use Beta
+          releaseName: Hormachuelos Optimized v__VERSION__ · Ask Max + Computer Use Menu
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
-            Preview Computer Use v2:
-            - visible luminous AI cursor inside the active Preview tab only
-            - auto-approved hover, click, type, key, scroll, drag, and wait batches
-            - works with project previews and isolated Preview Browser tabs
+            Ask Max + Preview Computer Use:
+            - new Computer Use control in the Preview hamburger menu: Off, Auto, or On
+            - Auto recognizes clear Playwright, browser-test, and Preview-debug requests
+            - direct “enable/disable computer use” prompts update the visible policy
+            - AI cursor remains strictly limited to the active Preview tab
+            - silent direct-provider and Cursor completions automatically retry from saved state
+            - Ask defaults to Answer Max with stronger evidence synthesis and organized layout
             - stops on tab switch, Preview close, cancellation, Pause, or Ctrl+Alt+Esc
-            - removes native desktop screenshots, mouse/keyboard injection, and the full-screen overlay
-            - preserves the optimized chat, Source Lens, Design Mode, session, and model improvements from v1.0.2
+            - preserves all FPS, Source Lens, Design Mode, session, and model improvements
 
             Download page: https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/
           releaseDraft: false
