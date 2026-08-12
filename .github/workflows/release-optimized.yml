@@ -78,20 +78,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Preview Computer Use Action Fix
+          releaseName: Hormachuelos Optimized v__VERSION__ · Localhost Computer Use Fix
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
-            Preview Computer Use reliability:
-            - fixes Ask mode exposing observation while silently removing click, hover, type, key, scroll, drag, and wait actions
-            - "playwright this website" and equivalent prompts now drive the live Preview before source inspection or test authoring
-            - Cursor and direct providers now receive the same Preview-only computer_observe + computer_actions contract
-            - adds an executable Ask-mode host-tool round-trip regression to prevent observation-only releases
+            Localhost Preview Computer Use fix:
+            - routes localhost and 127.0.0.1 development servers through the native Preview Browser instead of a cross-origin project iframe
+            - automatically upgrades already-open and restored legacy localhost tabs before the first Computer Use observation or action
+            - preserves the exact project URL, port, Preview title, session state, and active-tab-only safety boundary
+            - removes the manual “open this URL as a browser tab” workaround shown by v1.2.1-1
+            - adds an executable URL-routing regression plus integration guards that prevent direct localhost iframe loading from returning
 
             Ask Max + Preview Computer Use:
             - Computer Use control in the Preview hamburger menu: Off, Auto, or On
             - Auto recognizes clear Playwright, browser-test, and Preview-debug requests
-            - direct “enable/disable computer use” prompts update the visible policy
+            - "playwright this website" drives the live Preview before source inspection or test authoring
+            - Cursor and direct providers receive the same Preview-only computer_observe + computer_actions contract
             - AI cursor remains strictly limited to the active Preview tab
             - silent direct-provider and Cursor completions automatically retry from saved state
             - Ask defaults to Answer Max with stronger evidence synthesis and organized layout

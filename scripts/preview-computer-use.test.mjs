@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
+import {
+  isExternalPreviewUrl,
+  previewTabKindForEntry,
+} from "../src/components/preview-url-policy.ts";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
@@ -18,6 +22,25 @@ const removedDesktopSymbols = [
   "SetCursorPos", "SendInput", "PrintWindow", "EnumWindows", "GetForegroundWindow",
   "computer_list_windows", "computer_focus_window", "computer_game_sequence",
 ];
+
+test("localhost project servers always use the native Preview Browser", () => {
+  for (const url of [
+    "http://localhost:3000",
+    "http://localhost:3100/supervisor/incident-reports",
+    "http://127.0.0.1:3000/",
+    "https://127.0.0.1:8443/path",
+  ]) {
+    assert.equal(isExternalPreviewUrl(url), true, `${url} must be recognized as local`);
+    assert.equal(
+      previewTabKindForEntry(url, "preview"),
+      "browser",
+      `${url} must never be persisted as a project iframe`,
+    );
+  }
+  assert.equal(previewTabKindForEntry("index.html", "preview"), "preview");
+  assert.equal(previewTabKindForEntry("index.html", "browser"), "browser");
+  assert.equal(isExternalPreviewUrl("https://example.com"), false);
+});
 
 test("computer broker contains no native desktop input path", () => {
   for (const symbol of removedDesktopSymbols) {
@@ -58,11 +81,14 @@ test("all model runtimes receive the same Preview-only tool contract", () => {
 });
 
 test("frontend always selects the active Preview tab and stops on tab changes", () => {
-  assert.match(preview, /const tab = this\.activeTab/);
+  assert.match(preview, /let tab = this\.activeTab/);
   assert.match(preview, /tab\.kind === "browser"/);
   assert.match(preview, /runFrameComputerUse\(tab\.frame, request\)/);
   assert.match(preview, /this\.activeTabId !== tabId\) this\.stopComputerUse\(\)/);
   assert.match(preview, /isCrossOriginFrame\(tab\.frame\)/);
+  assert.match(preview, /promoteExternalPreviewTab\(tab/);
+  assert.match(preview, /previewTabKindForEntry\(clean\) === "browser"/);
+  assert.doesNotMatch(preview, /frame\.src\s*=\s*tab\.entryPath/);
 });
 
 test("project and Browser tabs render a compositor-friendly in-preview cursor", () => {
