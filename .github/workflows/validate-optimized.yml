@@ -43,6 +43,9 @@ jobs:
       - name: Run Preview Computer Use isolation guards
         run: npm run test:computer-use
 
+      - name: Run Ask reliability and prompt-activation guards
+        run: npm run test:ask-mode
+
       - name: Run reply-formatting guard
         run: npm run test:reply-formatting
 
