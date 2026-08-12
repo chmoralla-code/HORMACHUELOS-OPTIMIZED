@@ -185,8 +185,7 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
             .context("activate_tab requires tab_id from computer_observe.")?;
         ensure!(
             tab_id.len() <= 128
-                && (tab_id.starts_with("preview-tab-")
-                    || tab_id.starts_with("preview-browser-"))
+                && (tab_id.starts_with("preview-tab-") || tab_id.starts_with("preview-browser-"))
                 && tab_id
                     .bytes()
                     .all(|value| value.is_ascii_alphanumeric() || value == b'-'),
@@ -426,11 +425,7 @@ mod tests {
             json!({ "type": "activate_tab", "tab_id": "preview-browser-42" }),
         ] {
             assert_eq!(
-                validate_tool_request(
-                    "computer_actions",
-                    &json!({ "actions": [action] })
-                )
-                .unwrap(),
+                validate_tool_request("computer_actions", &json!({ "actions": [action] })).unwrap(),
                 "actions"
             );
         }
