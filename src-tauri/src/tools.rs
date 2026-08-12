@@ -27,6 +27,13 @@ pub type ConsoleLineCallback = dyn Fn(&str, &str) + Send + Sync;
 pub struct ToolRunContext {
     pub cancel: Arc<AtomicBool>,
     pub active_pid: Arc<Mutex<Option<u32>>>,
+    /// Immutable owner used to route Preview Computer Use to one chat session.
+    pub session_id: String,
+    /// Immutable project owner captured when the run starts.
+    pub project_root: String,
+    /// Per-run identity that prevents a later run in the same session from
+    /// accepting a stale Preview request.
+    pub run_nonce: String,
     /// Optional live console callback: (stream "stdout"|"stderr", line).
     pub on_console_line: Option<Arc<ConsoleLineCallback>>,
     /// Copy-on-write journal for agent-owned workspace mutations.
@@ -36,14 +43,50 @@ pub struct ToolRunContext {
 }
 
 impl ToolRunContext {
+    #[allow(clippy::too_many_arguments)]
+    pub fn owned(
+        session_id: impl Into<String>,
+        project_root: impl Into<String>,
+        run_nonce: impl Into<String>,
+        cancel: Arc<AtomicBool>,
+        active_pid: Arc<Mutex<Option<u32>>>,
+        on_console_line: Option<Arc<ConsoleLineCallback>>,
+        checkpoint: Option<Arc<crate::checkpoint::RunCheckpoint>>,
+        protect_command_changes: bool,
+    ) -> Self {
+        Self {
+            cancel,
+            active_pid,
+            session_id: session_id.into(),
+            project_root: project_root.into(),
+            run_nonce: run_nonce.into(),
+            on_console_line,
+            checkpoint,
+            protect_command_changes,
+        }
+    }
+
     pub fn noop() -> Self {
         Self {
             cancel: Arc::new(AtomicBool::new(false)),
             active_pid: Arc::new(Mutex::new(None)),
+            session_id: String::new(),
+            project_root: String::new(),
+            run_nonce: String::new(),
             on_console_line: None,
             checkpoint: None,
             protect_command_changes: false,
         }
+    }
+
+    pub fn require_preview_owner(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.session_id.trim().is_empty()
+                && !self.project_root.trim().is_empty()
+                && !self.run_nonce.trim().is_empty(),
+            "Preview Computer Use requires an owning session, project, and run."
+        );
+        Ok(())
     }
 }
 
@@ -3582,7 +3625,7 @@ pub fn execute(
             "ask_user is handled by the agent loop, not tools::execute"
         )),
         "computer_observe" | "computer_actions" => {
-            let result = crate::computer_use::execute_tool(name, args, ctx.cancel.as_ref())?;
+            let result = crate::computer_use::execute_tool(name, args, ctx)?;
             Ok(serde_json::to_string(&result)?)
         }
             other => Err(anyhow::anyhow!(

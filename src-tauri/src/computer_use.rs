@@ -41,8 +41,29 @@ pub struct ComputerUseStatus {
 struct PreviewComputerRequest {
     request_id: String,
     protocol_version: u8,
+    session_id: String,
+    project_root: String,
+    run_nonce: String,
     operation: &'static str,
     args: Value,
+}
+
+fn preview_computer_request(
+    request_id: String,
+    operation: &'static str,
+    args: Value,
+    owner: &crate::tools::ToolRunContext,
+) -> Result<PreviewComputerRequest> {
+    owner.require_preview_owner()?;
+    Ok(PreviewComputerRequest {
+        request_id,
+        protocol_version: 3,
+        session_id: owner.session_id.clone(),
+        project_root: owner.project_root.clone(),
+        run_nonce: owner.run_nonce.clone(),
+        operation,
+        args,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -291,7 +312,7 @@ fn validate_tool_request(name: &str, args: &Value) -> Result<&'static str> {
 pub fn execute_tool(
     name: &str,
     args: &Value,
-    cancel: &std::sync::atomic::AtomicBool,
+    owner: &crate::tools::ToolRunContext,
 ) -> Result<Value> {
     ensure!(
         !is_paused(),
@@ -312,12 +333,8 @@ pub fn execute_tool(
         .map_err(|_| anyhow::anyhow!("Preview Computer Use response registry is unavailable."))?
         .insert(request_id.clone(), tx);
 
-    let request = PreviewComputerRequest {
-        request_id: request_id.clone(),
-        protocol_version: 2,
-        operation,
-        args: args.clone(),
-    };
+    let request =
+        preview_computer_request(request_id.clone(), operation, args.clone(), owner)?;
     if let Err(error) = app.emit("preview-computer-request", &request) {
         let _ = pending().lock().map(|mut map| map.remove(&request_id));
         return Err(error).context("Could not send the action to the active Preview tab.");
@@ -325,7 +342,7 @@ pub fn execute_tool(
 
     let started = Instant::now();
     loop {
-        if cancel.load(Ordering::SeqCst) {
+        if owner.cancel.load(Ordering::SeqCst) {
             let _ = pending().lock().map(|mut map| map.remove(&request_id));
             let _ = app.emit(
                 "preview-computer-stop",
@@ -434,8 +451,49 @@ pub fn install_emergency_hotkey(_app: AppHandle) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{status, validate_tool_request, MAX_ACTIONS};
+    use super::{preview_computer_request, status, validate_tool_request, MAX_ACTIONS};
+    use crate::tools::ToolRunContext;
     use serde_json::json;
+
+    #[test]
+    fn serialized_v3_request_carries_immutable_owner_envelope() {
+        let owner = ToolRunContext::owned(
+            "session-crispy",
+            r"C:\projects\crispy",
+            "run-42",
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+            None,
+            None,
+            false,
+        );
+        let request = preview_computer_request(
+            "request-7".into(),
+            "observe",
+            json!({}),
+            &owner,
+        )
+        .unwrap();
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["protocolVersion"], 3);
+        assert_eq!(value["requestId"], "request-7");
+        assert_eq!(value["sessionId"], "session-crispy");
+        assert_eq!(value["projectRoot"], r"C:\projects\crispy");
+        assert_eq!(value["runNonce"], "run-42");
+        assert_eq!(value["operation"], "observe");
+    }
+
+    #[test]
+    fn noop_context_cannot_issue_preview_requests() {
+        let error = preview_computer_request(
+            "request-noop".into(),
+            "observe",
+            json!({}),
+            &ToolRunContext::noop(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("owning session"));
+    }
 
     #[test]
     fn exposes_only_preview_scope() {
