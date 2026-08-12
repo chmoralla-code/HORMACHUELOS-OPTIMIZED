@@ -126,6 +126,10 @@ function makeScene() {
     id: "deadline", type: "date", parent: body, top: 500, left: 100,
     width: 220, height: 40, value: "", required: true,
   });
+  const password = new FakeElement("input", {
+    id: "password", type: "password", parent: body, top: 545, left: 100,
+    width: 220, height: 36, value: "",
+  });
 
   const hitPane = (x, y) => x >= 100 && x <= 700 && y >= 150 && y <= 450;
   const document = {
@@ -141,11 +145,14 @@ function makeScene() {
       ? pane
       : selector === "#deadline"
         ? deadline
-        : null,
+        : selector === "#password"
+          ? password
+          : null,
     querySelectorAll: (selector) => {
       if (selector === "#roles-table") return [pane];
       if (selector === "#deadline") return [deadline];
-      if (String(selector).includes("input")) return [deadline];
+      if (selector === "#password") return [password];
+      if (String(selector).includes("input")) return [deadline, password];
       if (selector === "[data-horma-ai-ref]") {
         return pane.hasAttribute("data-horma-ai-ref") ? [pane] : [];
       }
@@ -154,7 +161,7 @@ function makeScene() {
     createElement: (tag) => new FakeElement(tag),
   };
 
-  return { page, head, body, pane, cell, deadline, document };
+  return { page, head, body, pane, cell, deadline, password, document };
 }
 
 function setRootScroll(scene, y, mirror) {
@@ -227,7 +234,7 @@ async function exerciseScrollRuntime({ scene, drive, observe, setPageY }) {
 }
 
 
-async function exerciseNativeControlRuntime({ scene, drive }) {
+async function exerciseNativeControlRuntime({ scene, drive, observe }) {
   let result = await drive([
     { type: "set_value", selector: "#deadline", value: "2026-08-31" },
     {
@@ -257,6 +264,26 @@ async function exerciseNativeControlRuntime({ scene, drive }) {
   assert.equal(result.passed, false);
   assert.equal(result.failedChecks, 1);
   assert.deepEqual(Array.from(result.results[0].failures), ["value"]);
+
+  result = await drive([
+    { type: "set_value", selector: "#password", value: "never-expose-this-secret" },
+    {
+      type: "check",
+      selector: "#password",
+      match: "equals",
+      expect: { value: "[redacted]" },
+    },
+  ]);
+  assert.equal(scene.password.value, "never-expose-this-secret");
+  assert.equal(result.results[0].value, "[redacted]");
+  assert.equal(result.results[1].actual.value, "[redacted]");
+  assert.equal(result.results[1].passed, true);
+  assert.doesNotMatch(JSON.stringify(result), /never-expose-this-secret/);
+
+  const observation = await observe();
+  const passwordTarget = observation.elements.find((element) => element.selector === "#password");
+  assert.equal(passwordTarget?.inputType, "password");
+  assert.equal(Object.hasOwn(passwordTarget || {}, "value"), false);
 }
 
 function compileTypeScript(source) {
@@ -329,7 +356,11 @@ test("same-origin controller scrolls nested panes and chains at their boundary",
     observe: () => runFrameComputerUse(frame, request("observe")),
     setPageY: (y) => setRootScroll(scene, y, (value) => { view.scrollY = value; }),
   });
-  await exerciseNativeControlRuntime({ scene, drive });
+  await exerciseNativeControlRuntime({
+    scene,
+    drive,
+    observe: () => runFrameComputerUse(frame, request("observe")),
+  });
 });
 
 function extractNativeBrowserController() {
@@ -386,5 +417,9 @@ test("native Preview Browser script scrolls nested panes and chains at their bou
     observe: () => controller.observe(),
     setPageY: (y) => setRootScroll(scene, y, (value) => { context.scrollY = value; }),
   });
-  await exerciseNativeControlRuntime({ scene, drive });
+  await exerciseNativeControlRuntime({
+    scene,
+    drive,
+    observe: () => controller.observe(),
+  });
 });
