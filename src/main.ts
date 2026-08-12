@@ -1707,9 +1707,11 @@ async function selectProject(path: string, options: { quickSession?: boolean } =
   persistCurrentSession();
   flushSessionSaves();
   // Both commands atomically set the native root and return the canonical path.
-  const canonicalPath = await serializeProjectRootMutation(() => quickSession
-    ? api.ensureQuickSessionWorkspace()
-    : api.setProjectRoot(path));
+  const canonicalPath = await serializeProjectRootMutation(async () => {
+    if (!quickSession) return api.setProjectRoot(path);
+    const quickPath = await api.ensureQuickSessionWorkspace();
+    return api.setProjectRoot(quickPath);
+  });
   if (selectionGeneration !== projectSelectionGeneration) return;
   if (quickSession) quickSessionWorkspacePath = canonicalPath;
   const wasRepaired = !quickSession && !sameProjectPath(path, canonicalPath);
@@ -2244,7 +2246,11 @@ function handleAgentEvent(e: AgentEvent) {
   if (sid) startingSessions.delete(sid);
   if (sid && isTerminalAgentEvent(e)) scheduleTerminalRunReconciliation(sid);
   if (e.kind === "tool_call" || e.kind === "tool_result") routeVerifiedDevServerEvent(e);
-  if (sid && isTerminalAgentEvent(e)) clearPendingDevServerTools(sid);
+  if (sid && isTerminalAgentEvent(e)) {
+    clearPendingDevServerTools(sid);
+    // Immediately invalidates detached lease-readiness polls and late CU requests.
+    activeRunNonces.delete(sid);
+  }
   const owningSession = sid ? sessionForId(sid) : undefined;
   const smartStateChanged = owningSession ? applySmartAgentEvent(owningSession, e) : false;
   if (e.kind === "start") {

@@ -2100,19 +2100,21 @@ export class SitePreview {
     return tab;
   }
 
-  private async requireActiveLocalLease(tab: PreviewTab): Promise<void> {
-    if (tab.kind !== "browser" || !isExternalPreviewUrl(tab.entryPath)) return;
+  private async localUrlHasLiveLease(tab: PreviewTab, url: string): Promise<boolean> {
+    if (tab.kind !== "browser" || !isExternalPreviewUrl(url)) return true;
     const leaseId = tab.serverLeaseId?.trim();
-    const validation = leaseId
-      ? await api.validateDevServerLease(leaseId, this.projectRoot, tab.entryPath)
-          .catch(() => null)
-      : null;
-    if (
-      validation?.valid === true
+    if (!leaseId) return false;
+    const validation = await api.validateDevServerLease(
+      leaseId,
+      this.projectRoot,
+      url,
+    ).catch(() => null);
+    return validation?.valid === true
       && validation.ready === true
-      && validation.leaseId === leaseId
-    ) return;
+      && validation.leaseId === leaseId;
+  }
 
+  private async downgradeLocalServerTab(tab: PreviewTab): Promise<void> {
     tab.serverStatus = "restart_required";
     tab.serverLeaseId = undefined;
     if (tab.browserReady || tab.browserCreating) {
@@ -2120,8 +2122,14 @@ export class SitePreview {
     }
     tab.browserReady = false;
     tab.browserCreating = null;
+    tab.browserLoading = false;
     this.renderServerRestartState(tab);
     this.emitStateChange();
+  }
+
+  private async requireActiveLocalLease(tab: PreviewTab): Promise<void> {
+    if (await this.localUrlHasLiveLease(tab, tab.entryPath)) return;
+    await this.downgradeLocalServerTab(tab);
     throw new Error(
       "Computer Use refused this localhost page because its live server lease no longer belongs to the active project. Restart it with start_dev_server.",
     );
@@ -2823,7 +2831,15 @@ export class SitePreview {
     }
     if (event.kind === "popup") {
       const target = normalizeBrowserUrl(event.url);
-      if (target) await this.navigateBrowserTab(tab, target);
+      if (target && isExternalPreviewUrl(target)) {
+        if (!await this.localUrlHasLiveLease(tab, target)) {
+          await this.downgradeLocalServerTab(tab);
+          return;
+        }
+        await this.navigateBrowserTab(tab, target, tab.serverLeaseId);
+      } else if (target) {
+        await this.navigateBrowserTab(tab, target);
+      }
       return;
     }
     if (event.kind === "blocked") {
@@ -2834,7 +2850,15 @@ export class SitePreview {
     }
 
     const url = normalizeBrowserUrl(event.url);
-    if (url) this.recordBrowserLocation(tab, url);
+    if (url && isExternalPreviewUrl(url)) {
+      if (!await this.localUrlHasLiveLease(tab, url)) {
+        await this.downgradeLocalServerTab(tab);
+        return;
+      }
+      this.recordBrowserLocation(tab, url, tab.serverLeaseId);
+    } else if (url) {
+      this.recordBrowserLocation(tab, url);
+    }
     if (event.kind === "title") this.updateBrowserTabTitle(tab, event.title);
     if (event.kind === "loading") {
       tab.browserLoading = true;

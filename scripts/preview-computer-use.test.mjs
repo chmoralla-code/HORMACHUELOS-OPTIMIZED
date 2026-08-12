@@ -11,6 +11,7 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 const broker = read("src-tauri/src/computer_use.rs");
 const tools = read("src-tauri/src/tools.rs");
 const devServer = read("src-tauri/src/dev_server.rs");
+const nativeLib = read("src-tauri/src/lib.rs");
 const cursorBridge = read("src-tauri/src/cursor_bridge.rs");
 const preview = read("src/components/site-preview.ts");
 const main = read("src/main.ts");
@@ -211,7 +212,12 @@ test("Preview routing rejects stale project/session owners across async boundari
   assert.match(ipc, /sessionId: string;[\s\S]*projectRoot: string;[\s\S]*runNonce: string;/);
 
   assert.match(main, /let projectRootMutationQueue: Promise<void> = Promise\.resolve\(\)/);
-  assert.match(main, /serializeProjectRootMutation\(\(\) => quickSession[\s\S]*api\.ensureQuickSessionWorkspace\(\)[\s\S]*api\.setProjectRoot\(path\)/);
+  assert.match(main, /serializeProjectRootMutation\(async \(\) => \{[\s\S]*if \(!quickSession\) return api\.setProjectRoot\(path\);[\s\S]*const quickPath = await api\.ensureQuickSessionWorkspace\(\);[\s\S]*return api\.setProjectRoot\(quickPath\)/);
+  const ensureQuickStart = nativeLib.indexOf("fn ensure_quick_session_workspace");
+  const ensureQuickEnd = nativeLib.indexOf("#[tauri::command]", ensureQuickStart + 10);
+  const ensureQuick = nativeLib.slice(ensureQuickStart, ensureQuickEnd);
+  assert.doesNotMatch(ensureQuick, /tauri::State|state\.project_root|state:/,
+    "Quick workspace discovery must not mutate the native active root outside the selection queue");
   const quickOpenStart = main.indexOf("async function openQuickSessionWorkspace");
   const quickOpenEnd = main.indexOf("function repairProjectRootReferences", quickOpenStart);
   const quickOpen = main.slice(quickOpenStart, quickOpenEnd);
@@ -327,6 +333,7 @@ test("verified server routing waits for ownership and bypasses broad run dedupe"
   assert.match(main, /if \(!stillOwnsRun\(\)\) return;[\s\S]*await api\.validateDevServerLease/);
   assert.match(main, /const runNonce = activeRunNonces\.get\(sid\)/);
   assert.match(main, /\{ sessionId: sid, projectRoot, runNonce \}/);
+  assert.match(main, /if \(sid && isTerminalAgentEvent\(e\)\) \{[\s\S]*activeRunNonces\.delete\(sid\)/);
 });
 
 test("Computer Use rejects guessed localhost before frontend dispatch", () => {
@@ -336,7 +343,8 @@ test("Computer Use rejects guessed localhost before frontend dispatch", () => {
   assert.match(preview, /api\.validateDevServerLease\(null, this\.projectRoot, url\)/);
   assert.match(preview, /validation\?\.valid !== true \|\| validation\.ready !== true/);
   assert.match(preview, /private async requireActiveLocalLease\(tab: PreviewTab\)/);
-  assert.match(preview, /api\.validateDevServerLease\(leaseId, this\.projectRoot, tab\.entryPath\)/);
+  assert.match(preview, /api\.validateDevServerLease\(\s*leaseId,\s*this\.projectRoot,\s*url,?\s*\)/);
+  assert.match(preview, /if \(url && isExternalPreviewUrl\(url\)\)[\s\S]*localUrlHasLiveLease\(tab, url\)[\s\S]*downgradeLocalServerTab\(tab\)/);
   assert.match(preview, /validation\.leaseId === leaseId/);
   assert.match(preview, /await api\.closePreviewBrowser\(tab\.id\)/);
   assert.match(preview, /await this\.requireActiveLocalLease\(tab\)/);
