@@ -1535,6 +1535,55 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
     items
 }
 
+fn computer_check_expect_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "One or more expected states for check.",
+        "properties": {
+            "visible": { "type": "boolean" },
+            "enabled": { "type": "boolean" },
+            "checked": { "type": "boolean" },
+            "text": { "type": "string", "maxLength": 500 },
+            "value": { "type": "string", "maxLength": 500 },
+            "url": { "type": "string", "maxLength": 2048 },
+            "title": { "type": "string", "maxLength": 500 }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn computer_action_item_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "type": { "type": "string", "enum": ["move", "hover", "click", "type", "set_value", "key", "scroll", "drag", "check", "wait", "open_tab", "navigate", "activate_tab"] },
+            "ref": { "type": "string", "description": "Interactive or scrollable element ref returned by computer_observe. For nested scrolling, use the pane ref or any descendant ref." },
+            "selector": { "type": "string", "description": "CSS selector fallback within the active Preview page." },
+            "x": { "type": "number", "description": "Viewport X coordinate fallback." },
+            "y": { "type": "number", "description": "Viewport Y coordinate fallback." },
+            "end_ref": { "type": "string", "description": "Drag destination ref." },
+            "end_selector": { "type": "string", "description": "Drag destination selector." },
+            "end_x": { "type": "number" },
+            "end_y": { "type": "number" },
+            "text": { "type": "string", "maxLength": 16384 },
+            "value": { "type": "string", "maxLength": 16384, "description": "Exact standards-format value for set_value. Dates use YYYY-MM-DD; time uses HH:MM; datetime-local uses YYYY-MM-DDTHH:MM." },
+            "clear": { "type": "boolean", "description": "Replace current editable content before typing." },
+            "keys": { "type": "string", "description": "Key/chord such as Enter, Tab, Escape, Ctrl+A. Win/Meta is blocked." },
+            "button": { "type": "string", "enum": ["left", "right", "middle"] },
+            "clicks": { "type": "integer", "enum": [1, 2] },
+            "delta_x": { "type": "number", "minimum": -4000, "maximum": 4000 },
+            "delta_y": { "type": "number", "minimum": -4000, "maximum": 4000, "description": "Positive scrolls down; negative scrolls up. Read moved/boundary and before/after in the action result." },
+            "duration_ms": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "Optional movement/wait duration. Omit for fast distance-adaptive cursor motion." },
+            "match": { "type": "string", "enum": ["contains", "equals"], "description": "Comparison mode for check; defaults to case-insensitive contains for strings." },
+            "expect": computer_check_expect_schema(),
+            "url": { "type": "string", "maxLength": 4096, "description": "Required safe http(s) URL for open_tab or navigate. Opens inside Preview, never the system browser." },
+            "tab_id": { "type": "string", "maxLength": 128, "description": "Required exact tab id from computer_observe for activate_tab." }
+        },
+        "required": ["type"],
+        "additionalProperties": false
+    })
+}
+
 fn computer_tool_schemas() -> Vec<Value> {
     vec![
         json!({
@@ -1561,48 +1610,7 @@ fn computer_tool_schemas() -> Vec<Value> {
                             "type": "array",
                             "minItems": 1,
                             "maxItems": 48,
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "type": { "type": "string", "enum": ["move", "hover", "click", "type", "set_value", "key", "scroll", "drag", "check", "wait", "open_tab", "navigate", "activate_tab"] },
-                                    "ref": { "type": "string", "description": "Interactive or scrollable element ref returned by computer_observe. For nested scrolling, use the pane ref or any descendant ref." },
-                                    "selector": { "type": "string", "description": "CSS selector fallback within the active Preview page." },
-                                    "x": { "type": "number", "description": "Viewport X coordinate fallback." },
-                                    "y": { "type": "number", "description": "Viewport Y coordinate fallback." },
-                                    "end_ref": { "type": "string", "description": "Drag destination ref." },
-                                    "end_selector": { "type": "string", "description": "Drag destination selector." },
-                                    "end_x": { "type": "number" },
-                                    "end_y": { "type": "number" },
-                                    "text": { "type": "string", "maxLength": 16384 },
-                                    "value": { "type": "string", "maxLength": 16384, "description": "Exact standards-format value for set_value. Dates use YYYY-MM-DD; time uses HH:MM; datetime-local uses YYYY-MM-DDTHH:MM." },
-                                    "clear": { "type": "boolean", "description": "Replace current editable content before typing." },
-                                    "keys": { "type": "string", "description": "Key/chord such as Enter, Tab, Escape, Ctrl+A. Win/Meta is blocked." },
-                                    "button": { "type": "string", "enum": ["left", "right", "middle"] },
-                                    "clicks": { "type": "integer", "enum": [1, 2] },
-                                    "delta_x": { "type": "number", "minimum": -4000, "maximum": 4000 },
-                                    "delta_y": { "type": "number", "minimum": -4000, "maximum": 4000, "description": "Positive scrolls down; negative scrolls up. Read moved/boundary and before/after in the action result." },
-                                    "duration_ms": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "Optional movement/wait duration. Omit for fast distance-adaptive cursor motion." },
-                                    "match": { "type": "string", "enum": ["contains", "equals"], "description": "Comparison mode for check; defaults to case-insensitive contains for strings." },
-                                    "expect": {
-                                      "type": "object",
-                                      "description": "One or more expected states for check.",
-                                      "properties": {
-                                        "visible": { "type": "boolean" },
-                                        "enabled": { "type": "boolean" },
-                                        "checked": { "type": "boolean" },
-                                        "text": { "type": "string", "maxLength": 500 },
-                                        "value": { "type": "string", "maxLength": 500 },
-                                        "url": { "type": "string", "maxLength": 2048 },
-                                        "title": { "type": "string", "maxLength": 500 }
-                                      },
-                                      "additionalProperties": false
-                                    },
-                                    "url": { "type": "string", "maxLength": 4096, "description": "Required safe http(s) URL for open_tab or navigate. Opens inside Preview, never the system browser." },
-                                    "tab_id": { "type": "string", "maxLength": 128, "description": "Required exact tab id from computer_observe for activate_tab." }
-                                },
-                                "required": ["type"],
-                                "additionalProperties": false
-                            }
+                            "items": computer_action_item_schema()
                         }
                     },
                     "required": ["actions"],
