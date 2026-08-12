@@ -110,6 +110,8 @@ export type PreviewComputerRequest = {
   /** Session and canonical root captured atomically by the native broker. */
   sessionId: string;
   projectRoot: string;
+  /** Unique native run generation; prevents a finished run from driving a newer Preview. */
+  runNonce: string;
   operation: "observe" | "actions";
   args: Record<string, unknown>;
 };

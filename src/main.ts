@@ -2619,6 +2619,7 @@ async function init() {
         const ownerSession = sessionForId(request.sessionId);
         if (
           !ownerSession
+          || !request.runNonce?.trim()
           || request.sessionId !== activeSessionId
           || !currentProjectPath
           || !sameProjectPath(request.projectRoot, currentProjectPath)

@@ -12,6 +12,9 @@ const broker = read("src-tauri/src/computer_use.rs");
 const tools = read("src-tauri/src/tools.rs");
 const cursorBridge = read("src-tauri/src/cursor_bridge.rs");
 const preview = read("src/components/site-preview.ts");
+const main = read("src/main.ts");
+const ipc = read("src/ipc.ts");
+const session = read("src/components/session.ts");
 const frameController = read("src/components/preview-computer-use.ts");
 const browserController = read("src-tauri/src/preview_browser.rs");
 const agent = read("src-tauri/src/agent.rs");
@@ -199,4 +202,35 @@ test("desktop overlay assets stay deleted", () => {
   ]) {
     assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), false, `${path} must remain removed`);
   }
+});
+test("Preview routing rejects stale project/session owners across async boundaries", () => {
+  assert.match(ipc, /setProjectRoot: \(path: string\): Promise<string>/);
+  assert.match(ipc, /sessionId: string;[\s\S]*projectRoot: string;[\s\S]*runNonce: string;/);
+
+  const selectStart = main.indexOf("async function selectProject");
+  const selectAwait = main.indexOf("await api.setProjectRoot(path)", selectStart);
+  const selectGuard = main.indexOf("selectionGeneration !== projectSelectionGeneration", selectAwait);
+  assert.ok(selectStart >= 0 && selectAwait > selectStart && selectGuard > selectAwait,
+    "rapid project switches must be invalidated after canonical-root resolution");
+
+  const openStart = main.indexOf("async function openBuildPreview");
+  const openAwait = main.indexOf("await sitePreview.open", openStart);
+  const openOwnerGuard = main.indexOf("activeSessionId !== expectedActiveSessionId", openAwait);
+  assert.ok(openStart >= 0 && openAwait > openStart && openOwnerGuard > openAwait,
+    "a delayed Preview open must re-check its session owner after awaiting");
+  assert.match(main, /ownerSessionId: targetSessionId \?\? null/);
+  assert.match(main, /persistPreviewForSession\(owner\.sessionId, preview\)/);
+  assert.match(main, /!request\.runNonce\?\.trim\(\)/);
+  assert.match(main, /!sitePreview\.ownsView\(request\.sessionId, request\.projectRoot\)/);
+
+  const restoreStart = preview.indexOf("async restoreSessionState");
+  const activeAssignment = preview.indexOf("this.activeTabId = this.tabs[activeIndex].id", restoreStart);
+  const firstReload = preview.indexOf("await this.reloadTab(tab)", restoreStart);
+  assert.ok(restoreStart >= 0 && activeAssignment > restoreStart && firstReload > activeAssignment,
+    "restoration must expose the intended active tab before asynchronous reloads");
+  assert.match(preview, /const ownerChanged = this\.ownerSessionId !== nextOwnerSessionId/);
+  assert.match(preview, /if \(projectChanged \|\| ownerChanged\)/);
+  assert.match(preview, /Computer Use request owner does not match the active Preview session\/project/);
+  assert.match(session, /serverOwner\?: string/);
+  assert.match(session, /isLocalServer\(entryPath\) && !ownsLocalServer/);
 });

@@ -886,7 +886,6 @@ export class SitePreview {
   private projectRoot = "";
   private ownerSessionId: string | null = null;
   /** Cached project-relative source map used to pre-rank Design Mode edits. */
-  /** Cached project-relative source map used to pre-rank Design Mode edits. */
   private projectFiles: string[] = [];
   private tabs: PreviewTab[] = [];
   private activeTabId = "";
@@ -2017,7 +2016,6 @@ export class SitePreview {
     this.destroyAllTabs();
     this.projectRoot = "";
     this.ownerSessionId = null;
-    this.projectFiles = [];
     this.projectFiles = [];
     this.selected = null;
     this.editInput.value = "";

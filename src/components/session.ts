@@ -282,7 +282,7 @@ const MULTI_AGENT_TOOL_NAME_MAX = 120;
 function safeMultiAgentToolText(value: unknown, max: number): string {
   if (typeof value !== "string") return "";
   return value
-    .replace(/[^@-^_\u007f]/g, " ")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
     .trim()
     .slice(0, max);
 }
@@ -732,7 +732,7 @@ export function snapshotSessionsForUpdate(currentSessions: Iterable<Session>): R
 function sanitizeSessionModelId(value: unknown, max: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const text = value.trim();
-  if (!text || text.length > max || /[^@-^_\u007f]/.test(text)) return undefined;
+  if (!text || text.length > max || /[\u0000-\u001f\u007f]/.test(text)) return undefined;
   return text;
 }
 
