@@ -10,11 +10,13 @@ import {
   type PreviewBrowserEvent,
   type PreviewBrowserFeedback,
   type PreviewBrowserTarget,
+  type PreviewComputerRequest,
   type ProjectNode,
 } from "../ipc";
 import type { SessionPreviewState, SessionPreviewTab } from "./session";
 import { clear, el } from "./util";
 import { icon } from "./icons";
+import { runFrameComputerUse, stopFrameComputerUse } from "./preview-computer-use";
 
 export type PreviewOpenOptions = {
   projectRoot: string;
@@ -1744,6 +1746,7 @@ export class SitePreview {
   }
 
   private teardownSessionView() {
+    this.stopComputerUse();
     this.cancelCloseTeardown();
     this.closeNewTabMenu();
     this.closePreviewActionsMenu();
@@ -1768,6 +1771,48 @@ export class SitePreview {
 
   private get activeTab(): PreviewTab | null {
     return this.tabs.find((tab) => tab.id === this.activeTabId) ?? null;
+  }
+
+  /** Handle one backend request against the tab that is active right now. */
+  async handleComputerUseRequest(request: PreviewComputerRequest): Promise<Record<string, unknown>> {
+    if (!this.isOpen) throw new Error("Open the Preview window before using the AI cursor.");
+    const tab = this.activeTab;
+    if (!tab) throw new Error("No active Preview tab is available for Computer Use.");
+    this.statusEl.textContent = request.operation === "observe"
+      ? "AI cursor is observing this Preview tab…"
+      : "AI cursor is controlling this Preview tab…";
+
+    let result: Record<string, unknown>;
+    if (tab.kind === "browser") {
+      await this.ensureBrowserSurface(tab);
+      if (!tab.browserReady) throw new Error("The active Preview Browser tab is not ready yet.");
+      result = await api.previewBrowserComputer(tab.id, request.operation, request.args);
+    } else {
+      if (isCrossOriginFrame(tab.frame)) {
+        throw new Error("This project iframe is cross-origin. Open its URL in a Preview Browser tab so Computer Use remains inside Preview.");
+      }
+      result = await runFrameComputerUse(tab.frame, request);
+    }
+    this.statusEl.textContent = request.operation === "observe"
+      ? "AI cursor observed the active Preview tab."
+      : "AI cursor finished the Preview action batch.";
+    return {
+      ...result,
+      activeTabId: tab.id,
+      activeTabTitle: tab.title,
+      scope: "active-preview-tab-only",
+    };
+  }
+
+  /** Abort every in-preview controller when paused, cancelled, closed, or switched. */
+  stopComputerUse(): void {
+    for (const tab of this.tabs) {
+      if (tab.kind === "browser") {
+        if (tab.browserReady) void api.previewBrowserComputer(tab.id, "stop", {}).catch(() => undefined);
+      } else {
+        stopFrameComputerUse(tab.frame);
+      }
+    }
   }
 
   private get entryPath(): string {
@@ -2320,6 +2365,7 @@ export class SitePreview {
   private activateTab(tabId: string) {
     const nextTab = this.tabs.find((tab) => tab.id === tabId);
     if (!nextTab) return;
+    if (this.activeTabId && this.activeTabId !== tabId) this.stopComputerUse();
     if (this.selectionModeActive()) this.clearDesignMode();
     this.activeTabId = tabId;
     this.selected = null;
