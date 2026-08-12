@@ -1,6 +1,6 @@
 [package]
 name = "hormachuelos-optimized"
-version = "1.2.2-1"
+version = "1.2.3-1"
 description = "Independent FPS-optimized Hormachuelos desktop AI studio"
 authors = ["Hormachuelos Optimized"]
 edition = "2021"

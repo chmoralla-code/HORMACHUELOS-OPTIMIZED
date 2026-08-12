@@ -17,7 +17,11 @@ import {
 import type { SessionPreviewState, SessionPreviewTab } from "./session";
 import { clear, el } from "./util";
 import { icon } from "./icons";
-import { runFrameComputerUse, stopFrameComputerUse } from "./preview-computer-use";
+import {
+  runFrameComputerUse,
+  stopFrameComputerUse,
+  type PreviewComputerAction,
+} from "./preview-computer-use";
 import {
   isExternalPreviewUrl,
   previewTabKindForEntry,
@@ -1960,9 +1964,22 @@ export class SitePreview {
     return this.tabs.find((tab) => tab.id === this.activeTabId) ?? null;
   }
 
-  /** Handle one backend request against the tab that is active right now. */
-  async handleComputerUseRequest(request: PreviewComputerRequest): Promise<Record<string, unknown>> {
-    if (!this.isOpen) throw new Error("Open the Preview window before using the AI cursor.");
+  /** Expose tab identity only; hidden tab DOM/content remains inaccessible. */
+  private computerUseTabList(): Array<Record<string, unknown>> {
+    return this.tabs.map((tab) => ({
+      id: tab.id,
+      title: tab.title,
+      url: tab.entryPath,
+      kind: tab.kind === "browser" ? "browser" : "project-preview",
+      active: tab.id === this.activeTabId,
+      loading: tab.kind === "browser" && tab.browserLoading === true,
+      ready: tab.kind === "browser"
+        ? tab.browserReady === true && tab.browserLoading !== true
+        : !isCrossOriginFrame(tab.frame),
+    }));
+  }
+
+  private async computerUseActiveTab(): Promise<PreviewTab> {
     let tab = this.activeTab;
     if (!tab) throw new Error("No active Preview tab is available for Computer Use.");
     // Releases before 1.2.2 persisted localhost builds as cross-origin project
@@ -1971,28 +1988,172 @@ export class SitePreview {
     if (tab.kind === "preview" && isExternalPreviewUrl(tab.entryPath)) {
       tab = await this.promoteExternalPreviewTab(tab);
     }
+    return tab;
+  }
+
+  private async runComputerUseOnActiveTab(
+    request: PreviewComputerRequest,
+  ): Promise<Record<string, unknown>> {
+    const tab = await this.computerUseActiveTab();
+    if (tab.kind === "browser") {
+      await this.ensureBrowserSurface(tab);
+      if (!tab.browserReady) throw new Error("The active Preview Browser tab is not ready yet.");
+      return api.previewBrowserComputer(tab.id, request.operation, request.args);
+    }
+    if (isCrossOriginFrame(tab.frame)) {
+      throw new Error("This project iframe is cross-origin. Use a Preview-native navigate or open_tab action so Computer Use remains inside Preview.");
+    }
+    return runFrameComputerUse(tab.frame, request);
+  }
+
+  private async waitForComputerUseBrowserReady(
+    tab: PreviewTab,
+    requestedWaitMs: unknown,
+  ): Promise<boolean> {
+    if (tab.kind !== "browser") return true;
+    await this.ensureBrowserSurface(tab);
+    if (tab.browserFailed || !tab.browserReady) {
+      throw new Error("The selected Preview Browser tab could not be initialized.");
+    }
+    const parsed = Number(requestedWaitMs ?? 8_000);
+    const waitMs = Number.isFinite(parsed)
+      ? Math.max(0, Math.min(10_000, Math.round(parsed)))
+      : 8_000;
+    const deadline = Date.now() + waitMs;
+    while (
+      this.tabs.includes(tab)
+      && tab.browserLoading === true
+      && Date.now() < deadline
+    ) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 60));
+    }
+    if (!this.tabs.includes(tab)) {
+      throw new Error("The selected Preview tab was closed before navigation finished.");
+    }
+    return tab.browserLoading !== true;
+  }
+
+  /**
+   * Open, navigate, or switch tabs inside Preview. These actions are deliberately
+   * single-action batches so the model must observe the newly active page before
+   * reusing element refs.
+   */
+  private async runComputerUseTabAction(
+    action: PreviewComputerAction,
+  ): Promise<Record<string, unknown>> {
+    const kind = action.type;
+    this.stopComputerUse();
+    let tab: PreviewTab | null = null;
+
+    if (kind === "activate_tab") {
+      const tabId = String(action.tab_id || "").trim();
+      tab = this.tabs.find((candidate) => candidate.id === tabId) ?? null;
+      if (!tab) {
+        const available = this.tabs.map((candidate) => candidate.id).join(", ");
+        throw new Error(`Preview tab "${tabId || "missing"}" was not found. Available tabs: ${available || "none"}.`);
+      }
+      this.activateTab(tab.id);
+      if (tab.kind === "preview" && isExternalPreviewUrl(tab.entryPath)) {
+        tab = await this.promoteExternalPreviewTab(tab);
+      }
+    } else {
+      const url = normalizeBrowserUrl(String(action.url || ""));
+      if (!url) {
+        throw new Error(`${kind} requires a safe http:// or https:// URL without embedded credentials.`);
+      }
+      if (kind === "open_tab") {
+        tab = await this.openBrowserTab(url, {
+          activate: true,
+          title: browserTitleFromUrl(url),
+        });
+        if (!tab) throw new Error("Preview could not open another Browser tab.");
+      } else if (kind === "navigate") {
+        const current = await this.computerUseActiveTab();
+        if (current.kind === "browser") {
+          await this.navigateBrowserTab(current, url);
+          tab = current;
+        } else {
+          tab = await this.openBrowserTab(url, {
+            activate: true,
+            title: browserTitleFromUrl(url),
+            replaceTabId: current.id,
+          });
+          if (!tab) throw new Error("Preview could not navigate the active tab.");
+          if (this.tabs.includes(current)) this.closeTab(current.id);
+        }
+      } else {
+        throw new Error(`Unsupported Preview tab action: ${kind}.`);
+      }
+    }
+
+    if (!tab) throw new Error("Preview tab action did not select a tab.");
+    const ready = await this.waitForComputerUseBrowserReady(tab, action.duration_ms);
+    return {
+      ok: true,
+      completed: 1,
+      results: [{
+        index: 0,
+        type: kind,
+        ok: true,
+        tabId: tab.id,
+        title: tab.title,
+        url: tab.entryPath,
+        ready,
+      }],
+      navigation: {
+        type: kind,
+        tabId: tab.id,
+        title: tab.title,
+        url: tab.entryPath,
+        ready,
+        loading: tab.kind === "browser" && tab.browserLoading === true,
+      },
+      needsObservation: true,
+    };
+  }
+
+  /** Handle one backend request against the tab that is active right now. */
+  async handleComputerUseRequest(request: PreviewComputerRequest): Promise<Record<string, unknown>> {
+    if (!this.isOpen) throw new Error("Open the Preview window before using the AI cursor.");
+    if (!this.activeTab) throw new Error("No active Preview tab is available for Computer Use.");
     this.statusEl.textContent = request.operation === "observe"
       ? "AI cursor is observing this Preview tab…"
       : "AI cursor is controlling this Preview tab…";
 
     let result: Record<string, unknown>;
-    if (tab.kind === "browser") {
-      await this.ensureBrowserSurface(tab);
-      if (!tab.browserReady) throw new Error("The active Preview Browser tab is not ready yet.");
-      result = await api.previewBrowserComputer(tab.id, request.operation, request.args);
-    } else {
-      if (isCrossOriginFrame(tab.frame)) {
-        throw new Error("This project iframe is cross-origin. Open its URL in a Preview Browser tab so Computer Use remains inside Preview.");
+    if (request.operation === "actions") {
+      const actions = Array.isArray(request.args.actions)
+        ? request.args.actions as PreviewComputerAction[]
+        : [];
+      const tabActions = actions.filter((action) =>
+        action.type === "open_tab"
+        || action.type === "navigate"
+        || action.type === "activate_tab"
+      );
+      if (tabActions.length > 0) {
+        if (actions.length !== 1 || tabActions.length !== 1) {
+          throw new Error("Preview open_tab, navigate, and activate_tab must be the only action in their batch. Observe the newly active tab next.");
+        }
+        result = await this.runComputerUseTabAction(tabActions[0]);
+      } else {
+        result = await this.runComputerUseOnActiveTab(request);
       }
-      result = await runFrameComputerUse(tab.frame, request);
+    } else {
+      result = await this.runComputerUseOnActiveTab(request);
     }
+
+    const active = this.activeTab;
+    if (!active) throw new Error("The active Preview tab closed before Computer Use finished.");
     this.statusEl.textContent = request.operation === "observe"
       ? "AI cursor observed the active Preview tab."
-      : "AI cursor finished the Preview action batch.";
+      : "AI cursor finished the Preview action.";
     return {
       ...result,
-      activeTabId: tab.id,
-      activeTabTitle: tab.title,
+      activeTabId: active.id,
+      activeTabTitle: active.title,
+      activeTabUrl: active.entryPath,
+      tabs: this.computerUseTabList(),
+      tabNavigationHint: "Use one open_tab, navigate, or activate_tab action by itself, then call computer_observe before interacting with the newly active page.",
       scope: "active-preview-tab-only",
     };
   }
