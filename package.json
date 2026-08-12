@@ -21,7 +21,7 @@
     "installer:art": "powershell -ExecutionPolicy Bypass -File scripts/generate-installer-art.ps1",
     "release": "node scripts/publish-release.mjs",
     "test:fps": "node --test scripts/fps-optimized-guard.test.mjs",
-    "test:computer-use": "node --test scripts/preview-computer-use.test.mjs scripts/preview-computer-scroll.test.mjs",
+    "test:computer-use": "node --test scripts/preview-computer-use.test.mjs scripts/preview-computer-scroll.test.mjs scripts/preview-computer-scroll-runtime.test.mjs",
     "test:ask-mode": "node --test scripts/ask-mode-reliability.test.mjs"
   },
   "devDependencies": {
