@@ -265,6 +265,11 @@ test("dev-server Preview opens only from verified result metadata for its exact 
   assert.match(main, /meta\.kind !== "dev_server"/);
   assert.match(main, /!isExternalPreviewUrl\(url\.toString\(\)\) \|\| url\.protocol !== "http:"/);
   assert.match(main, /!sameProjectPath\(meta\.projectRoot, expectedProjectRoot\)/);
+  const openArgsStart = main.indexOf("function htmlPathFromOpenArgs");
+  const openArgsEnd = main.indexOf("async function openBuildPreview", openArgsStart);
+  const openArgs = main.slice(openArgsStart, openArgsEnd);
+  assert.match(openArgs, /if \(isExternalPreviewUrl\(raw\)\) return null/);
+  assert.doesNotMatch(openArgs, /return raw\.trim\(\)/);
   assert.match(main, /const key = devServerToolKey\(sid, e\.payload\.id\);[\s\S]*pendingDevServerTools\.delete\(key\)/);
   assert.match(main, /sid !== pending\.sessionId/);
   assert.match(main, /sessionId: pending\.sessionId,[\s\S]*projectRoot: pending\.projectRoot,[\s\S]*entryPath: meta\.url/);
@@ -294,6 +299,14 @@ test("saved local Preview tabs require a native live server lease", () => {
   assert.match(preview, /tab\.serverStatus = validation\?\.valid === true && validation\.ready === true/);
   assert.match(preview, /renderServerRestartState\(tab\)/);
   assert.match(preview, /if \(tab\.serverStatus === "restart_required"\)/);
+  const ensureStart = preview.indexOf("private async ensureBrowserSurface");
+  const restartGuard = preview.indexOf('tab.serverStatus === "restart_required"', ensureStart);
+  const readyGuard = preview.indexOf("if (tab.browserReady) return", ensureStart);
+  assert.ok(restartGuard > ensureStart && readyGuard > restartGuard,
+    "restart-required tabs must close/downgrade before browserReady can return");
+  assert.match(preview, /await api\.closePreviewBrowser\(tab\.id\)[\s\S]*tab\.browserReady = false[\s\S]*tab\.browserLoading = false/);
+  assert.match(preview, /const nextServerReady = opts\.serverReady !== false/);
+  assert.match(preview, /\|\| !nextServerReady/);
   assert.match(ipc, /validateDevServerLease: \(\s*leaseId: string \| null,\s*projectRoot: string,\s*url: string,?\s*\)/);
   assert.match(devServer, /listener_belongs_to_process_tree\(port, lease\.pid\)/);
   assert.match(devServer, /reason: "listener_owner_mismatch"/);
@@ -309,14 +322,25 @@ test("verified server routing waits for ownership and bypasses broad run dedupe"
   assert.match(main, /api\.validateDevServerLease\(\s*meta\.leaseId,\s*pending\.projectRoot,\s*meta\.url,?\s*\)/);
   assert.match(main, /serverReady: ready/);
   assert.match(main, /forceExactEntry: true/);
+  assert.match(main, /runNonce: string/);
+  assert.match(main, /const stillOwnsRun = \(\) =>[\s\S]*activeRunNonces\.get\(pending\.sessionId\) === pending\.runNonce/);
+  assert.match(main, /if \(!stillOwnsRun\(\)\) return;[\s\S]*await api\.validateDevServerLease/);
+  assert.match(main, /const runNonce = activeRunNonces\.get\(sid\)/);
+  assert.match(main, /\{ sessionId: sid, projectRoot, runNonce \}/);
 });
 
 test("Computer Use rejects guessed localhost before frontend dispatch", () => {
   assert.match(broker, /validate_loopback_navigation\(args, owner\)\?/);
-  assert.match(broker, /validate_dev_server_lease\(None, &owner\.project_root, url\)/);
-  assert.match(broker, /Local Preview navigation is allowed only for a ready development server lease owned by this exact project/);
+  assert.match(broker, /validate_dev_server_lease\(\s*None,\s*&owner\.project_root,\s*url,?\s*\)/);
+  assert.match(broker, /loopback URL only when it matches a ready, live development-server lease owned by this exact project/);
   assert.match(preview, /api\.validateDevServerLease\(null, this\.projectRoot, url\)/);
   assert.match(preview, /validation\?\.valid !== true \|\| validation\.ready !== true/);
+  assert.match(preview, /private async requireActiveLocalLease\(tab: PreviewTab\)/);
+  assert.match(preview, /api\.validateDevServerLease\(leaseId, this\.projectRoot, tab\.entryPath\)/);
+  assert.match(preview, /validation\.leaseId === leaseId/);
+  assert.match(preview, /await api\.closePreviewBrowser\(tab\.id\)/);
+  assert.match(preview, /await this\.requireActiveLocalLease\(tab\)/);
+  assert.match(preview, /The localhost Preview cannot be promoted without a ready development-server lease owned by this project/);
 });
 
 test("dev server ownership is byte-exact, descendant-bound, and retryable", () => {

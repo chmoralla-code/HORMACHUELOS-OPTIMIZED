@@ -100,7 +100,10 @@ const runModelProfiles = new Map<
 /** Each run keeps its original workspace even when the visible project changes. */
 const runProjectPaths = new Map<string, string>();
 /** start_dev_server calls awaiting a verified native metadata result. */
-const pendingDevServerTools = new Map<string, { sessionId: string; projectRoot: string }>();
+const pendingDevServerTools = new Map<
+  string,
+  { sessionId: string; projectRoot: string; runNonce: string }
+>();
 const devServerToolKey = (sessionId: string, toolId: string) => `${sessionId}\u0000${toolId}`;
 /** Native-issued opaque generation for each in-flight session run. */
 const activeRunNonces = new Map<string, string>();
@@ -259,8 +262,9 @@ function htmlPathFromOpenArgs(
     (typeof args.url === "string" && args.url) ||
     "";
   if (!raw) return null;
-  // A live dev server (localhost) can be previewed directly in the iframe.
-  if (isExternalPreviewUrl(raw)) return raw.trim();
+  // Speculative open_path/open_file events may open project HTML only.
+  // Local servers enter Preview exclusively through verified start_dev_server metadata.
+  if (isExternalPreviewUrl(raw)) return null;
   const rel = toProjectRelPath(raw.replace(/^file:\/\/\/?/i, ""), projectRoot);
   if (/\.html?$/i.test(rel) || /\.html?$/i.test(raw)) return rel;
   return null;
@@ -417,27 +421,35 @@ function clearPendingDevServerTools(sessionId: string): void {
 }
 
 async function openVerifiedDevServerWhenReady(
-  pending: { sessionId: string; projectRoot: string },
+  pending: { sessionId: string; projectRoot: string; runNonce: string },
   meta: VerifiedDevServerMeta,
 ): Promise<void> {
+  const stillOwnsRun = () =>
+    activeRunNonces.get(pending.sessionId) === pending.runNonce;
+  if (!stillOwnsRun()) return;
   const deadline = Date.now() + 8_000;
   let validation = await api.validateDevServerLease(
     meta.leaseId,
     pending.projectRoot,
     meta.url,
   ).catch(() => null);
+  if (!stillOwnsRun()) return;
   while (
     validation?.valid === true
     && validation.ready !== true
     && Date.now() < deadline
+    && stillOwnsRun()
   ) {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+    if (!stillOwnsRun()) return;
     validation = await api.validateDevServerLease(
       meta.leaseId,
       pending.projectRoot,
       meta.url,
     ).catch(() => null);
+    if (!stillOwnsRun()) return;
   }
+  if (!stillOwnsRun()) return;
   const owner = sessionForId(pending.sessionId);
   if (!owner || !sameProjectPath(owner.projectId, pending.projectRoot)) return;
   const ready = validation?.valid === true
@@ -466,9 +478,11 @@ function routeVerifiedDevServerEvent(e: AgentEvent): void {
       && owner
       && sameProjectPath(owner.projectId, projectRoot)
     ) {
+      const runNonce = activeRunNonces.get(sid);
+      if (!runNonce) return;
       pendingDevServerTools.set(
         devServerToolKey(sid, e.payload.id),
-        { sessionId: sid, projectRoot },
+        { sessionId: sid, projectRoot, runNonce },
       );
     }
     return;

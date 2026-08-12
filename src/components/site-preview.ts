@@ -2100,11 +2100,39 @@ export class SitePreview {
     return tab;
   }
 
+  private async requireActiveLocalLease(tab: PreviewTab): Promise<void> {
+    if (tab.kind !== "browser" || !isExternalPreviewUrl(tab.entryPath)) return;
+    const leaseId = tab.serverLeaseId?.trim();
+    const validation = leaseId
+      ? await api.validateDevServerLease(leaseId, this.projectRoot, tab.entryPath)
+          .catch(() => null)
+      : null;
+    if (
+      validation?.valid === true
+      && validation.ready === true
+      && validation.leaseId === leaseId
+    ) return;
+
+    tab.serverStatus = "restart_required";
+    tab.serverLeaseId = undefined;
+    if (tab.browserReady || tab.browserCreating) {
+      await api.closePreviewBrowser(tab.id).catch(() => undefined);
+    }
+    tab.browserReady = false;
+    tab.browserCreating = null;
+    this.renderServerRestartState(tab);
+    this.emitStateChange();
+    throw new Error(
+      "Computer Use refused this localhost page because its live server lease no longer belongs to the active project. Restart it with start_dev_server.",
+    );
+  }
+
   private async runComputerUseOnActiveTab(
     request: PreviewComputerRequest,
   ): Promise<Record<string, unknown>> {
     const tab = await this.computerUseActiveTab();
     if (tab.kind === "browser") {
+      await this.requireActiveLocalLease(tab);
       await this.ensureBrowserSurface(tab);
       if (!tab.browserReady) throw new Error("The active Preview Browser tab is not ready yet.");
       return api.previewBrowserComputer(tab.id, request.operation, request.args);
@@ -2554,11 +2582,18 @@ export class SitePreview {
   }
 
   private async ensureBrowserSurface(tab: PreviewTab): Promise<void> {
-    if (tab.kind !== "browser" || tab.browserReady) return;
+    if (tab.kind !== "browser") return;
     if (tab.serverStatus === "restart_required") {
+      if (tab.browserReady || tab.browserCreating) {
+        await api.closePreviewBrowser(tab.id).catch(() => undefined);
+      }
+      tab.browserReady = false;
+      tab.browserCreating = null;
+      tab.browserLoading = false;
       this.renderServerRestartState(tab);
       return;
     }
+    if (tab.browserReady) return;
     if (tab.browserCreating) return tab.browserCreating;
     const create = (async () => {
       let bounds = this.browserBounds();
@@ -3069,9 +3104,11 @@ export class SitePreview {
     );
     if (existing) {
       if (isExternalPreviewUrl(url)) {
-        const needsFreshSurface = Boolean(opts.serverLeaseId)
+        const nextServerReady = opts.serverReady !== false;
+        const needsFreshSurface = (Boolean(opts.serverLeaseId)
           && (existing.serverLeaseId !== opts.serverLeaseId
-            || existing.serverStatus !== "ready");
+            || existing.serverStatus !== "ready"))
+          || !nextServerReady;
         existing.serverOwner = this.projectRoot;
         existing.serverLeaseId = opts.serverLeaseId || existing.serverLeaseId;
         if (opts.serverReady !== undefined) {
@@ -3158,11 +3195,20 @@ export class SitePreview {
     if (tab.kind === "browser") return tab;
     const url = normalizeBrowserUrl(entryPath);
     if (!url || !isExternalPreviewUrl(url)) return tab;
+    const validation = await api.validateDevServerLease(null, this.projectRoot, url)
+      .catch(() => null);
+    if (validation?.valid !== true || validation.ready !== true || !validation.leaseId) {
+      throw new Error(
+        "The localhost Preview cannot be promoted without a ready development-server lease owned by this project.",
+      );
+    }
     const wasActive = this.activeTabId === tab.id;
     const replacement = await this.openBrowserTab(url, {
       activate: wasActive,
       title: title && title !== "New tab" ? title : browserTitleFromUrl(url),
       replaceTabId: tab.id,
+      serverLeaseId: validation.leaseId,
+      serverReady: true,
     });
     if (!replacement) {
       throw new Error("The localhost Preview could not be upgraded for Computer Use.");
