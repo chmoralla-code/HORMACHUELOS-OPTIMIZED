@@ -1,3 +1,10 @@
+import {
+  choosePreviewScrollCandidate,
+  previewScrollMoved,
+  type PreviewScrollCandidate,
+  type PreviewScrollPosition,
+} from "./preview-scroll-policy";
+
 export type PreviewComputerRequest = {
   requestId: string;
   protocolVersion: number;
@@ -51,6 +58,8 @@ type ObservedElement = {
   selector: string;
   rect: { x: number; y: number; width: number; height: number };
   disabled: boolean;
+  scrollable?: boolean;
+  scroll?: PreviewScrollPosition;
   checked?: boolean;
   value?: string;
 };
@@ -62,6 +71,25 @@ const INTERACTIVE_SELECTOR = [
   "[role='radio']", "[role='tab']", "[role='menuitem']", "[role='option']",
   "[tabindex]:not([tabindex='-1'])", "canvas", "video",
 ].join(",");
+
+function elementScrollPosition(element: Element): PreviewScrollPosition {
+  const html = element as HTMLElement;
+  return {
+    x: Math.round(html.scrollLeft || 0),
+    y: Math.round(html.scrollTop || 0),
+    maxX: Math.max(0, Math.round(html.scrollWidth - html.clientWidth)),
+    maxY: Math.max(0, Math.round(html.scrollHeight - html.clientHeight)),
+  };
+}
+
+function isScrollableElement(element: Element, view: Window): element is HTMLElement {
+  if (!isHtmlElement(element)) return false;
+  const position = elementScrollPosition(element);
+  if (position.maxX <= 1 && position.maxY <= 1) return false;
+  const style = view.getComputedStyle(element);
+  return (position.maxX > 1 && /^(auto|scroll|overlay)$/.test(style.overflowX))
+    || (position.maxY > 1 && /^(auto|scroll|overlay)$/.test(style.overflowY));
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
@@ -193,7 +221,11 @@ class PreviewFrameComputerController {
   observe(): Record<string, unknown> {
     const elements: ObservedElement[] = [];
     this.refs.clear();
-    const candidates = Array.from(this.document.querySelectorAll(INTERACTIVE_SELECTOR));
+    const candidates = Array.from(new Set<Element>([
+      ...Array.from(this.document.querySelectorAll(INTERACTIVE_SELECTOR)),
+      ...Array.from(this.document.querySelectorAll("*"))
+        .filter((element) => isScrollableElement(element, this.view)),
+    ]));
     for (const element of candidates) {
       if (elements.length >= 80 || !isVisible(element, this.view)) continue;
       const rect = element.getBoundingClientRect();
@@ -214,6 +246,11 @@ class PreviewFrameComputerController {
         },
         disabled: "disabled" in input && Boolean(input.disabled),
       };
+      if (isScrollableElement(element, this.view)) {
+        observed.scrollable = true;
+        observed.scroll = elementScrollPosition(element);
+        if (!observed.name) observed.name = "Scrollable region";
+      }
       if ("checked" in input && typeof input.checked === "boolean") observed.checked = input.checked;
       if ("value" in input && input.type !== "password" && compact(input.value)) {
         observed.value = compact(input.value, 120);
@@ -236,7 +273,7 @@ class PreviewFrameComputerController {
       },
       cursor: { x: Math.round(this.cursorPoint.x), y: Math.round(this.cursorPoint.y) },
       elements,
-      hint: "Use element ref values with computer_actions. Coordinates are relative to this preview viewport.",
+      hint: "Use element refs with computer_actions. Scrollable regions include scroll x/y/maxX/maxY; use their ref for nested panes. viewport.scrollY is page-only. Coordinates are relative to this preview viewport.",
     };
   }
 
@@ -252,8 +289,8 @@ class PreviewFrameComputerController {
         if (abortController.signal.aborted) throw abortError();
         const action = actions[index];
         this.setStatus(`${index + 1}/${actions.length} · ${action.type}`, true);
-        await this.runAction(action, abortController.signal);
-        results.push({ index, type: action.type, ok: true });
+        const detail = await this.runAction(action, abortController.signal);
+        results.push({ index, type: action.type, ok: true, ...detail });
       }
       this.setStatus(`Complete · ${actions.length} action${actions.length === 1 ? "" : "s"}`, false);
       return {
@@ -382,6 +419,36 @@ class PreviewFrameComputerController {
     throw new Error(`Preview action needs a current element ref, selector, or x/y coordinates.`);
   }
 
+  private scrollCandidates(element: Element | null): Array<PreviewScrollCandidate<Element | Window>> {
+    const candidates: Array<PreviewScrollCandidate<Element | Window>> = [];
+    const seen = new Set<Element>();
+    let node: Element | null = element;
+    while (node) {
+      if (!seen.has(node) && isScrollableElement(node, this.view)) {
+        seen.add(node);
+        candidates.push({ target: node, position: elementScrollPosition(node) });
+      }
+      node = node.parentElement;
+    }
+    const page = this.document.scrollingElement;
+    if (page && !seen.has(page)) candidates.push({ target: this.view, position: elementScrollPosition(page) });
+    return candidates;
+  }
+
+  private scrollPosition(target: Element | Window): PreviewScrollPosition {
+    if (target === this.view) {
+      const page = this.document.scrollingElement;
+      if (page) return elementScrollPosition(page);
+      return {
+        x: Math.round(this.view.scrollX),
+        y: Math.round(this.view.scrollY),
+        maxX: Math.max(0, Math.round(this.document.documentElement.scrollWidth - this.view.innerWidth)),
+        maxY: Math.max(0, Math.round(this.document.documentElement.scrollHeight - this.view.innerHeight)),
+      };
+    }
+    return elementScrollPosition(target as Element);
+  }
+
   private pointerEvent(element: Element, type: string, point: Point, button = 0): void {
     const options: PointerEventInit = {
       bubbles: true, cancelable: true, composed: true, clientX: point.x, clientY: point.y,
@@ -391,27 +458,43 @@ class PreviewFrameComputerController {
     catch { element.dispatchEvent(new MouseEvent(type.replace("pointer", "mouse"), options)); }
   }
 
-  private async runAction(action: PreviewComputerAction, signal: AbortSignal): Promise<void> {
+  private async runAction(action: PreviewComputerAction, signal: AbortSignal): Promise<Record<string, unknown>> {
     const duration = clamp(Number(action.duration_ms ?? 180), 0, 900);
     if (action.type === "wait") {
       await delay(clamp(Number(action.duration_ms ?? 250), 0, 10_000), signal);
-      return;
+      return {};
     }
     if (action.type === "scroll") {
+      const explicitTarget = Boolean(action.ref || action.selector);
       let target: ResolvedTarget;
-      try { target = this.resolve(action); }
-      catch { target = { element: this.document.scrollingElement, point: this.cursorPoint }; }
+      if (explicitTarget || (Number.isFinite(action.x) && Number.isFinite(action.y))) {
+        target = this.resolve(action);
+      } else {
+        target = {
+          element: this.document.elementFromPoint(this.cursorPoint.x, this.cursorPoint.y)
+            || this.document.scrollingElement,
+          point: this.cursorPoint,
+        };
+      }
       await this.animateTo(target.point, signal, duration);
       const deltaX = clamp(Number(action.delta_x ?? 0), -4_000, 4_000);
       const deltaY = clamp(Number(action.delta_y ?? 520), -4_000, 4_000);
-      target.element?.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, deltaX, deltaY }));
-      const scroller = isHtmlElement(target.element)
-        && target.element.scrollHeight > target.element.clientHeight
-        ? target.element
-        : this.view;
-      scroller.scrollBy({ left: deltaX, top: deltaY, behavior: "auto" });
-      await delay(70, signal);
-      return;
+      const candidate = choosePreviewScrollCandidate(this.scrollCandidates(target.element), deltaX, deltaY, explicitTarget);
+      if (!candidate) throw new Error("No scrollable region is available in the active Preview tab.");
+      const before = this.scrollPosition(candidate.target);
+      const wheelTarget = target.element || this.document.elementFromPoint(target.point.x, target.point.y);
+      wheelTarget?.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, deltaX, deltaY }));
+      candidate.target.scrollBy({ left: deltaX, top: deltaY, behavior: "auto" });
+      await delay(90, signal);
+      const after = this.scrollPosition(candidate.target);
+      const moved = previewScrollMoved(before, after);
+      return {
+        target: candidate.target === this.view ? "page" : "nested",
+        selector: candidate.target === this.view ? null : selectorFor(candidate.target as Element, this.document),
+        requested: { x: deltaX, y: deltaY }, before, after,
+        applied: { x: after.x - before.x, y: after.y - before.y },
+        moved, boundary: !moved,
+      };
     }
     if (action.type === "drag") {
       const start = this.resolve(action);
@@ -427,15 +510,15 @@ class PreviewFrameComputerController {
       endElement.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, clientX: end.point.x, clientY: end.point.y }));
       this.pointerEvent(endElement, "pointerup", end.point, 0);
       start.element.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true }));
-      return;
+      return {};
     }
 
     const target = this.resolve(action);
     await this.animateTo(target.point, signal, duration);
-    if (!target.element) return;
+    if (!target.element) return {};
     if (action.type === "move" || action.type === "hover") {
       for (const type of ["pointerover", "pointerenter", "pointermove"]) this.pointerEvent(target.element, type, target.point);
-      return;
+      return {};
     }
     if (action.type === "click") {
       const buttonName = action.button || "left";
@@ -455,20 +538,21 @@ class PreviewFrameComputerController {
         target.element.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, button: 1 }));
       }
       this.ripple(target.point);
-      return;
+      return {};
     }
     if (action.type === "type") {
       const active = isEditable(target.element) ? target.element : this.document.activeElement;
       if (!isEditable(active)) throw new Error("Type action target is not an editable field in the active Preview tab.");
       active.focus({ preventScroll: true });
       this.insertText(active, String(action.text ?? ""), Boolean(action.clear));
-      return;
+      return {};
     }
     if (action.type === "key") {
       const element = target.element as HTMLElement;
       element.focus?.({ preventScroll: true });
       this.pressKey(element, String(action.keys || ""));
     }
+    return {};
   }
 
   private insertText(element: HTMLElement, text: string, clear: boolean): void {
@@ -480,7 +564,7 @@ class PreviewFrameComputerController {
       element.setRangeText(text, start, end, "end");
       element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
       element.dispatchEvent(new Event("change", { bubbles: true }));
-      return;
+      return {};
     }
     if (clear) {
       const range = this.document.createRange();
@@ -522,18 +606,18 @@ class PreviewFrameComputerController {
         selection?.removeAllRanges();
         selection?.addRange(range);
       }
-      return;
+      return {};
     }
     if (key === "Tab") {
       const focusable = Array.from(this.document.querySelectorAll<HTMLElement>(INTERACTIVE_SELECTOR)).filter((item) => isVisible(item, this.view) && item.tabIndex >= 0);
       const index = Math.max(0, focusable.indexOf(element));
       focusable[(index + (init.shiftKey ? -1 : 1) + focusable.length) % focusable.length]?.focus();
-      return;
+      return {};
     }
     if (key === "Enter") {
       if (isButtonElement(element) || isAnchorElement(element)) element.click();
       else if (isEditable(element)) element.closest("form")?.requestSubmit();
-      return;
+      return {};
     }
     if ((key === "Backspace" || key === "Delete") && (isInputElement(element) || isTextAreaElement(element))) {
       const start = element.selectionStart ?? element.value.length;
