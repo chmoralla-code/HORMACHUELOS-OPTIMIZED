@@ -211,7 +211,7 @@ test("Preview routing rejects stale project/session owners across async boundari
 
   assert.match(main, /let projectRootMutationQueue: Promise<void> = Promise\.resolve\(\)/);
   assert.match(main, /serializeProjectRootMutation\(\(\) => quickSession[\s\S]*api\.ensureQuickSessionWorkspace\(\)[\s\S]*api\.setProjectRoot\(path\)/);
-  assert.match(main, /openQuickSessionWorkspace\(\)[\s\S]*serializeProjectRootMutation\(\(\) => api\.ensureQuickSessionWorkspace\(\)\)/);
+  const quickOpenStart = main.indexOf(\
 
   const selectStart = main.indexOf("async function selectProject");
   const selectAwait = main.indexOf("await serializeProjectRootMutation", selectStart);

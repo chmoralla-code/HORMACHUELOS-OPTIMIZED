@@ -128,7 +128,6 @@ impl AppState {
         let recent = load_recent().unwrap_or_default();
         Self {
             project_root: Mutex::new(None),
-            run_nonce: uuid::Uuid::new_v4().to_string(),
             settings: Mutex::new(settings),
             recent_projects: Mutex::new(recent),
             runs: Arc::new(Mutex::new(HashMap::new())),

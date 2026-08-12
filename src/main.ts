@@ -1604,10 +1604,9 @@ async function refreshHeader() {
 }
 
 async function openQuickSessionWorkspace() {
-  const path = await serializeProjectRootMutation(() => api.ensureQuickSessionWorkspace());
-  quickSessionWorkspacePath = path;
-  await selectProject(path, { quickSession: true });
-}
+  // The click is one queued native mutation. A second ensure after a newer
+  // project click could otherwise put Quick Sessions back on top.
+  await selectProject(quickSessionWorkspacePath || \
 
 function repairProjectRootReferences(requestedPath: string, canonicalPath: string): void {
   if (sameProjectPath(requestedPath, canonicalPath)) return;
