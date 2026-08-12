@@ -78,10 +78,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Monochrome Live Frame + Clean Cursor Exit
+          releaseName: Hormachuelos Optimized v__VERSION__ · Project-Locked Preview + Verified Dev Servers
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
+            Project-locked Preview and dev servers:
+            - reuses a local server only when its canonical project root, working directory, command fingerprint, port, live PID, and process identity all match
+            - refuses foreign or unowned listeners instead of silently opening another project's website
+            - opens Preview only from a successful start_dev_server result carrying exact host-verified project metadata
+            - binds Computer Use to the originating session, canonical project root, and run nonce; mismatched or background requests cannot control the visible Preview
+            - keeps background server results with their owning session and discards legacy localhost tabs that have no verified project owner
+            - guards rapid project switches and delayed Preview work, and selects the restored active tab before asynchronous reloads begin
             Monochrome active Preview frame:
             - animates a crisp black-to-gray-to-white perimeter only while Computer Use is actively engaged
             - clears the perimeter, AI cursor, target frame, status badge, and particles when the AI finishes, is cancelled, errors, or the user presses Stop
