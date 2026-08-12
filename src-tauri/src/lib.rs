@@ -1,7 +1,6 @@
 pub mod agent;
 pub mod app_updater;
 pub mod checkpoint;
-pub mod computer_fx;
 pub mod computer_use;
 pub mod config;
 pub mod cursor_bridge;
@@ -1467,6 +1466,7 @@ pub fn run() {
             save_settings,
             get_computer_use_status,
             set_computer_use_paused,
+            computer_use::respond_preview_computer,
             set_api_key,
             has_api_key,
             clear_api_key,
@@ -1502,6 +1502,7 @@ pub fn run() {
             preview_browser::capture_preview_browser_selection,
             preview_browser::navigate_preview_browser,
             preview_browser::preview_browser_action,
+            preview_browser::preview_browser_computer,
             preview_browser::close_preview_browser,
             design_source::warm_design_source_index,
             design_source::invalidate_design_source_index,
