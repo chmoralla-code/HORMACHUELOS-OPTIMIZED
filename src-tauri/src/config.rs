@@ -66,9 +66,13 @@ pub struct Settings {
     /// (legacy: low | max also accepted)
     #[serde(default = "default_model_effort")]
     pub model_effort: String,
-    /// Explicit opt-in for native Windows desktop control through Cursor SDK custom tools.
+    /// Keep Preview Computer Use available for every request.
     #[serde(default)]
     pub computer_use_enabled: bool,
+    /// Allow explicit user prompts to enable Preview Computer Use for that request.
+    /// Missing on older settings defaults to Auto so the new menu is immediately useful.
+    #[serde(default = "default_computer_use_prompt_activation")]
+    pub computer_use_prompt_activation: bool,
     /// Provider-neutral task planning and final verification scaffolding.
     /// Defaults on so existing installations benefit after upgrading, while the
     /// user can turn it off from Settings for a lighter direct-response flow.
@@ -122,6 +126,10 @@ fn normalize_model_effort(value: &str) -> String {
     }
 }
 
+fn default_computer_use_prompt_activation() -> bool {
+    true
+}
+
 fn default_smart_agent_enabled() -> bool {
     true
 }
@@ -148,7 +156,7 @@ fn is_hormachuelos_model_alias(model: &str) -> bool {
 fn capability_for_mode(mode: &str) -> &'static str {
     match mode {
         "auto" => "agent",
-        "ask" | "research" => "investigate",
+        "ask" | "research" => "answer_max",
         "full" | "multi_agent" => "autonomous",
         _ => "thinking",
     }
@@ -182,6 +190,7 @@ impl Default for Settings {
             taglish: false,
             model_effort: default_model_effort(),
             computer_use_enabled: false,
+            computer_use_prompt_activation: default_computer_use_prompt_activation(),
             smart_agent_enabled: default_smart_agent_enabled(),
             flavour_enabled: default_flavour_enabled(),
         }
@@ -272,8 +281,8 @@ impl Settings {
         }
         let cap = s.capability_mode.trim().to_ascii_lowercase();
         s.capability_mode = match cap.as_str() {
-            "thinking" | "guided" | "agent" | "balanced" | "investigate" | "brief"
-            | "autonomous" | "max" => cap,
+            "thinking" | "guided" | "agent" | "balanced" | "answer_max" | "investigate"
+            | "brief" | "autonomous" | "max" => cap,
             _ => capability_for_mode(&s.permission_mode).into(),
         };
         s.model_effort = normalize_model_effort(&s.model_effort);
@@ -440,6 +449,7 @@ impl Settings {
                     | "guided"
                     | "agent"
                     | "balanced"
+                    | "answer_max"
                     | "investigate"
                     | "brief"
                     | "autonomous"
@@ -816,8 +826,8 @@ mod tests {
             ..Settings::default()
         };
         assert!(research.validate().is_ok());
-        assert_eq!(capability_for_mode("research"), "investigate");
-        assert_eq!(capability_for_mode("ask"), "investigate");
+        assert_eq!(capability_for_mode("research"), "answer_max");
+        assert_eq!(capability_for_mode("ask"), "answer_max");
     }
 
     #[test]

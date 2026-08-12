@@ -1288,7 +1288,7 @@ async function runMain(protocol) {
   }
 
   const textOut = createTextCoalescer((chunk) => {
-    sawText = true;
+    if (chunk.trim()) sawText = true;
     assistantChars += chunk.length;
     write({ type: "text", text: chunk });
     emitUsageDelta(false);
@@ -1661,6 +1661,7 @@ async function runMain(protocol) {
     type: "done",
     status,
     completed: completionFilter.completed,
+    answered: sawText,
     // Never put the reply text here — Rust used to forward it as a Done-card
     // summary and the UI showed the same answer twice.
     agentId: agent.agentId || agent.id || null,

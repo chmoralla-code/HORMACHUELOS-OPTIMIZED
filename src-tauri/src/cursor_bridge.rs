@@ -38,6 +38,8 @@ struct BridgeEvent {
     /// The bridge sets this only when an implementation task explicitly
     /// declared the hidden completion marker in its final answer.
     completed: Option<bool>,
+    /// True when the bridge emitted a substantive user-visible assistant reply.
+    answered: Option<bool>,
     #[serde(rename = "requestId")]
     request_id: Option<String>,
     summary: Option<String>,
@@ -63,10 +65,15 @@ const CURSOR_INTERRUPTED_REPLY_PROMPT: &str = "[System - Automatic recovery]\n\
 The previous Cursor pass became unresponsive and the desktop restarted it from the SAME durable agent checkpoint. Continue the original request from the current workspace and do not repeat completed work.\n\
 For project-root list/search calls use path \".\", never an empty path or \"..\". If a tool failed, correct its arguments or use a narrower/different tool instead of repeating the identical call. Complete the requested analysis or answer normally; do not mention this recovery unless it materially affects the result.";
 
+const CURSOR_EMPTY_REPLY_PROMPT: &str = "[System - Empty-answer recovery]\n\
+The previous Cursor model turn ended without any substantive user-visible answer. Answer the ORIGINAL user request now from the current conversation and saved agent checkpoint.\n\
+If tools were used, synthesize their results into a complete answer. Never finish with blank text, status-only text, or an internal note. Give the user a direct, organized, self-contained response; do not mention this automatic retry.";
+
 #[derive(Debug)]
 struct CursorTurnOutcome {
     agent_id: Option<String>,
     completion_marker_seen: bool,
+    answer_text_seen: bool,
     terminal: bool,
     made_concrete_progress: bool,
     recoverable_interruption: Option<String>,
@@ -77,6 +84,7 @@ impl CursorTurnOutcome {
         Self {
             agent_id,
             completion_marker_seen: false,
+            answer_text_seen: false,
             terminal: true,
             made_concrete_progress: false,
             recoverable_interruption: None,
@@ -743,6 +751,7 @@ fn handle_event(
     event: BridgeEvent,
     agent_id_out: &mut Option<String>,
     completion_marker_seen: &mut bool,
+    answer_text_seen: &mut bool,
     saw_error: &mut Option<String>,
     smart_agent: &mut SmartAgentRun,
     activity: &mut CursorPassActivity,
@@ -764,7 +773,8 @@ fn handle_event(
             }
         }
         "text" => {
-            if let Some(text) = event.text.filter(|t| !t.is_empty()) {
+            if let Some(text) = event.text.filter(|t| !t.trim().is_empty()) {
+                *answer_text_seen = true;
                 emit(app, session_id, "text", json!({ "text": text }));
             }
         }
@@ -818,8 +828,13 @@ fn handle_event(
             if let Some(id) = event.agent_id.filter(|s| !s.is_empty()) {
                 *agent_id_out = Some(id);
             }
-            if event.kind == "done" && event.completed.unwrap_or(false) {
-                *completion_marker_seen = true;
+            if event.kind == "done" {
+                if event.completed.unwrap_or(false) {
+                    *completion_marker_seen = true;
+                }
+                if event.answered.unwrap_or(false) {
+                    *answer_text_seen = true;
+                }
             }
         }
         "usage" => {
@@ -953,7 +968,7 @@ pub async fn run_cursor_turn(
         if let Some(id) = outcome.agent_id.filter(|id| !id.is_empty()) {
             current_agent_id = Some(id);
         }
-        let recoverable_interruption = outcome.recoverable_interruption.clone();
+        let mut recoverable_interruption = outcome.recoverable_interruption.clone();
 
         if outcome.terminal {
             return Ok(current_agent_id);
@@ -987,7 +1002,10 @@ pub async fn run_cursor_turn(
             return Ok(current_agent_id);
         }
 
-        if !requires_project_completion && recoverable_interruption.is_none() {
+        if !requires_project_completion
+            && recoverable_interruption.is_none()
+            && outcome.answer_text_seen
+        {
             // A regular Cursor reply is not an explicit task-completion
             // handshake. Keep its terminal reason distinct so the frontend
             // never announces it as "done working".
@@ -1000,9 +1018,19 @@ pub async fn run_cursor_turn(
             return Ok(current_agent_id);
         }
 
+        let empty_reply_recovery = !requires_project_completion
+            && recoverable_interruption.is_none()
+            && !outcome.answer_text_seen;
+        if empty_reply_recovery {
+            let message =
+                "Cursor returned no visible answer; retrying once from its saved checkpoint.";
+            emit(&app, session_id, "status", json!({ "message": message }));
+            recoverable_interruption = Some(message.into());
+        }
+
         consecutive_stalled_recoveries = next_cursor_stalled_recovery_count(
             consecutive_stalled_recoveries,
-            outcome.made_concrete_progress,
+            outcome.made_concrete_progress && !empty_reply_recovery,
         );
 
         if current_agent_id.is_none() {
@@ -1032,14 +1060,22 @@ pub async fn run_cursor_turn(
             smart_agent.pause(
                 &app,
                 session_id,
-                "Automatic recovery paused after repeated Cursor passes without a successful tool result.",
+                if empty_reply_recovery {
+                    "Automatic recovery paused after repeated Cursor passes without a visible answer."
+                } else {
+                    "Automatic recovery paused after repeated Cursor passes without a successful tool result."
+                },
             );
             emit(
                 &app,
                 session_id,
                 "text",
                 json!({
-                    "text": "\n\n— Automatic recovery paused after repeated Cursor passes without a successful tool result. Your workspace and agent checkpoint are preserved."
+                    "text": if empty_reply_recovery {
+                        "\n\n— Cursor could not produce a visible answer after several automatic retries. Your conversation and checkpoint are preserved; retrying with another model may help."
+                    } else {
+                        "\n\n— Automatic recovery paused after repeated Cursor passes without a successful tool result. Your workspace and agent checkpoint are preserved."
+                    }
                 }),
             );
             emit(
@@ -1057,7 +1093,9 @@ pub async fn run_cursor_turn(
             session_id,
             "reasoning",
             json!({
-                "text": if recoverable_interruption.is_some() {
+                "text": if empty_reply_recovery {
+                    "The model returned no answer; retrying automatically from its saved checkpoint..."
+                } else if recoverable_interruption.is_some() {
                     "The Cursor pass stopped responding; resuming automatically from its saved checkpoint..."
                 } else {
                     "Continuing automatically from the unfinished Cursor task..."
@@ -1067,6 +1105,8 @@ pub async fn run_cursor_turn(
         );
         let continuation = if requires_project_completion {
             CURSOR_AUTOMATIC_CONTINUATION_PROMPT
+        } else if empty_reply_recovery {
+            CURSOR_EMPTY_REPLY_PROMPT
         } else {
             CURSOR_INTERRUPTED_REPLY_PROMPT
         };
@@ -1207,6 +1247,7 @@ async fn run_cursor_attempt(
     // made the outer runner report ordinary prose as a verified completed task,
     // leaving its distinct no_tool_calls branch unreachable.
     let mut completion_marker_seen = false;
+    let mut answer_text_seen = false;
     let mut saw_error: Option<String> = None;
     let mut recoverable_interruption: Option<String> = None;
     let mut activity = CursorPassActivity::default();
@@ -1389,6 +1430,7 @@ async fn run_cursor_attempt(
                         event,
                         &mut agent_id_out,
                         &mut completion_marker_seen,
+                        &mut answer_text_seen,
                         &mut saw_error,
                         smart_agent,
                         &mut activity,
@@ -1463,6 +1505,7 @@ async fn run_cursor_attempt(
     Ok(CursorTurnOutcome {
         agent_id: agent_id_out,
         completion_marker_seen,
+        answer_text_seen,
         terminal: false,
         made_concrete_progress: activity.made_concrete_progress,
         recoverable_interruption,
@@ -1559,6 +1602,16 @@ mod tests {
             cursor_permission_enforcement("auto"),
             "cursor_sdk_auto_review"
         );
+    }
+
+    #[test]
+    fn cursor_done_event_can_report_a_visible_answer() {
+        let event: BridgeEvent = serde_json::from_value(json!({
+            "type": "done",
+            "answered": true
+        }))
+        .expect("done event should deserialize");
+        assert_eq!(event.answered, Some(true));
     }
 
     #[test]
