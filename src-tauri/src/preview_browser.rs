@@ -642,13 +642,13 @@ fn capture_page_offset(metrics: &serde_json::Value) -> Result<(f64, f64), String
 }
 
 #[cfg(windows)]
-async fn call_browser_devtools(
+async fn call_browser_devtools_with_timeout(
     webview: &Webview,
     method: &str,
     parameters: serde_json::Value,
+    timeout: std::time::Duration,
 ) -> Result<serde_json::Value, String> {
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
     use tokio::sync::oneshot;
     use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR};
 
@@ -700,10 +700,25 @@ async fn call_browser_devtools(
         })
         .map_err(|error| format!("Could not schedule Browser capture: {error}"))?;
 
-    tokio::time::timeout(Duration::from_secs(3), receiver)
+    tokio::time::timeout(timeout, receiver)
         .await
         .map_err(|_| "Browser screenshot timed out.".to_string())?
         .map_err(|_| "Browser screenshot was cancelled.".to_string())?
+}
+
+#[cfg(windows)]
+async fn call_browser_devtools(
+    webview: &Webview,
+    method: &str,
+    parameters: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    call_browser_devtools_with_timeout(
+        webview,
+        method,
+        parameters,
+        std::time::Duration::from_secs(3),
+    )
+    .await
 }
 
 #[cfg(windows)]
@@ -998,6 +1013,62 @@ pub async fn navigate_preview_browser(
     get_browser(&app, &label)?
         .navigate(url)
         .map_err(|error| error.to_string())
+}
+
+/// Execute a bounded Preview Computer Use request inside one isolated Browser
+/// child WebView. Only the trusted main WebView can call this command.
+#[tauri::command]
+pub async fn preview_browser_computer(
+    caller: Webview,
+    app: AppHandle,
+    label: String,
+    operation: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    ensure_main_caller(&caller)?;
+    if !matches!(operation.as_str(), "observe" | "actions" | "stop") {
+        return Err("Unsupported Preview Computer Use operation.".into());
+    }
+    let webview = get_browser(&app, &label)?;
+
+    #[cfg(windows)]
+    {
+        let operation = serde_json::to_string(&operation).map_err(|error| error.to_string())?;
+        let args = serde_json::to_string(&args).map_err(|error| error.to_string())?;
+        let expression = format!(
+            "window.__hormaPreviewComputerUse ? window.__hormaPreviewComputerUse.handle({operation}, {args}) : Promise.reject(new Error('Preview Browser controller is not ready.'))"
+        );
+        let response = call_browser_devtools_with_timeout(
+            &webview,
+            "Runtime.evaluate",
+            serde_json::json!({
+                "expression": expression,
+                "awaitPromise": true,
+                "returnByValue": true,
+                "userGesture": true,
+            }),
+            std::time::Duration::from_secs(70),
+        )
+        .await?;
+        if let Some(exception) = response.get("exceptionDetails") {
+            let message = exception
+                .pointer("/exception/description")
+                .or_else(|| exception.get("text"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Preview Browser action failed.");
+            return Err(message.chars().take(1_000).collect());
+        }
+        return response
+            .pointer("/result/value")
+            .cloned()
+            .ok_or_else(|| "Preview Browser action returned no result.".to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (webview, operation, args);
+        Err("Preview Browser Computer Use currently requires the Windows WebView2 runtime.".into())
+    }
 }
 
 #[tauri::command]
