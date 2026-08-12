@@ -900,6 +900,7 @@ export class SitePreview {
       });
     this.root.classList.add("site-preview");
     this.root.setAttribute("aria-label", "Site preview");
+    this.root.setAttribute("aria-busy", "false");
     clear(this.root);
     this.root.hidden = true;
 
@@ -2042,7 +2043,9 @@ export class SitePreview {
     action: PreviewComputerAction,
   ): Promise<Record<string, unknown>> {
     const kind = action.type;
-    this.stopComputerUse();
+    // Move the controller to the newly selected Preview tab without ending the
+    // host-level Computer Use session or its active perimeter.
+    this.stopComputerUseControllers();
     let tab: PreviewTab | null = null;
 
     if (kind === "activate_tab") {
@@ -2116,6 +2119,7 @@ export class SitePreview {
   async handleComputerUseRequest(request: PreviewComputerRequest): Promise<Record<string, unknown>> {
     if (!this.isOpen) throw new Error("Open the Preview window before using the AI cursor.");
     if (!this.activeTab) throw new Error("No active Preview tab is available for Computer Use.");
+    this.setComputerUseActive(true);
     this.statusEl.textContent = request.operation === "observe"
       ? "AI cursor is observing this Preview tab…"
       : "AI cursor is controlling this Preview tab…";
@@ -2158,8 +2162,12 @@ export class SitePreview {
     };
   }
 
-  /** Abort every in-preview controller when paused, cancelled, closed, or switched. */
-  stopComputerUse(): void {
+  private setComputerUseActive(active: boolean): void {
+    this.root.classList.toggle("is-computer-use-active", active);
+    this.root.setAttribute("aria-busy", String(active));
+  }
+
+  private stopComputerUseControllers(): void {
     for (const tab of this.tabs) {
       if (tab.kind === "browser") {
         if (tab.browserReady) void api.previewBrowserComputer(tab.id, "stop", {}).catch(() => undefined);
@@ -2167,6 +2175,15 @@ export class SitePreview {
         stopFrameComputerUse(tab.frame);
       }
     }
+  }
+
+  /** Abort controllers and clear every host/page visual on every terminal path. */
+  stopComputerUse(): void {
+    this.setComputerUseActive(false);
+    if (/^AI cursor\b/i.test(this.statusEl.textContent || "")) {
+      this.statusEl.textContent = this.readyStatus();
+    }
+    this.stopComputerUseControllers();
   }
 
   private get entryPath(): string {

@@ -1977,6 +1977,9 @@ async function sendPrompt(submission: ChatPromptSubmission) {
       reportError(msg);
     }
   } finally {
+    // The backend future is the final owner of this run. Terminal events normally
+    // clear Computer Use first; this fallback also covers provider/start failures.
+    if (activeSessionId === sessionId) sitePreview.stopComputerUse();
     // Only drop the busy flag here — after backend finish_run. Early deletes on
     // cancelled/done events race a follow-up send ("session already running").
     releaseFrontendRun(sessionId);
@@ -2162,6 +2165,9 @@ function handleAgentEvent(e: AgentEvent) {
       !!e.payload.streamed,
     );
   } else if (isTerminalAgentEvent(e)) {
+    // The visible run is genuinely terminal: remove the Preview cursor, status,
+    // particles, target frame, and active perimeter immediately.
+    sitePreview.stopComputerUse();
     // Keep runningSessions + chat.running true until sendPrompt's agentRun
     // await finishes. Early setRunning(false) / runningSessions.delete races
     // the next send (backend still in start_run → "already running").
@@ -2204,6 +2210,7 @@ async function init() {
   chat = new Chat({
     onSend: sendPrompt,
     onStop: () => {
+      sitePreview.stopComputerUse();
       if (activeSessionId) api.agentStop(activeSessionId).catch((e) => reportError(String(e)));
     },
     onNeedProject: openNewProjectPicker,
@@ -2562,6 +2569,7 @@ async function init() {
         const result = await sitePreview.handleComputerUseRequest(request);
         await api.respondPreviewComputer(request.requestId, true, result);
       } catch (error) {
+        sitePreview.stopComputerUse();
         const message = error instanceof Error ? error.message : String(error);
         await api.respondPreviewComputer(request.requestId, false, null, message).catch(() => undefined);
       }

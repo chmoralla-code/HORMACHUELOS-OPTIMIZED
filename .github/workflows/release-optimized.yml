@@ -78,9 +78,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Cinematic Cursor + Max Preview QA
+          releaseName: Hormachuelos Optimized v__VERSION__ · Monochrome Live Frame + Clean Cursor Exit
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
+
+            Monochrome active Preview frame:
+            - animates a crisp black-to-gray-to-white perimeter only while Computer Use is actively engaged
+            - clears the perimeter, AI cursor, target frame, status badge, and particles when the AI finishes, is cancelled, errors, or the user presses Stop
+            - keeps the border allocation stable, pauses while backgrounded, honors reduced motion, and uses no blur or backdrop filtering
 
             Cinematic, readable AI cursor:
             - adds a crisp cyan-violet target frame to every hovered or clicked Preview feature
