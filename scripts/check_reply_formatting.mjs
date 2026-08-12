@@ -21,11 +21,20 @@ function loadReplyModules() {
   utilSandbox.exports = utilSandbox.module.exports;
   vm.runInNewContext(transpileModule("../src/components/util.ts"), utilSandbox, { filename: "util.ts" });
 
+  const policySandbox = { module: { exports: {} }, exports: null };
+  policySandbox.exports = policySandbox.module.exports;
+  vm.runInNewContext(
+    transpileModule("../src/components/preview-url-policy.ts"),
+    policySandbox,
+    { filename: "preview-url-policy.ts" },
+  );
+
   const sessionSandbox = {
     module: { exports: {} },
     exports: null,
     require: (specifier) => {
       if (specifier === "./util") return utilSandbox.module.exports;
+      if (specifier === "./preview-url-policy") return policySandbox.module.exports;
       throw new Error(`Unexpected session dependency: ${specifier}`);
     },
   };
