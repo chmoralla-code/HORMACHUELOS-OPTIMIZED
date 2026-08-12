@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn rejects_desktop_and_unbounded_requests() {
-        assert!(validate_tool_request("computer_list_windows", &json!({})).is_err());
+        assert!(validate_tool_request("computer_desktop_legacy", &json!({})).is_err());
         let actions = (0..=MAX_ACTIONS)
             .map(|_| json!({ "type": "wait", "duration_ms": 0 }))
             .collect::<Vec<_>>();
