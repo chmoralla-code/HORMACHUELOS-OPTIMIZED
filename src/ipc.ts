@@ -17,7 +17,7 @@ export type Settings = {
   capability_mode: string;
   /** Reply in Taglish when enabled */
   taglish: boolean;
-  /** Allow the Cursor SDK agent to observe and control approved Windows apps. */
+  /** Allow any model to observe and control only the active Preview tab. */
   computer_use_enabled: boolean;
   /** Keep long build tasks on a durable plan and request a final verification pass. */
   smart_agent_enabled: boolean;
