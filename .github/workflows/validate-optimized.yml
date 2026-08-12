@@ -72,5 +72,11 @@ jobs:
           workspaces: src-tauri -> target
           cache-on-failure: true
 
+      - name: Prepare compile-only frontend
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Set-Content -LiteralPath dist/index.html -Value '<!doctype html><title>Native compile check</title>'
+
       - name: Compile native library
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml --lib
