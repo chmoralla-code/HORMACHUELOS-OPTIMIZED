@@ -78,12 +78,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Ask Max + Computer Use Menu
+          releaseName: Hormachuelos Optimized v__VERSION__ · Preview Computer Use Action Fix
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
+            Preview Computer Use reliability:
+            - fixes Ask mode exposing observation while silently removing click, hover, type, key, scroll, drag, and wait actions
+            - "playwright this website" and equivalent prompts now drive the live Preview before source inspection or test authoring
+            - Cursor and direct providers now receive the same Preview-only computer_observe + computer_actions contract
+            - adds an executable Ask-mode host-tool round-trip regression to prevent observation-only releases
+
             Ask Max + Preview Computer Use:
-            - new Computer Use control in the Preview hamburger menu: Off, Auto, or On
+            - Computer Use control in the Preview hamburger menu: Off, Auto, or On
             - Auto recognizes clear Playwright, browser-test, and Preview-debug requests
             - direct “enable/disable computer use” prompts update the visible policy
             - AI cursor remains strictly limited to the active Preview tab
