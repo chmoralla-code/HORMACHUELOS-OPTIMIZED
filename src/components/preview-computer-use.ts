@@ -467,9 +467,14 @@ class PreviewFrameComputerController {
         results,
         cursor: { x: Math.round(this.cursorPoint.x), y: Math.round(this.cursorPoint.y) },
       };
+    } catch (error) {
+      // An action error is terminal for this controller batch; never leave a
+      // misleading cursor or status badge over the user's page.
+      this.destroyOverlay();
+      throw error;
     } finally {
       if (this.abortController === abortController) this.abortController = null;
-      this.scheduleSettle();
+      if (this.cursor) this.scheduleSettle();
     }
   }
 
