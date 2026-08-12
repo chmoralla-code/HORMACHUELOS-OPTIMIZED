@@ -281,8 +281,8 @@ impl Settings {
         }
         let cap = s.capability_mode.trim().to_ascii_lowercase();
         s.capability_mode = match cap.as_str() {
-            "thinking" | "guided" | "agent" | "balanced" | "answer_max" | "investigate" | "brief"
-            | "autonomous" | "max" => cap,
+            "thinking" | "guided" | "agent" | "balanced" | "answer_max" | "investigate"
+            | "brief" | "autonomous" | "max" => cap,
             _ => capability_for_mode(&s.permission_mode).into(),
         };
         s.model_effort = normalize_model_effort(&s.model_effort);
