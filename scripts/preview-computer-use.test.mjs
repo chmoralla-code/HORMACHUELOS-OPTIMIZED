@@ -234,3 +234,20 @@ test("Preview routing rejects stale project/session owners across async boundari
   assert.match(session, /serverOwner\?: string/);
   assert.match(session, /isLocalServer\(entryPath\) && !ownsLocalServer/);
 });
+test("dev-server Preview opens only from verified result metadata for its exact owner", () => {
+  const openSetStart = main.indexOf("const PREVIEW_OPEN_TOOLS");
+  const openSetEnd = main.indexOf("]);", openSetStart);
+  const openSet = main.slice(openSetStart, openSetEnd);
+  assert.doesNotMatch(openSet, /open_url|openurl/,
+    "open_url tool calls must not speculatively navigate Preview");
+  assert.match(main, /pendingDevServerTools = new Map/);
+  assert.match(main, /normalizeToolName\(e\.payload\.name\) !== "start_dev_server"/);
+  assert.match(main, /HORMACHUELOS_DEV_SERVER_META /);
+  assert.match(main, /meta\.kind !== "dev_server"/);
+  assert.match(main, /url\.protocol !== "http:" \|\| !loopback/);
+  assert.match(main, /!sameProjectPath\(meta\.projectRoot, expectedProjectRoot\)/);
+  assert.match(main, /pendingDevServerTools\.delete\(e\.payload\.id\)/);
+  assert.match(main, /sid !== pending\.sessionId/);
+  assert.match(main, /sessionId: pending\.sessionId,[\s\S]*projectRoot: pending\.projectRoot,[\s\S]*entryPath: meta\.url/);
+  assert.match(main, /if \(sid && isTerminalAgentEvent\(e\)\) clearPendingDevServerTools\(sid\)/);
+});

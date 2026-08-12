@@ -99,6 +99,8 @@ const runModelProfiles = new Map<
 >();
 /** Each run keeps its original workspace even when the visible project changes. */
 const runProjectPaths = new Map<string, string>();
+/** start_dev_server calls awaiting a verified native metadata result. */
+const pendingDevServerTools = new Map<string, { sessionId: string; projectRoot: string }>();
 /** The user's prompt for each in-flight run — used to gate auto-opening the preview. */
 const runPrompts = new Map<string, string>();
 /** Files created/edited during a run — used to auto-open the build preview. */
@@ -169,8 +171,6 @@ const PREVIEW_WRITE_TOOLS = new Set([
 const PREVIEW_OPEN_TOOLS = new Set([
   "open_path",
   "openpath",
-  "open_url",
-  "openurl",
   "open_file",
   "openfile",
 ]);
@@ -265,29 +265,26 @@ async function openBuildPreview(opts: {
   /** When false, open a blank preview shell (no auto-picked HTML). Default true. */
   autoPickEntry?: boolean;
 }) {
-  if (!currentProjectPath || !sitePreview) return;
-  if (opts.projectRoot && !sameProjectPath(opts.projectRoot, currentProjectPath)) return;
+  if (!sitePreview) return;
   const selectionGeneration = projectSelectionGeneration;
-  const projectRoot = opts.projectRoot || currentProjectPath;
   const targetSessionId = opts.sessionId || activeSessionId || undefined;
+  const projectRoot = opts.projectRoot || currentProjectPath;
+  if (!projectRoot) return;
+  const targetsVisibleSession = !targetSessionId || targetSessionId === activeSessionId;
+  if (
+    targetsVisibleSession
+    && (!currentProjectPath || !sameProjectPath(projectRoot, currentProjectPath))
+  ) return;
   if (opts.sessionId) {
     const storedPreview = sessionForId(opts.sessionId)?.preview;
     const targetAlreadyOpen = opts.sessionId === activeSessionId
-      ? sitePreview.isOpen
+      ? sitePreview.isOpen && sitePreview.ownsView(opts.sessionId, projectRoot)
       : Boolean(storedPreview && sameProjectPath(storedPreview.projectRoot, projectRoot));
     if (previewOpenedForRun.has(opts.sessionId) && targetAlreadyOpen) return;
     previewOpenedForRun.add(opts.sessionId);
   }
   let files = opts.files || [];
   if (!files.length) files = [...(await snapshotProjectFiles(projectRoot))];
-  if (
-    selectionGeneration !== projectSelectionGeneration
-    || !currentProjectPath
-    || !sameProjectPath(projectRoot, currentProjectPath)
-  ) {
-    if (opts.sessionId) previewOpenedForRun.delete(opts.sessionId);
-    return;
-  }
   const autoPick = opts.autoPickEntry !== false;
   const entry = opts.entryPath || (autoPick ? pickPreviewEntry(files) : null);
   const stageForOwner = () => {
@@ -304,9 +301,17 @@ async function openBuildPreview(opts: {
     saveSession(targetSession);
   };
 
-  // A background agent may finish while another session is visible. Persist its
-  // Preview on the owning session without mounting it into the visible panel.
+  // Background runs, including those from another project, stage a durable tab
+  // on their exact owner without touching the visible Preview.
   if (targetSessionId && targetSessionId !== activeSessionId) {
+    stageForOwner();
+    return;
+  }
+  if (
+    selectionGeneration !== projectSelectionGeneration
+    || !currentProjectPath
+    || !sameProjectPath(projectRoot, currentProjectPath)
+  ) {
     stageForOwner();
     return;
   }
@@ -334,6 +339,82 @@ async function openBuildPreview(opts: {
   }
 }
 
+const DEV_SERVER_META_PREFIX = "HORMACHUELOS_DEV_SERVER_META ";
+
+type VerifiedDevServerMeta = { url: string; projectRoot: string };
+
+function parseVerifiedDevServerMeta(
+  content: string,
+  expectedProjectRoot: string,
+): VerifiedDevServerMeta | null {
+  const lines = String(content || "")
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith(DEV_SERVER_META_PREFIX));
+  if (lines.length !== 1) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(lines[0].slice(DEV_SERVER_META_PREFIX.length));
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const meta = raw as Record<string, unknown>;
+  if (
+    meta.kind !== "dev_server"
+    || typeof meta.url !== "string"
+    || typeof meta.projectRoot !== "string"
+    || !sameProjectPath(meta.projectRoot, expectedProjectRoot)
+  ) return null;
+  try {
+    const url = new URL(meta.url);
+    const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    if (url.protocol !== "http:" || !loopback || url.username || url.password) return null;
+    return { url: url.toString(), projectRoot: meta.projectRoot };
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingDevServerTools(sessionId: string): void {
+  for (const [toolId, pending] of pendingDevServerTools) {
+    if (pending.sessionId === sessionId) pendingDevServerTools.delete(toolId);
+  }
+}
+
+function routeVerifiedDevServerEvent(e: AgentEvent): void {
+  const sid = e.session_id;
+  if (e.kind === "tool_call") {
+    if (normalizeToolName(e.payload.name) !== "start_dev_server") return;
+    const projectRoot = runProjectPaths.get(sid);
+    const owner = sessionForId(sid);
+    if (
+      e.payload.id
+      && projectRoot
+      && owner
+      && sameProjectPath(owner.projectId, projectRoot)
+    ) pendingDevServerTools.set(e.payload.id, { sessionId: sid, projectRoot });
+    return;
+  }
+  if (e.kind !== "tool_result") return;
+  const pending = pendingDevServerTools.get(e.payload.id);
+  if (!pending) return;
+  // A result consumes its pending record on every path, including failure or
+  // forged/mismatched metadata, so stale tool ids can never be replayed.
+  pendingDevServerTools.delete(e.payload.id);
+  if (
+    !e.payload.ok
+    || sid !== pending.sessionId
+    || normalizeToolName(e.payload.name) !== "start_dev_server"
+  ) return;
+  const meta = parseVerifiedDevServerMeta(e.payload.content, pending.projectRoot);
+  if (!meta) return;
+  void openBuildPreview({
+    sessionId: pending.sessionId,
+    projectRoot: pending.projectRoot,
+    entryPath: meta.url,
+    title: "Dev server preview",
+  });
+}
 /**
  * A build only auto-opens the preview when the user's own request points at
  * something previewable (a website, page, app, game, UI, etc.). Plain code
@@ -498,6 +579,7 @@ function releaseFrontendRun(sessionId: string): boolean {
   runBaselineFiles.delete(sessionId);
   previewOpenedForRun.delete(sessionId);
   pendingConfirms.delete(sessionId);
+  clearPendingDevServerTools(sessionId);
   return wasTracked;
 }
 
@@ -2071,6 +2153,8 @@ function handleAgentEvent(e: AgentEvent) {
   // short grace periods instead of unlocking on the event itself.
   if (sid) startingSessions.delete(sid);
   if (sid && isTerminalAgentEvent(e)) scheduleTerminalRunReconciliation(sid);
+  if (e.kind === "tool_call" || e.kind === "tool_result") routeVerifiedDevServerEvent(e);
+  if (sid && isTerminalAgentEvent(e)) clearPendingDevServerTools(sid);
   const owningSession = sid ? sessionForId(sid) : undefined;
   const smartStateChanged = owningSession ? applySmartAgentEvent(owningSession, e) : false;
   if (e.kind === "start") cancelDoneWorkingCue();
