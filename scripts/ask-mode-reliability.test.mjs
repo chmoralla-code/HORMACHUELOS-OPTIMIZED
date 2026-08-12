@@ -16,7 +16,7 @@ test("Ask mode defaults to Answer Max and requires a visible response", async ()
   assert.match(agent, /AutomaticContinuationReason::EmptyAnswer/);
   assert.match(agent, /response_has_visible_answer/);
   assert.match(agent, /maximum answer reliability/i);
-  assert.match(agent, /Never return an empty answer/i);
+  assert.match(agent, /Every turn must end with a substantive visible answer/i);
   assert.match(config, /"ask" \| "research" => "answer_max"/);
   assert.match(modelbar, /id: "answer_max"/);
   assert.match(settings, /ask: \["answer_max", "investigate", "brief"\]/);
