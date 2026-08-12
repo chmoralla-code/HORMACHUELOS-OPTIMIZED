@@ -107,6 +107,9 @@ export type ComputerUseStatus = {
 export type PreviewComputerRequest = {
   requestId: string;
   protocolVersion: number;
+  /** Session and canonical root captured atomically by the native broker. */
+  sessionId: string;
+  projectRoot: string;
   operation: "observe" | "actions";
   args: Record<string, unknown>;
 };
@@ -289,7 +292,7 @@ export type LicenseStatus = {
 
 export const api = {
   getProjectRoot: (): Promise<string | null> => invoke("get_project_root"),
-  setProjectRoot: (path: string): Promise<void> => invoke("set_project_root", { path }),
+  setProjectRoot: (path: string): Promise<string> => invoke("set_project_root", { path }),
   listRecentProjects: (): Promise<string[]> => invoke("list_recent_projects"),
   /** Forget one recent project without deleting its folder or files. */
   removeRecentProject: (path: string): Promise<boolean> => invoke("remove_recent_project", { path }),
