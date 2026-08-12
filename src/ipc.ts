@@ -304,6 +304,11 @@ export type LicenseStatus = {
 export const api = {
   getProjectRoot: (): Promise<string | null> => invoke("get_project_root"),
   validateDevServerLease: (
+    leaseId: string | null,
+    projectRoot: string,
+    url: string,
+  ): Promise<DevServerLeaseValidation> =>
+    invoke("validate_dev_server_lease", { leaseId, projectRoot, url }),
   setProjectRoot: (path: string): Promise<string> => invoke("set_project_root", { path }),
   listRecentProjects: (): Promise<string[]> => invoke("list_recent_projects"),
   /** Forget one recent project without deleting its folder or files. */
