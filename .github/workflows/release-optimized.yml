@@ -63,7 +63,7 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 
       - name: Detect release channel
-        id: release-channel
+        id: release_channel
         shell: pwsh
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
@@ -89,6 +89,6 @@ jobs:
 
             Download page: https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/
           releaseDraft: false
-          prerelease: ${{ steps.release-channel.outputs.prerelease }}
+          prerelease: ${{ steps.release_channel.outputs.prerelease }}
           releaseAssetNamePattern: Hormachuelos_Optimized_[version]_x64[setup][ext]
           uploadUpdaterSignatures: false
