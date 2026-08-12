@@ -115,6 +115,83 @@ test("duplex protocol survives a long run of native host tool responses", async 
   protocol.close();
 });
 
+test("Ask mode preserves authorized Preview observe and action tools", async () => {
+  const input = new PassThrough();
+  const events = [];
+  const protocol = createDuplexProtocol(input, (event) => events.push(event));
+  input.write(`${JSON.stringify({ apiKey: "test" })}\n`);
+  assert.deepEqual(await protocol.readRequest(), { apiKey: "test" });
+
+  const schemas = [
+    {
+      name: "computer_observe",
+      description: "Observe the active Preview tab",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "computer_actions",
+      description: "Act inside the active Preview tab",
+      inputSchema: {
+        type: "object",
+        properties: {
+          actions: { type: "array" },
+        },
+        required: ["actions"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "write_file",
+      description: "Write a project file",
+      inputSchema: { type: "object", properties: {} },
+    },
+  ];
+
+  const outcomes = new Map();
+  const tools = createHostTools(
+    schemas,
+    resolveExecutionPolicy("ask"),
+    protocol,
+    outcomes,
+  );
+  assert.deepEqual(
+    Object.keys(tools).sort(),
+    ["computer_actions", "computer_observe"],
+  );
+
+  const actions = [{ type: "click", ref: "p1" }];
+  const pending = tools.computer_actions.execute(
+    { actions },
+    { toolCallId: "preview-action-1" },
+  );
+  const request = events.at(-1);
+  assert.equal(request.type, "host_tool_request");
+  assert.equal(request.name, "computer_actions");
+  assert.deepEqual(request.arguments, { actions });
+
+  input.write(
+    `${JSON.stringify({
+      type: "host_tool_response",
+      requestId: request.requestId,
+      ok: true,
+      content: JSON.stringify({
+        ok: true,
+        scope: "active-preview-tab-only",
+        completed: 1,
+      }),
+    })}\n`,
+  );
+
+  const result = await pending;
+  assert.equal(result.isError, false);
+  assert.equal(outcomes.get("preview-action-1"), true);
+  protocol.close();
+});
+
 test("Cursor custom tools delegate to the native dispatcher and preserve failures", async () => {
   const calls = [];
   const protocol = {

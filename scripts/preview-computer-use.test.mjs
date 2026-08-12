@@ -10,6 +10,9 @@ const cursorBridge = read("src-tauri/src/cursor_bridge.rs");
 const preview = read("src/components/site-preview.ts");
 const frameController = read("src/components/preview-computer-use.ts");
 const browserController = read("src-tauri/src/preview_browser.rs");
+const agent = read("src-tauri/src/agent.rs");
+const cursorNodeBridge = read("scripts/cursor-bridge.mjs");
+const packagedCursorNodeBridge = read("src-tauri/runtime/scripts/cursor-bridge.mjs");
 
 const removedDesktopSymbols = [
   "SetCursorPos", "SendInput", "PrintWindow", "EnumWindows", "GetForegroundWindow",
@@ -32,6 +35,26 @@ test("model surface is reduced to observe plus bounded action batches", () => {
   for (const symbol of removedDesktopSymbols.slice(5)) assert.doesNotMatch(tools, new RegExp(symbol));
   assert.match(cursorBridge, /cursor_host_tool_schemas\(permission_mode, computer_use_active\)/);
   assert.match(cursorBridge, /"computerUseEnabled": false/);
+});
+
+test("all model runtimes receive the same Preview-only tool contract", () => {
+  assert.equal(cursorNodeBridge, packagedCursorNodeBridge);
+  assert.match(cursorNodeBridge, /"computer_observe"[\s\S]*"computer_actions"/);
+  assert.doesNotMatch(
+    agent,
+    /computer_\* tools: protected Windows desktop control/,
+  );
+  assert.doesNotMatch(
+    agent,
+    /TOOL REFERENCE:[^\n]*(?:computer_list_windows|computer_focus_window|computer_click|computer_type_text|computer_game_sequence)/,
+  );
+  assert.match(
+    agent,
+    /TOOL REFERENCE:[^\n]*computer_observe, computer_actions/,
+  );
+  assert.match(agent, /playwright this website/);
+  assert.match(agent, /drive the live Preview first/);
+  assert.match(agent, /computer_observe \/ computer_actions: Preview-only control/);
 });
 
 test("frontend always selects the active Preview tab and stops on tab changes", () => {
