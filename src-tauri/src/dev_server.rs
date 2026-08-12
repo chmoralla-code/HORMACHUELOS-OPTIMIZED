@@ -250,7 +250,8 @@ fn process_instance(pid: u32) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn process_instance(pid: u32) -> Option<String> {
-    let stat = std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
+    let stat =
+        std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
     let (_, fields) = stat.rsplit_once(") ")?;
     // The tail begins at field 3 (state); process start time is field 22.
     let start_time = fields.split_whitespace().nth(19)?;
@@ -374,9 +375,7 @@ fn canonical_scope(
         bail!("Development-server working directory is not a directory.");
     }
     if !work_dir.starts_with(&root) {
-        bail!(
-            "Development-server working directory must stay inside the active project root."
-        );
+        bail!("Development-server working directory must stay inside the active project root.");
     }
     let project_root = crate::workspace::display_project_root(&root);
     let work_dir_display = crate::workspace::display_project_root(&work_dir);
@@ -406,12 +405,7 @@ pub fn prepare_dev_server(
         persist_registry(&registry)?;
     }
 
-    match decide_ownership_with(
-        &registry.leases,
-        &candidate,
-        |_| true,
-        local_port_is_open,
-    ) {
+    match decide_ownership_with(&registry.leases, &candidate, |_| true, local_port_is_open) {
         OwnershipDecision::Reuse(index) => {
             registry.leases[index].last_seen_at = now_secs();
             let lease = registry.leases[index].clone();
@@ -530,7 +524,12 @@ mod tests {
         let candidate = prepared("C:/Projects/A", "C:/Projects/A/web", "npm run dev", 3000);
         let leases = vec![lease(&candidate, 42)];
         assert_eq!(
-            decide_ownership_with(&leases, &candidate, |lease| lease.pid == 42, |port| port == 3000),
+            decide_ownership_with(
+                &leases,
+                &candidate,
+                |lease| lease.pid == 42,
+                |port| port == 3000
+            ),
             OwnershipDecision::Reuse(0)
         );
     }
@@ -597,13 +596,7 @@ mod tests {
 
         let accepted = canonical_scope(&root, Some("web"), "npm run dev", Some(3000)).unwrap();
         assert_eq!(accepted.work_dir, inside.canonicalize().unwrap());
-        assert!(canonical_scope(
-            &root,
-            outside.to_str(),
-            "npm run dev",
-            Some(3000)
-        )
-        .is_err());
+        assert!(canonical_scope(&root, outside.to_str(), "npm run dev", Some(3000)).is_err());
 
         std::fs::remove_dir_all(base).unwrap();
     }

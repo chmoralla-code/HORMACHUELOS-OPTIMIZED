@@ -3947,9 +3947,7 @@ fn format_dev_server_result(
     reused: bool,
     ready: bool,
 ) -> Result<String> {
-    let url = lease
-        .port
-        .map(|port| format!("http://127.0.0.1:{port}"));
+    let url = lease.port.map(|port| format!("http://127.0.0.1:{port}"));
     let preview = url
         .as_deref()
         .map(|url| format!(" Preview: {url}."))
@@ -4723,15 +4721,62 @@ mod security_tests {
             started.elapsed() < Duration::from_secs(2),
             "the launcher waited for a long-running child: {result}"
         );
-        assert!(result.contains("Started local development server in background"));
+        assert!(result.contains("Started project-owned local development server in background"));
         assert!(tree.root.join(".hormachuelos-dev-server.log").exists());
 
-        let pid = result
-            .split("PID ")
-            .nth(1)
-            .and_then(|tail| tail.split(')').next())
-            .and_then(|pid| pid.parse::<u32>().ok())
-            .expect("result should include the detached process PID");
+        let metadata_line = result
+            .lines()
+            .find_map(|line| line.strip_prefix("HORMACHUELOS_DEV_SERVER_META "))
+            .expect("result should include one-line dev-server metadata");
+        let metadata: Value = serde_json::from_str(metadata_line).expect("metadata should be JSON");
+        let keys = metadata
+            .as_object()
+            .expect("metadata should be an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            [
+                "commandFingerprint",
+                "kind",
+                "leaseId",
+                "logPath",
+                "pid",
+                "port",
+                "projectRoot",
+                "ready",
+                "reused",
+                "status",
+                "url",
+                "workDir",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(metadata["kind"], "hormachuelos-dev-server");
+        assert_eq!(metadata["status"], "starting");
+        assert_eq!(metadata["reused"], false);
+        assert_eq!(metadata["ready"], false);
+        assert!(metadata["port"].is_null());
+        assert!(metadata["url"].is_null());
+        assert_eq!(
+            metadata["projectRoot"],
+            crate::workspace::display_project_root(&tree.root)
+        );
+        assert_eq!(
+            metadata["workDir"],
+            crate::workspace::display_project_root(&tree.root)
+        );
+        assert_eq!(
+            metadata["commandFingerprint"].as_str().map(str::len),
+            Some(64)
+        );
+
+        let pid = metadata["pid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .expect("metadata should include the detached process PID");
         kill_process_tree(pid);
     }
 
