@@ -105,6 +105,42 @@ test("frontend always selects the active Preview tab and stops on tab changes", 
   assert.doesNotMatch(preview, /frame\.src\s*=\s*tab\.entryPath/);
 });
 
+test("project and Browser tabs select and verify nested scroll targets", () => {
+  assert.match(frameController, /elementFromPoint\(this\.cursorPoint\.x, this\.cursorPoint\.y\)/);
+  assert.match(frameController, /while \(node\)/);
+  assert.match(frameController, /choosePreviewScrollCandidate/);
+  assert.match(frameController, /target: candidate\.target === this\.view \? "page" : "nested"/);
+  assert.match(frameController, /before, after/);
+  assert.match(frameController, /moved, boundary: !moved/);
+  assert.match(frameController, /scrollable = true|scrollable: true/);
+  assert.match(frameController, /MAX_INTERACTIVE_SCAN = 320/);
+  assert.match(frameController, /MAX_ANCESTOR_SCAN = 480/);
+  assert.match(frameController, /inspectedAncestors/);
+  assert.match(frameController, /\[\.\.\.scrollables, \.\.\.interactive\]/);
+  assert.doesNotMatch(frameController, /visibleSemanticContent/);
+  assert.doesNotMatch(frameController, /querySelectorAll\("\*"\)/);
+  assert.match(frameController, /viewport\.scrollY is page-only/);
+
+  assert.match(browserController, /document\.elementFromPoint\(point\.x,point\.y\)/);
+  assert.match(browserController, /for\(let n=el;n;n=n\.parentElement\)/);
+  assert.match(browserController, /chooseScroll\(scrollCandidates/);
+  assert.match(browserController, /target:candidate\.kind/);
+  assert.match(browserController, /before,after,applied/);
+  assert.match(browserController, /moved,boundary:!moved/);
+  assert.match(browserController, /item\.scrollable=true/);
+  assert.match(browserController, /MAX_SCAN=320,MAX_ANCESTORS=480/);
+  assert.match(browserController, /inspected=new Set\(\)/);
+  assert.match(browserController, /\[\.\.\.scrollables,\.\.\.interactive\]/);
+  assert.doesNotMatch(browserController, /const content=\[\]/);
+  assert.doesNotMatch(browserController, /querySelectorAll\('\*'\)\.filter\(scrollable\)/);
+  assert.match(browserController, /viewport\.scrollY is page-only/);
+
+  assert.match(tools, /with no target it scrolls under the visible AI cursor/i);
+  assert.match(tools, /Positive delta_y scrolls down and negative scrolls up/);
+  assert.match(agent, /viewport\.scrollY measures only the page/);
+  assert.match(agent, /do not repeat the identical scroll blindly/);
+});
+
 test("project and Browser tabs render a compositor-friendly in-preview cursor", () => {
   for (const source of [frameController, browserController]) {
     assert.match(source, /translate3d/);

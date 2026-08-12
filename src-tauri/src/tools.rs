@@ -1553,7 +1553,7 @@ fn computer_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "computer_actions",
-                "description": "Run one fast, bounded, auto-approved action batch inside Preview. Page actions support move, hover, click, type, key, scroll, drag, and wait. Preview-native open_tab, navigate, and activate_tab never launch the system browser; each must be the only action in its batch and must be followed by computer_observe. Prefer observed refs. The visible AI cursor never leaves Preview.",
+                "description": "Run one fast, bounded, auto-approved action batch inside Preview. Page actions support move, hover, click, type, key, scroll, drag, and wait. Scroll selects the nearest movable page or nested pane at the supplied ref/selector/x-y; with no target it scrolls under the visible AI cursor. Positive delta_y scrolls down and negative scrolls up. Results report measured before/after/applied positions, moved, and boundary; viewport.scrollY is page-only. Preview-native open_tab, navigate, and activate_tab never launch the system browser; each must be the only action in its batch and must be followed by computer_observe. Prefer observed refs. The visible AI cursor never leaves Preview.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1565,7 +1565,7 @@ fn computer_tool_schemas() -> Vec<Value> {
                                 "type": "object",
                                 "properties": {
                                     "type": { "type": "string", "enum": ["move", "hover", "click", "type", "key", "scroll", "drag", "wait", "open_tab", "navigate", "activate_tab"] },
-                                    "ref": { "type": "string", "description": "Element ref returned by computer_observe." },
+                                    "ref": { "type": "string", "description": "Interactive or scrollable element ref returned by computer_observe. For nested scrolling, use the pane ref or any descendant ref." },
                                     "selector": { "type": "string", "description": "CSS selector fallback within the active Preview page." },
                                     "x": { "type": "number", "description": "Viewport X coordinate fallback." },
                                     "y": { "type": "number", "description": "Viewport Y coordinate fallback." },
@@ -1579,7 +1579,7 @@ fn computer_tool_schemas() -> Vec<Value> {
                                     "button": { "type": "string", "enum": ["left", "right", "middle"] },
                                     "clicks": { "type": "integer", "enum": [1, 2] },
                                     "delta_x": { "type": "number", "minimum": -4000, "maximum": 4000 },
-                                    "delta_y": { "type": "number", "minimum": -4000, "maximum": 4000, "description": "Positive scrolls down; negative scrolls up." },
+                                    "delta_y": { "type": "number", "minimum": -4000, "maximum": 4000, "description": "Positive scrolls down; negative scrolls up. Read moved/boundary and before/after in the action result." },
                                     "duration_ms": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "Animation/wait duration, or maximum page-ready wait for a Preview tab action." },
                                     "url": { "type": "string", "maxLength": 4096, "description": "Required safe http(s) URL for open_tab or navigate. Opens inside Preview, never the system browser." },
                                     "tab_id": { "type": "string", "maxLength": 128, "description": "Required exact tab id from computer_observe for activate_tab." }

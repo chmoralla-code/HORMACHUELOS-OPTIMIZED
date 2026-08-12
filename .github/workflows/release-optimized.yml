@@ -78,9 +78,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Preview Tab Control + Visible AI Cursor
+          releaseName: Hormachuelos Optimized v__VERSION__ · Reliable Page + Nested Scrolling
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
+
+            Reliable Preview scrolling:
+            - scrolls the nearest movable nested table, list, modal, or page under the AI cursor
+            - observed scrollable panes receive refs with current and maximum X/Y positions
+            - positive delta_y scrolls down, negative scrolls up, and horizontal panes work too
+            - inner panes chain outward at their boundary instead of silently repeating a no-op
+            - every scroll reports measured before/after/applied movement, so page scrollY no longer misdiagnoses nested scrolling
+            - keeps all scrolling isolated to the active Preview tab with no desktop input access
 
             Preview tab lifecycle fix:
             - adds Preview-native navigate, open_tab, and activate_tab actions so Computer Use never loses the page to an external browser tab
