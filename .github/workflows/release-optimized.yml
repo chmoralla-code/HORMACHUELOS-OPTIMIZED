@@ -47,6 +47,8 @@ jobs:
 
       - name: Run FPS regression guards
         run: npm run test:fps
+      - name: Run Preview Computer Use isolation guards
+        run: npm run test:computer-use
 
       - name: Run reply-formatting guard
         run: npm run test:reply-formatting
@@ -66,20 +68,20 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__
+          releaseName: Hormachuelos Optimized v__VERSION__ · Preview Computer Use Beta
           releaseBody: |
-            Independent FPS-focused Windows edition.
+            Beta of the independent FPS-focused Windows edition.
 
-            Highlights:
-            - coalesced assistant Markdown painting and chat scrolling
-            - incremental reasoning output
-            - reduced Source Lens and browser-pointer inspection overhead
-            - contained offscreen messages and disabled perpetual visual effects
-            - coalesced session persistence with quota backoff
-            - separate executable, app identifier, data folders, credential service, and update channel
+            Preview Computer Use v2:
+            - visible luminous AI cursor inside the active Preview tab only
+            - auto-approved hover, click, type, key, scroll, drag, and wait batches
+            - works with project previews and isolated Preview Browser tabs
+            - stops on tab switch, Preview close, cancellation, Pause, or Ctrl+Alt+Esc
+            - removes native desktop screenshots, mouse/keyboard injection, and the full-screen overlay
+            - preserves the optimized chat, Source Lens, Design Mode, session, and model improvements from v1.0.2
 
             Download page: https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/
           releaseDraft: false
-          prerelease: false
+          prerelease: true
           releaseAssetNamePattern: Hormachuelos_Optimized_[version]_x64[setup][ext]
           uploadUpdaterSignatures: false
