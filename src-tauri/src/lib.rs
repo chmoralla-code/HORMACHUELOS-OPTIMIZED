@@ -22,7 +22,7 @@ pub mod tools;
 pub mod workspace;
 
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 #[derive(serde::Serialize)]
@@ -1434,30 +1434,6 @@ async fn start_integration_browser_auth(
         .map_err(|e| e.to_string())
 }
 
-fn ensure_computer_fx_overlay(app: &AppHandle) {
-    if app.get_webview_window("computer-fx").is_some() {
-        return;
-    }
-    if let Ok(window) = WebviewWindowBuilder::new(
-        app,
-        "computer-fx",
-        WebviewUrl::App("computer-fx.html".into()),
-    )
-    .title("Computer FX")
-    .transparent(true)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .visible(true)
-    .focused(false)
-    .resizable(false)
-    .fullscreen(true)
-    .build()
-    {
-        let _ = window.set_ignore_cursor_events(true);
-    }
-}
-
 pub fn run() {
     tauri::Builder::default()
         // Keep this first: Tauri's single-instance guard must initialize before
@@ -1547,11 +1523,7 @@ pub fn run() {
             start_integration_browser_auth,
         ])
         .setup(|app| {
-            let handle = app.handle().clone();
-            computer_fx::install_emitter(move |event| {
-                ensure_computer_fx_overlay(&handle);
-                let _ = handle.emit("computer-use-fx", &event);
-            });
+            computer_use::install(app.handle().clone());
             computer_use::install_emergency_hotkey(app.handle().clone());
             Ok(())
         })
