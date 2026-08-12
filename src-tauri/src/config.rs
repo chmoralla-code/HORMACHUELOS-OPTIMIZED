@@ -66,9 +66,13 @@ pub struct Settings {
     /// (legacy: low | max also accepted)
     #[serde(default = "default_model_effort")]
     pub model_effort: String,
-    /// Explicit opt-in for native Windows desktop control through Cursor SDK custom tools.
+    /// Keep Preview Computer Use available for every request.
     #[serde(default)]
     pub computer_use_enabled: bool,
+    /// Allow explicit user prompts to enable Preview Computer Use for that request.
+    /// Missing on older settings defaults to Auto so the new menu is immediately useful.
+    #[serde(default = "default_computer_use_prompt_activation")]
+    pub computer_use_prompt_activation: bool,
     /// Provider-neutral task planning and final verification scaffolding.
     /// Defaults on so existing installations benefit after upgrading, while the
     /// user can turn it off from Settings for a lighter direct-response flow.
@@ -120,6 +124,10 @@ fn normalize_model_effort(value: &str) -> String {
         "ultra" | "max" => "ultra".into(),
         _ => default_model_effort(),
     }
+}
+
+fn default_computer_use_prompt_activation() -> bool {
+    true
 }
 
 fn default_smart_agent_enabled() -> bool {
@@ -182,6 +190,7 @@ impl Default for Settings {
             taglish: false,
             model_effort: default_model_effort(),
             computer_use_enabled: false,
+            computer_use_prompt_activation: default_computer_use_prompt_activation(),
             smart_agent_enabled: default_smart_agent_enabled(),
             flavour_enabled: default_flavour_enabled(),
         }
