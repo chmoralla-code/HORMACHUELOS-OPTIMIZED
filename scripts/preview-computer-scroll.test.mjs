@@ -29,10 +29,10 @@ test("scroll chains outward when the nested pane is at its boundary", () => {
   assert.equal(choosePreviewScrollCandidate([nestedTop, pageBelowTop], 0, -520, false)?.target, "page");
 });
 
-test("explicit pane refs stay locked and report boundaries instead of silently retargeting", () => {
+test("explicit pane refs also chain outward at a nested boundary", () => {
   const nestedBottom = candidate("roles-table", 0, 900, 0, 900);
   const page = candidate("page", 0, 65, 0, 1200);
-  assert.equal(choosePreviewScrollCandidate([nestedBottom, page], 0, 520, true)?.target, "roles-table");
+  assert.equal(choosePreviewScrollCandidate([nestedBottom, page], 0, 520, true)?.target, "page");
 });
 
 test("horizontal and vertical movement detection is measured from before and after state", () => {
