@@ -132,7 +132,10 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
             .and_then(Value::as_str)
             .context("A type action requires text.")?;
         *text_chars = text_chars.saturating_add(text.chars().count());
-        ensure!(*text_chars <= MAX_TEXT_CHARS, "Action batch text is too large.");
+        ensure!(
+            *text_chars <= MAX_TEXT_CHARS,
+            "Action batch text is too large."
+        );
     }
     if kind == "set_value" {
         let value = object
@@ -140,28 +143,45 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
             .and_then(Value::as_str)
             .context("A set_value action requires value.")?;
         *text_chars = text_chars.saturating_add(value.chars().count());
-        ensure!(*text_chars <= MAX_TEXT_CHARS, "Action batch text is too large.");
+        ensure!(
+            *text_chars <= MAX_TEXT_CHARS,
+            "Action batch text is too large."
+        );
     }
     if kind == "check" {
         let expected = object
             .get("expect")
             .and_then(Value::as_object)
             .context("A check action requires a non-empty expect object.")?;
-        ensure!(!expected.is_empty(), "A check action requires at least one expected state.");
+        ensure!(
+            !expected.is_empty(),
+            "A check action requires at least one expected state."
+        );
         for (key, value) in expected {
             ensure!(
-                matches!(key.as_str(), "visible" | "enabled" | "checked" | "text" | "value" | "url" | "title"),
+                matches!(
+                    key.as_str(),
+                    "visible" | "enabled" | "checked" | "text" | "value" | "url" | "title"
+                ),
                 "Unsupported Preview check field: {key}."
             );
             if matches!(key.as_str(), "visible" | "enabled" | "checked") {
                 ensure!(value.is_boolean(), "Preview check {key} must be boolean.");
             } else {
-                let text = value.as_str().with_context(|| format!("Preview check {key} must be text."))?;
-                ensure!(text.chars().count() <= 2_048, "Preview check {key} is too long.");
+                let text = value
+                    .as_str()
+                    .with_context(|| format!("Preview check {key} must be text."))?;
+                ensure!(
+                    text.chars().count() <= 2_048,
+                    "Preview check {key} is too long."
+                );
             }
         }
         if let Some(mode) = object.get("match").and_then(Value::as_str) {
-            ensure!(matches!(mode, "contains" | "equals"), "Invalid Preview check match mode.");
+            ensure!(
+                matches!(mode, "contains" | "equals"),
+                "Invalid Preview check match mode."
+            );
         }
     }
     if kind == "key" {
@@ -183,7 +203,10 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
         let duration = duration
             .as_u64()
             .context("Preview duration_ms must be a non-negative integer.")?;
-        ensure!(duration <= 10_000, "One Preview action may not exceed 10 seconds.");
+        ensure!(
+            duration <= 10_000,
+            "One Preview action may not exceed 10 seconds."
+        );
     }
     if matches!(kind, "open_tab" | "navigate") {
         let raw = object
