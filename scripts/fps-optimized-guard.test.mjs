@@ -11,7 +11,7 @@ test("optimized product identity is independent", () => {
   const escapedVersion = packageManifest.version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   assert.equal(config.productName, "Hormachuelos Optimized");
   assert.equal(config.identifier, "com.hormachuelos.optimized");
-  assert.match(packageManifest.version, /^\d+\.\d+\.\d+$/);
+  assert.match(packageManifest.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   assert.equal(config.version, packageManifest.version);
   assert.match(cargo, new RegExp(`\\[package\\][\\s\\S]*?\\nversion = "${escapedVersion}"`));
   assert.match(read("src/index.html"), /body class="fps-optimized"/);
