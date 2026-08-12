@@ -148,7 +148,7 @@ fn is_hormachuelos_model_alias(model: &str) -> bool {
 fn capability_for_mode(mode: &str) -> &'static str {
     match mode {
         "auto" => "agent",
-        "ask" | "research" => "investigate",
+        "ask" | "research" => "answer_max",
         "full" | "multi_agent" => "autonomous",
         _ => "thinking",
     }
@@ -272,7 +272,7 @@ impl Settings {
         }
         let cap = s.capability_mode.trim().to_ascii_lowercase();
         s.capability_mode = match cap.as_str() {
-            "thinking" | "guided" | "agent" | "balanced" | "investigate" | "brief"
+            "thinking" | "guided" | "agent" | "balanced" | "answer_max" | "investigate" | "brief"
             | "autonomous" | "max" => cap,
             _ => capability_for_mode(&s.permission_mode).into(),
         };
@@ -440,7 +440,7 @@ impl Settings {
                     | "guided"
                     | "agent"
                     | "balanced"
-                    | "investigate"
+                    | "answer_max"`n                    | "investigate"
                     | "brief"
                     | "autonomous"
                     | "max"
@@ -817,7 +817,7 @@ mod tests {
         };
         assert!(research.validate().is_ok());
         assert_eq!(capability_for_mode("research"), "investigate");
-        assert_eq!(capability_for_mode("ask"), "investigate");
+        assert_eq!(capability_for_mode("ask"), "answer_max");
     }
 
     #[test]
