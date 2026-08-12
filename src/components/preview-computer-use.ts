@@ -385,8 +385,7 @@ class PreviewFrameComputerController {
       const deltaX = clamp(Number(action.delta_x ?? 0), -4_000, 4_000);
       const deltaY = clamp(Number(action.delta_y ?? 520), -4_000, 4_000);
       target.element?.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, deltaX, deltaY }));
-      const scroller = target.element instanceof HTMLElement
-        && target.element.scrollHeight > target.element.clientHeight
+      const scroller = isHtmlElement(target.element)`n        && target.element.scrollHeight > target.element.clientHeight
         ? target.element
         : this.view;
       scroller.scrollBy({ left: deltaX, top: deltaY, behavior: "auto" });
