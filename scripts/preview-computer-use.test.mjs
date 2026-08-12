@@ -131,7 +131,7 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
   assert.match(browserController, /before,after,applied/);
   assert.match(browserController, /moved,boundary:!moved/);
   assert.match(browserController, /item\.scrollable=true/);
-  assert.match(browserController, /MAX_SCAN=320,MAX_ANCESTORS=480/);
+  assert.match(browserController, /scanned>=320\|\|interactive\.length>=80/);
   assert.match(browserController, /inspected=new Set\(\)/);
   assert.match(browserController, /\[\.\.\.scrollables,\.\.\.interactive\]/);
   assert.match(browserController, /const semantic=/);
