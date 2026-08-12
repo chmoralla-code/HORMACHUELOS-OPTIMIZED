@@ -264,6 +264,38 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
     Ok(())
 }
 
+fn validate_loopback_navigation_with<F>(args: &Value, validate: F) -> Result<()>
+where
+    F: Fn(&str) -> bool,
+{
+    let Some(actions) = args.get("actions").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for action in actions {
+        let kind = action.get("type").and_then(Value::as_str).unwrap_or_default();
+        if !matches!(kind, "open_tab" | "navigate") {
+            continue;
+        }
+        let url = action.get("url").and_then(Value::as_str).unwrap_or_default();
+        if crate::dev_server::is_loopback_web_url(url) {
+            ensure!(
+                validate(url),
+                "Computer Use may open a loopback URL only when it matches a ready, live development-server lease owned by this exact project. Start or restart it with start_dev_server first."
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_loopback_navigation(
+    args: &Value,
+    owner: &crate::tools::ToolRunContext,
+) -> Result<()> {
+    validate_loopback_navigation_with(args, |url| {
+        crate::dev_server::validate_dev_server_lease(None, &owner.project_root, url)
+            .is_ok_and(|result| result.valid && result.ready)
+    })
+}
 fn validate_tool_request(name: &str, args: &Value) -> Result<&'static str> {
     let encoded = serde_json::to_vec(args)?;
     ensure!(
@@ -319,6 +351,8 @@ pub fn execute_tool(
         "Preview Computer Use is paused. Resume it in Settings before continuing."
     );
     let operation = validate_tool_request(name, args)?;
+    owner.require_preview_owner()?;
+    validate_loopback_navigation(args, owner)?;
     let app = APP
         .get()
         .context("Preview Computer Use is not initialized yet.")?;
@@ -450,7 +484,10 @@ pub fn install_emergency_hotkey(_app: AppHandle) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{preview_computer_request, status, validate_tool_request, MAX_ACTIONS};
+    use super::{
+        preview_computer_request, status, validate_loopback_navigation_with,
+        validate_tool_request, MAX_ACTIONS,
+    };
     use crate::tools::ToolRunContext;
     use serde_json::json;
 
@@ -550,6 +587,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn guessed_loopback_navigation_requires_a_live_owned_lease() {
+        let args = json!({ "actions": [{
+            "type": "navigate",
+            "url": "http://127.42.0.7:3100/private"
+        }] });
+        assert!(validate_loopback_navigation_with(&args, |_| false).is_err());
+        assert!(validate_loopback_navigation_with(&args, |url| {
+            url == "http://127.42.0.7:3100/private"
+        })
+        .is_ok());
+        let remote = json!({ "actions": [{
+            "type": "navigate",
+            "url": "https://example.com"
+        }] });
+        assert!(validate_loopback_navigation_with(&remote, |_| false).is_ok());
+    }
     #[test]
     fn accepts_native_form_values_and_evidence_checks() {
         assert!(validate_tool_request(

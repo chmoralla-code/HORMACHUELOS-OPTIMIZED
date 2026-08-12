@@ -41,6 +41,9 @@ export type PreviewOpenOptions = {
   projectRoot: string;
   /** Session that exclusively owns this mounted Preview. */
   ownerSessionId?: string | null;
+  /** Native lease identity for an automatically opened local server. */
+  serverLeaseId?: string | null;
+  serverReady?: boolean;
   entryPath?: string | null;
   files?: string[];
   title?: string;
@@ -673,11 +676,13 @@ function cleanPreviewTabs(
     if (
       kind === "browser"
       && isExternalPreviewUrl(rawActiveEntry)
-      && (!serverOwner || !samePreviewProject(serverOwner, projectRoot))
+      && Boolean(serverOwner)
+      && !samePreviewProject(serverOwner, projectRoot)
     ) continue;
     const history = cleanPreviewHistory(projectRoot, raw.history, kind)
       .filter((entry) => !isExternalPreviewUrl(entry)
-        || (Boolean(serverOwner) && samePreviewProject(serverOwner, projectRoot)));
+        || !serverOwner
+        || samePreviewProject(serverOwner, projectRoot));
     const historyIndex = history.length
       ? Math.max(0, Math.min(history.length - 1, requestedIndex))
       : 0;
@@ -693,7 +698,13 @@ function cleanPreviewTabs(
     clean.push({
       kind,
       ...(kind === "browser" && isExternalPreviewUrl(entryPath)
-        ? { serverOwner: projectRoot }
+        ? {
+            serverOwner: projectRoot,
+            ...(raw.serverLeaseId ? { serverLeaseId: raw.serverLeaseId } : {}),
+            serverStatus: raw.serverStatus === "ready"
+              ? "ready" as const
+              : "restart_required" as const,
+          }
         : {}),
       entryPath: history[normalizedIndex] || entryPath,
       title: raw.title?.trim().slice(0, 160) || (kind === "browser"
@@ -737,11 +748,24 @@ export function mergePreviewSessionState(
     );
     if (existingIndex >= 0) {
       activeTabIndex = existingIndex;
+      if (entryKind === "browser" && isExternalPreviewUrl(entry)) {
+        tabs[existingIndex].serverOwner = projectRoot;
+        tabs[existingIndex].serverLeaseId = opts.serverLeaseId || undefined;
+        tabs[existingIndex].serverStatus = opts.serverReady === true
+          ? "ready"
+          : "restart_required";
+      }
     } else {
       tabs.push({
         kind: entryKind,
         ...(entryKind === "browser" && isExternalPreviewUrl(entry)
-          ? { serverOwner: projectRoot }
+          ? {
+              serverOwner: projectRoot,
+              ...(opts.serverLeaseId ? { serverLeaseId: opts.serverLeaseId } : {}),
+              serverStatus: opts.serverReady === true
+                ? "ready" as const
+                : "restart_required" as const,
+            }
           : {}),
         entryPath: entry,
         title: opts.title || (entryKind === "browser"
@@ -781,6 +805,8 @@ type PreviewTab = {
   browserLoading?: boolean;
   /** Canonical project root that owns a localhost Browser tab. */
   serverOwner?: string;
+  serverLeaseId?: string;
+  serverStatus?: "ready" | "restart_required";
 };
 
 let previewTabSeq = 0;
@@ -1807,6 +1833,8 @@ export class SitePreview {
         history: [...tab.history],
         historyIndex: tab.historyIndex,
         ...(tab.serverOwner ? { serverOwner: tab.serverOwner } : {}),
+        ...(tab.serverLeaseId ? { serverLeaseId: tab.serverLeaseId } : {}),
+        ...(tab.serverStatus ? { serverStatus: tab.serverStatus } : {}),
       })),
       activeTabIndex,
       designMode: this.designMode,
@@ -1850,6 +1878,18 @@ export class SitePreview {
       if (!projectRoot) return;
 
       const tabs = cleanPreviewTabs(projectRoot, state?.tabs);
+      for (const tab of tabs) {
+        if (!isExternalPreviewUrl(tab.entryPath)) continue;
+        const validation = tab.serverLeaseId
+          ? await api.validateDevServerLease(tab.serverLeaseId, projectRoot, tab.entryPath)
+              .catch(() => null)
+          : null;
+        if (generation !== this.viewGeneration) return;
+        tab.serverStatus = validation?.valid === true && validation.ready === true
+          ? "ready"
+          : "restart_required";
+        if (validation?.leaseId) tab.serverLeaseId = validation.leaseId;
+      }
       this.projectRoot = projectRoot;
       this.ownerSessionId = owner?.sessionId ?? null;
       this.projectFiles = [];
@@ -1883,6 +1923,8 @@ export class SitePreview {
           frame,
           tabEl: null as unknown as HTMLButtonElement,
           serverOwner: savedTab.serverOwner,
+          serverLeaseId: savedTab.serverLeaseId,
+          serverStatus: savedTab.serverStatus,
         };
         tab.tabEl = this.renderTabButton(tab);
         this.tabs.push(tab);
@@ -1908,7 +1950,9 @@ export class SitePreview {
         await this.reloadTab(tab);
       }
       if (generation !== this.viewGeneration) return;
-      this.statusEl.textContent = this.activeTab?.kind === "browser"
+      this.statusEl.textContent = this.activeTab?.serverStatus === "restart_required"
+        ? "Local server stopped or ownership changed · restart it to reopen this tab"
+        : this.activeTab?.kind === "browser"
         ? this.readyStatus()
         : /\.(apk|aab|ipa|exe|msi|dmg|wasm)$/i.test(this.entryPath)
         ? "Build artifact ready · open from Files to install/run"
@@ -2044,6 +2088,9 @@ export class SitePreview {
   private async computerUseActiveTab(): Promise<PreviewTab> {
     let tab = this.activeTab;
     if (!tab) throw new Error("No active Preview tab is available for Computer Use.");
+    if (tab.serverStatus === "restart_required") {
+      throw new Error("This local Preview server is no longer ready or owned. Restart it before using Computer Use.");
+    }
     // Releases before 1.2.2 persisted localhost builds as cross-origin project
     // iframes. Upgrade the logical tab before the first observation/action so
     // Computer Use works immediately with an already-open saved session.
@@ -2125,22 +2172,34 @@ export class SitePreview {
       if (!url) {
         throw new Error(`${kind} requires a safe http:// or https:// URL without embedded credentials.`);
       }
+      let serverLeaseId: string | undefined;
+      if (isExternalPreviewUrl(url)) {
+        const validation = await api.validateDevServerLease(null, this.projectRoot, url);
+        if (!validation.valid || !validation.ready || !validation.leaseId) {
+          throw new Error("This loopback URL is not a ready, live server lease owned by the active project.");
+        }
+        serverLeaseId = validation.leaseId;
+      }
       if (kind === "open_tab") {
         tab = await this.openBrowserTab(url, {
           activate: true,
           title: browserTitleFromUrl(url),
+          serverLeaseId,
+          serverReady: serverLeaseId ? true : undefined,
         });
         if (!tab) throw new Error("Preview could not open another Browser tab.");
       } else if (kind === "navigate") {
         const current = await this.computerUseActiveTab();
         if (current.kind === "browser") {
-          await this.navigateBrowserTab(current, url);
+          await this.navigateBrowserTab(current, url, serverLeaseId);
           tab = current;
         } else {
           tab = await this.openBrowserTab(url, {
             activate: true,
             title: browserTitleFromUrl(url),
             replaceTabId: current.id,
+            serverLeaseId,
+            serverReady: serverLeaseId ? true : undefined,
           });
           if (!tab) throw new Error("Preview could not navigate the active tab.");
           if (this.tabs.includes(current)) this.closeTab(current.id);
@@ -2351,6 +2410,8 @@ export class SitePreview {
       activate: true,
       title: opts.title || tabTitleFromPath(entry!),
       pushHistory: true,
+      serverLeaseId: opts.serverLeaseId || undefined,
+      serverReady: opts.serverReady,
     });
     if (generation === this.viewGeneration) this.emitStateChange();
   }
@@ -2494,6 +2555,10 @@ export class SitePreview {
 
   private async ensureBrowserSurface(tab: PreviewTab): Promise<void> {
     if (tab.kind !== "browser" || tab.browserReady) return;
+    if (tab.serverStatus === "restart_required") {
+      this.renderServerRestartState(tab);
+      return;
+    }
     if (tab.browserCreating) return tab.browserCreating;
     const create = (async () => {
       let bounds = this.browserBounds();
@@ -2525,9 +2590,33 @@ export class SitePreview {
     return create;
   }
 
-  private recordBrowserLocation(tab: PreviewTab, url: string) {
-    if (isExternalPreviewUrl(url)) tab.serverOwner = this.projectRoot;
+  private renderServerRestartState(tab: PreviewTab): void {
+    tab.browserReady = false;
+    tab.browserLoading = false;
+    tab.frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:dark;font-family:Inter,Segoe UI,sans-serif}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#f4f7fb}.card{max-width:460px;text-align:center;padding:36px}.mark{font-size:34px}h1{font-size:22px;margin:14px 0 8px}p{color:#aeb8c8;line-height:1.55}</style></head><body><main class="card"><div class="mark">↻</div><h1>Restart local server</h1><p>This saved localhost tab no longer has a ready, live server lease owned by this project. Ask the AI to start the development server again.</p></main></body></html>`;
+    if (this.activeTabId === tab.id) {
+      this.statusEl.textContent = "Local server stopped or ownership changed · restart it to reopen this tab";
+    }
+  }
+  private recordBrowserLocation(tab: PreviewTab, url: string, serverLeaseId?: string) {
     const current = tab.history[tab.historyIndex];
+    if (isExternalPreviewUrl(url)) {
+      const sameOrigin = (() => {
+        try { return new URL(current).origin === new URL(url).origin; } catch { return false; }
+      })();
+      tab.serverOwner = this.projectRoot;
+      if (serverLeaseId) {
+        tab.serverLeaseId = serverLeaseId;
+        tab.serverStatus = "ready";
+      } else if (!sameOrigin) {
+        tab.serverLeaseId = undefined;
+        tab.serverStatus = undefined;
+      }
+    } else {
+      tab.serverOwner = undefined;
+      tab.serverLeaseId = undefined;
+      tab.serverStatus = undefined;
+    }
     if (current === url) {
       tab.entryPath = url;
       return;
@@ -2882,7 +2971,13 @@ export class SitePreview {
 
   private async openPathInTab(
     entryPath: string,
-    opts: { activate?: boolean; title?: string; pushHistory?: boolean },
+    opts: {
+      activate?: boolean;
+      title?: string;
+      pushHistory?: boolean;
+      serverLeaseId?: string;
+      serverReady?: boolean;
+    },
   ) {
     const clean = entryPath.replace(/\\/g, "/");
     if (previewTabKindForEntry(clean) === "browser") {
@@ -2963,6 +3058,8 @@ export class SitePreview {
       activate?: boolean;
       title?: string;
       replaceTabId?: string;
+      serverLeaseId?: string;
+      serverReady?: boolean;
     } = {},
   ): Promise<PreviewTab | null> {
     if (!this.projectRoot) return null;
@@ -2971,7 +3068,21 @@ export class SitePreview {
       (candidate) => candidate.kind === "browser" && candidate.entryPath === url,
     );
     if (existing) {
-      if (isExternalPreviewUrl(url)) existing.serverOwner = this.projectRoot;
+      if (isExternalPreviewUrl(url)) {
+        const needsFreshSurface = Boolean(opts.serverLeaseId)
+          && (existing.serverLeaseId !== opts.serverLeaseId
+            || existing.serverStatus !== "ready");
+        existing.serverOwner = this.projectRoot;
+        existing.serverLeaseId = opts.serverLeaseId || existing.serverLeaseId;
+        if (opts.serverReady !== undefined) {
+          existing.serverStatus = opts.serverReady ? "ready" : "restart_required";
+        }
+        if (needsFreshSurface && existing.browserReady) {
+          await api.closePreviewBrowser(existing.id).catch(() => undefined);
+          existing.browserReady = false;
+          existing.browserFailed = false;
+        }
+      }
       if (opts.title) {
         existing.title = opts.title;
         existing.tabEl.querySelector(".site-preview-tab-title")!.textContent = existing.title;
@@ -3012,6 +3123,10 @@ export class SitePreview {
       browserReady: false,
       browserLoading: true,
       serverOwner: isExternalPreviewUrl(url) ? this.projectRoot : undefined,
+      serverLeaseId: isExternalPreviewUrl(url) ? opts.serverLeaseId : undefined,
+      serverStatus: isExternalPreviewUrl(url) && opts.serverReady !== undefined
+        ? (opts.serverReady ? "ready" : "restart_required")
+        : undefined,
     };
     tab.tabEl = this.renderTabButton(tab);
     this.tabs.push(tab);
@@ -3062,7 +3177,7 @@ export class SitePreview {
     await this.navigateBrowserTab(tab, BROWSER_HOME);
   }
 
-  private async navigateBrowserTab(tab: PreviewTab, url: string) {
+  private async navigateBrowserTab(tab: PreviewTab, url: string, serverLeaseId?: string) {
     if (tab.kind !== "browser") return;
     const next = normalizeBrowserUrl(url);
     if (!next) {
@@ -3074,7 +3189,7 @@ export class SitePreview {
     const previousHistoryIndex = tab.historyIndex;
     const hadSurface = tab.browserReady === true;
     const wasCreating = Boolean(tab.browserCreating);
-    this.recordBrowserLocation(tab, next);
+    this.recordBrowserLocation(tab, next, serverLeaseId);
     this.updateBrowserTabTitle(tab);
     tab.browserLoading = true;
     if (this.activeTabId === tab.id) {

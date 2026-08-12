@@ -1,6 +1,7 @@
 // Session storage and types — persisted to localStorage per project.
 
 import { normalizeAssistantMarkdown } from "./util";
+import { isExternalPreviewUrl } from "./preview-url-policy";
 
 export type SessionMessage =
   | {
@@ -97,6 +98,9 @@ export interface SessionPreviewTab {
   kind?: "preview" | "browser";
   /** Canonical project root that owned a persisted localhost server URL. */
   serverOwner?: string;
+  /** Opaque host registry identity; never inferred from a port. */
+  serverLeaseId?: string;
+  serverStatus?: "ready" | "restart_required";
   entryPath: string;
   title: string;
   history: string[];
@@ -370,8 +374,8 @@ function sanitizePreviewPath(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const raw = value.trim().replace(/\\/g, "/");
   if (!raw || raw.length > SESSION_PREVIEW_PATH_MAX || raw.includes("\0")) return null;
-  // A live dev server (localhost) can be previewed directly in the iframe.
-  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(raw)) return raw;
+  // Local server URLs are restored only after native lease validation.
+  if (isExternalPreviewUrl(raw)) return raw;
   if (raw.startsWith("/") || /^[a-z]:/i.test(raw)) return null;
   const parts: string[] = [];
   for (const part of raw.split("/")) {
@@ -418,9 +422,13 @@ function sanitizeSessionPreview(value: unknown): SessionPreviewState | undefined
     const kind = tab.kind === "browser" ? "browser" : "preview";
     const sanitizeEntry = kind === "browser" ? sanitizeBrowserUrl : sanitizePreviewPath;
     const serverOwner = typeof tab.serverOwner === "string" ? tab.serverOwner.trim() : "";
+    const serverLeaseId = typeof tab.serverLeaseId === "string"
+      && /^dev-server-[a-z0-9-]{16,128}$/i.test(tab.serverLeaseId)
+      ? tab.serverLeaseId
+      : "";
     const ownerKey = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-    const ownsLocalServer = Boolean(serverOwner) && ownerKey(serverOwner) === ownerKey(projectRoot);
-    const isLocalServer = (entry: string) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(entry);
+    const ownsLocalServer = !serverOwner || ownerKey(serverOwner) === ownerKey(projectRoot);
+    const isLocalServer = isExternalPreviewUrl;
     const rawHistory = Array.isArray(tab.history)
       ? tab.history.slice(0, SESSION_PREVIEW_MAX_HISTORY)
       : [];
@@ -442,7 +450,13 @@ function sanitizeSessionPreview(value: unknown): SessionPreviewState | undefined
       : entryPath.split("/").pop() || entryPath;
     tabs.push({
       kind,
-      ...(ownsLocalServer ? { serverOwner: projectRoot } : {}),
+      ...(isLocalServer(entryPath) ? {
+        serverOwner: projectRoot,
+        ...(serverLeaseId ? { serverLeaseId } : {}),
+        serverStatus: serverLeaseId && tab.serverStatus === "ready"
+          ? "ready" as const
+          : "restart_required" as const,
+      } : {}),
       entryPath: history[historyIndex] || entryPath,
       title,
       history,

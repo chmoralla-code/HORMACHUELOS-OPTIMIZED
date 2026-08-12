@@ -104,6 +104,15 @@ export type ComputerUseStatus = {
   autoApproved: boolean;
 };
 
+export type DevServerLeaseValidation = {
+  valid: boolean;
+  ready: boolean;
+  reason: "ready" | "starting" | "invalid_loopback_url" | "unknown_or_dead_lease" | "listener_owner_mismatch" | string;
+  leaseId: string | null;
+  projectRoot: string;
+  url: string;
+};
+
 export type PreviewComputerRequest = {
   requestId: string;
   protocolVersion: number;
@@ -294,6 +303,7 @@ export type LicenseStatus = {
 
 export const api = {
   getProjectRoot: (): Promise<string | null> => invoke("get_project_root"),
+  validateDevServerLease: (
   setProjectRoot: (path: string): Promise<string> => invoke("set_project_root", { path }),
   listRecentProjects: (): Promise<string[]> => invoke("list_recent_projects"),
   /** Forget one recent project without deleting its folder or files. */

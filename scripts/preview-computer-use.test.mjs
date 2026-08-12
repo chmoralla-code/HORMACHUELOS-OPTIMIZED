@@ -10,6 +10,7 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 
 const broker = read("src-tauri/src/computer_use.rs");
 const tools = read("src-tauri/src/tools.rs");
+const devServer = read("src-tauri/src/dev_server.rs");
 const cursorBridge = read("src-tauri/src/cursor_bridge.rs");
 const preview = read("src/components/site-preview.ts");
 const main = read("src/main.ts");
@@ -268,4 +269,62 @@ test("dev-server Preview opens only from verified result metadata for its exact 
   assert.match(main, /sid !== pending\.sessionId/);
   assert.match(main, /sessionId: pending\.sessionId,[\s\S]*projectRoot: pending\.projectRoot,[\s\S]*entryPath: meta\.url/);
   assert.match(main, /if \(sid && isTerminalAgentEvent\(e\)\) clearPendingDevServerTools\(sid\)/);
+});
+
+
+test("local Preview URLs share one parsed loopback policy", () => {
+  for (const url of [
+    "http://localhost:3000",
+    "https://app.localhost:4443/path",
+    "http://127.42.0.7:5173",
+    "http://[::1]:3000",
+    "http://0.0.0.0:3000",
+    "http://[::]:3000",
+  ]) {
+    assert.equal(isExternalPreviewUrl(url), true, url);
+  }
+  assert.equal(isExternalPreviewUrl("https://example.com"), false);
+  assert.equal(isExternalPreviewUrl("file:///tmp/site.html"), false);
+});
+
+test("saved local Preview tabs require a native live server lease", () => {
+  assert.match(session, /serverLeaseId\?: string;/);
+  assert.match(session, /serverStatus\?: "ready" \| "restart_required";/);
+  assert.match(preview, /api\.validateDevServerLease\(tab\.serverLeaseId, projectRoot, tab\.entryPath\)/);
+  assert.match(preview, /tab\.serverStatus = validation\?\.valid === true && validation\.ready === true/);
+  assert.match(preview, /renderServerRestartState\(tab\)/);
+  assert.match(preview, /if \(tab\.serverStatus === "restart_required"\)/);
+  assert.match(ipc, /validateDevServerLease: \(leaseId: string \| null, projectRoot: string, url: string\)/);
+  assert.match(devServer, /listener_belongs_to_process_tree\(port, lease\.pid\)/);
+  assert.match(devServer, /reason: "listener_owner_mismatch"/);
+});
+
+test("verified server routing waits for ownership and bypasses broad run dedupe", () => {
+  assert.match(main, /const devServerToolKey = \(sessionId: string, toolId: string\)/);
+  assert.match(main, /pendingDevServerTools\.set\(devServerToolKey\(sessionId, toolId\)/);
+  assert.match(main, /pendingDevServerTools\.get\(devServerToolKey\(sessionId, toolId\)\)/);
+  assert.match(main, /forceExactEntry\?: boolean;/);
+  assert.match(main, /if \(!options\.forceExactEntry && previewOpenedForRun\.has\(targetSessionId\)\) return;/);
+  assert.match(main, /const deadline = Date\.now\(\) \+ 8_000;/);
+  assert.match(main, /api\.validateDevServerLease\(meta\.leaseId, owner\.projectRoot, meta\.url\)/);
+  assert.match(main, /serverReady: ready/);
+  assert.match(main, /forceExactEntry: true/);
+});
+
+test("Computer Use rejects guessed localhost before frontend dispatch", () => {
+  assert.match(broker, /validate_loopback_navigation\(&owner, &args\)\?/);
+  assert.match(broker, /validate_dev_server_lease\(None, &owner\.project_root, url\)/);
+  assert.match(broker, /Local Preview navigation is allowed only for a ready development server lease owned by this exact project/);
+  assert.match(preview, /api\.validateDevServerLease\(null, this\.projectRoot, url\)/);
+  assert.match(preview, /validation\?\.valid !== true \|\| validation\.ready !== true/);
+});
+
+test("dev server ownership is byte-exact, descendant-bound, and retryable", () => {
+  assert.match(devServer, /Sha256::digest\(command\.trim\(\)\.as_bytes\(\)\)/);
+  assert.doesNotMatch(devServer, /command\.split_whitespace\(\)/);
+  assert.match(devServer, /command_succeeds_before\(&mut command, Duration::from_millis\(1_500\)\)/);
+  assert.match(devServer, /process_descends_from_with/);
+  assert.match(devServer, /OwnershipDecision::LeaseOwnerMismatch/);
+  assert.match(devServer, /OwnershipDecision::ManagedNotReady =>/);
+  assert.match(tools, /validate_dev_server_lease\(Some\(&lease\.lease_id\), &lease\.project_root, &url\)/);
 });

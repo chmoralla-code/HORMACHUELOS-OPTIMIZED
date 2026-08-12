@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-#[cfg(all(unix, not(target_os = "linux")))]
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -46,6 +45,16 @@ pub enum PrepareDevServer {
     Reuse(DevServerLease),
     Start(PreparedDevServer),
 }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevServerLeaseValidation {
+    pub valid: bool,
+    pub ready: bool,
+    pub reason: &'static str,
+    pub lease_id: Option<String>,
+    pub project_root: String,
+    pub url: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LeaseRegistry {
@@ -67,6 +76,7 @@ enum OwnershipDecision {
     Reuse(usize),
     ManagedConflict,
     ManagedNotReady,
+    LeaseOwnerMismatch,
     UnknownConflict,
     Start,
 }
@@ -91,8 +101,9 @@ fn normalized_identity_path(path: &Path) -> String {
 }
 
 fn command_fingerprint(command: &str) -> String {
-    let normalized = command.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!("{:x}", Sha256::digest(normalized.as_bytes()))
+    // Command identity is byte-exact after trimming only its outer whitespace.
+    // Collapsing internal whitespace could alias commands with different argv.
+    format!("{:x}", Sha256::digest(command.trim().as_bytes()))
 }
 
 #[cfg(not(test))]
@@ -279,6 +290,128 @@ pub fn local_port_is_open(port: u16) -> bool {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     TcpStream::connect_timeout(&address, Duration::from_millis(150)).is_ok()
 }
+pub fn is_loopback_web_url(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else { return false };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = url.host_str() else { return false };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback() || address.is_unspecified())
+}
+
+pub fn loopback_http_port(value: &str) -> Option<u16> {
+    let url = reqwest::Url::parse(value).ok()?;
+    if url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !is_loopback_web_url(value)
+    {
+        return None;
+    }
+    url.port_or_known_default()
+}
+
+#[cfg(windows)]
+fn command_succeeds_before(command: &mut Command, timeout: Duration) -> bool {
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+fn process_descends_from_with<F>(mut pid: u32, root_pid: u32, mut parent_of: F) -> bool
+where
+    F: FnMut(u32) -> Option<u32>,
+{
+    for _ in 0..64 {
+        if pid == root_pid {
+            return true;
+        }
+        let Some(parent) = parent_of(pid) else {
+            return false;
+        };
+        if parent == 0 || parent == pid {
+            return false;
+        }
+        pid = parent;
+    }
+    false
+}
+
+#[cfg(windows)]
+fn listener_belongs_to_process_tree(port: u16, root_pid: u32) -> bool {
+    // Get-NetTCPConnection gives the actual listening PID. Walk Win32_Process
+    // parents until the exact live launcher PID is reached; a foreign listener
+    // that later binds the same port therefore cannot inherit this lease.
+    let script = format!(
+        "$owners=@(Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique); foreach($owner in $owners){{$p=[uint32]$owner; $seen=0; while($p -gt 0 -and $seen -lt 64){{if($p -eq {root_pid}){{exit 0}}; $proc=Get-CimInstance Win32_Process -Filter \"ProcessId=$p\" -ErrorAction SilentlyContinue; if($null -eq $proc){{break}}; $next=[uint32]$proc.ParentProcessId; if($next -eq $p){{break}}; $p=$next; $seen++}}}}; exit 1"
+    );
+    let mut command = Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-NoLogo",
+        "-Command",
+        &script,
+    ]);
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+    command_succeeds_before(&mut command, Duration::from_millis(1_500))
+}
+
+#[cfg(not(windows))]
+fn listener_belongs_to_process_tree(port: u16, root_pid: u32) -> bool {
+    let port_filter = format!("-iTCP:{port}");
+    let output = Command::new("lsof")
+        .args(["-nP", port_filter.as_str(), "-sTCP:LISTEN", "-t"])
+        .output();
+    let Ok(output) = output else { return false };
+    if !output.status.success() { return false; }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(pid) = line.trim().parse::<u32>() else {
+            continue;
+        };
+        if process_descends_from_with(pid, root_pid, |process_id| {
+            let process_id = process_id.to_string();
+            Command::new("ps")
+                .args(["-o", "ppid=", "-p", process_id.as_str()])
+                .output()
+                .ok()
+                .filter(|result| result.status.success())
+                .and_then(|result| String::from_utf8(result.stdout).ok())
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
+fn lease_listener_is_owned(lease: &DevServerLease) -> bool {
+    let Some(port) = lease.port else { return false };
+    lease_process_is_alive(lease)
+        && local_port_is_open(port)
+        && listener_belongs_to_process_tree(port, lease.pid)
+}
 
 fn lease_matches(candidate: &PreparedDevServer, lease: &DevServerLease) -> bool {
     normalized_identity_path(Path::new(&lease.project_root))
@@ -289,15 +422,17 @@ fn lease_matches(candidate: &PreparedDevServer, lease: &DevServerLease) -> bool 
         && lease.port == candidate.port
 }
 
-fn decide_ownership_with<P, O>(
+fn decide_ownership_with<P, O, L>(
     leases: &[DevServerLease],
     candidate: &PreparedDevServer,
     pid_alive: P,
     port_open: O,
+    listener_owned: L,
 ) -> OwnershipDecision
 where
     P: Fn(&DevServerLease) -> bool,
     O: Fn(u16) -> bool,
+    L: Fn(&DevServerLease, u16) -> bool,
 {
     if let Some((index, lease)) = leases
         .iter()
@@ -305,9 +440,13 @@ where
         .find(|(_, lease)| lease_matches(candidate, lease) && pid_alive(lease))
     {
         if let Some(port) = candidate.port {
-            if !port_open(port) {
-                return OwnershipDecision::ManagedNotReady;
+            if listener_owned(lease, port) {
+                return OwnershipDecision::Reuse(index);
             }
+            if port_open(port) {
+                return OwnershipDecision::LeaseOwnerMismatch;
+            }
+            return OwnershipDecision::ManagedNotReady;
         }
         return OwnershipDecision::Reuse(index);
     }
@@ -405,7 +544,13 @@ pub fn prepare_dev_server(
         persist_registry(&registry)?;
     }
 
-    match decide_ownership_with(&registry.leases, &candidate, |_| true, local_port_is_open) {
+    match decide_ownership_with(
+        &registry.leases,
+        &candidate,
+        |_| true,
+        local_port_is_open,
+        |lease, _| lease_listener_is_owned(lease),
+    ) {
         OwnershipDecision::Reuse(index) => {
             registry.leases[index].last_seen_at = now_secs();
             let lease = registry.leases[index].clone();
@@ -413,9 +558,21 @@ pub fn prepare_dev_server(
             Ok(PrepareDevServer::Reuse(lease))
         }
         OwnershipDecision::ManagedNotReady => {
+            let index = registry
+                .leases
+                .iter()
+                .position(|lease| lease_matches(&candidate, lease))
+                .context("The starting server lease disappeared.")?;
+            registry.leases[index].last_seen_at = now_secs();
+            let lease = registry.leases[index].clone();
+            persist_registry(&registry)?;
+            Ok(PrepareDevServer::Reuse(lease))
+        }
+        OwnershipDecision::LeaseOwnerMismatch => {
             let port = candidate.port.unwrap_or_default();
             bail!(
-                "Hormachuelos already owns this exact project server process, but port {port} is not ready. Inspect its lease log or stop that process before retrying; it will not be replaced or claimed as another website."
+                "Port {port} is open, but its listening process is not the process tree recorded by this Hormachuelos lease. Refusing to load or reuse that website.{}",
+                conflict_suffix(port)
             )
         }
         OwnershipDecision::ManagedConflict => {
@@ -489,6 +646,79 @@ pub fn register_started_server(
     Ok(lease)
 }
 
+pub fn validate_dev_server_lease(
+    lease_id: Option<&str>,
+    project_root: &str,
+    url: &str,
+) -> Result<DevServerLeaseValidation> {
+    let Some(port) = loopback_http_port(url) else {
+        return Ok(DevServerLeaseValidation {
+            valid: false,
+            ready: false,
+            reason: "invalid_loopback_url",
+            lease_id: None,
+            project_root: project_root.to_string(),
+            url: url.to_string(),
+        });
+    };
+    let expected_root = normalized_identity_path(Path::new(project_root));
+    let mut registry = registry()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Development-server registry is unavailable."))?;
+    let before = registry.leases.len();
+    registry.leases.retain(lease_process_is_alive);
+    if registry.leases.len() != before {
+        persist_registry(&registry)?;
+    }
+    let lease = registry
+        .leases
+        .iter()
+        .find(|lease| {
+            lease.port == Some(port)
+                && normalized_identity_path(Path::new(&lease.project_root)) == expected_root
+                && lease_id.is_none_or(|expected| expected == lease.lease_id)
+        })
+        .cloned();
+    drop(registry);
+    let Some(lease) = lease else {
+        return Ok(DevServerLeaseValidation {
+            valid: false,
+            ready: false,
+            reason: "unknown_or_dead_lease",
+            lease_id: lease_id.map(str::to_string),
+            project_root: project_root.to_string(),
+            url: url.to_string(),
+        });
+    };
+    if !local_port_is_open(port) {
+        return Ok(DevServerLeaseValidation {
+            valid: true,
+            ready: false,
+            reason: "starting",
+            lease_id: Some(lease.lease_id),
+            project_root: lease.project_root,
+            url: url.to_string(),
+        });
+    }
+    if !lease_listener_is_owned(&lease) {
+        return Ok(DevServerLeaseValidation {
+            valid: false,
+            ready: false,
+            reason: "listener_owner_mismatch",
+            lease_id: Some(lease.lease_id),
+            project_root: lease.project_root,
+            url: url.to_string(),
+        });
+    }
+    Ok(DevServerLeaseValidation {
+        valid: true,
+        ready: true,
+        reason: "ready",
+        lease_id: Some(lease.lease_id),
+        project_root: lease.project_root,
+        url: url.to_string(),
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,7 +758,8 @@ mod tests {
                 &leases,
                 &candidate,
                 |lease| lease.pid == 42,
-                |port| port == 3000
+                |port| port == 3000,
+                |_, port| port == 3000
             ),
             OwnershipDecision::Reuse(0)
         );
@@ -540,7 +771,7 @@ mod tests {
         let other = prepared("C:/Projects/A", "C:/Projects/A", "npm run dev", 3000);
         let leases = vec![lease(&other, 42)];
         assert_eq!(
-            decide_ownership_with(&leases, &candidate, |_| true, |_| true),
+            decide_ownership_with(&leases, &candidate, |_| true, |_| true, |_, _| false),
             OwnershipDecision::ManagedConflict
         );
     }
@@ -549,7 +780,13 @@ mod tests {
     fn an_unknown_listener_is_never_claimed() {
         let candidate = prepared("C:/Projects/A", "C:/Projects/A", "npm run dev", 5173);
         assert_eq!(
-            decide_ownership_with(&[], &candidate, |_| false, |port| port == 5173),
+            decide_ownership_with(
+                &[],
+                &candidate,
+                |_| false,
+                |port| port == 5173,
+                |_, _| false,
+            ),
             OwnershipDecision::UnknownConflict
         );
     }
@@ -559,7 +796,13 @@ mod tests {
         let candidate = prepared("C:/Projects/A", "C:/Projects/A", "npm run dev", 4173);
         let leases = vec![lease(&candidate, 99)];
         assert_eq!(
-            decide_ownership_with(&leases, &candidate, |_| false, |_| false),
+            decide_ownership_with(
+                &leases,
+                &candidate,
+                |_| false,
+                |_| false,
+                |_, _| false,
+            ),
             OwnershipDecision::Start
         );
     }
@@ -570,7 +813,7 @@ mod tests {
         let other = prepared("C:/Projects/A", "C:/Projects/A", "npm run preview", 3000);
         let leases = vec![lease(&other, 42)];
         assert_eq!(
-            decide_ownership_with(&leases, &candidate, |_| true, |_| true),
+            decide_ownership_with(&leases, &candidate, |_| true, |_| true, |_, _| false),
             OwnershipDecision::ManagedConflict
         );
     }
@@ -583,6 +826,67 @@ mod tests {
         assert!(!encoded.contains("super-secret-value"));
         assert!(!encoded.contains(secret_command));
         assert_eq!(candidate.command_fingerprint.len(), COMMAND_FINGERPRINT_LEN);
+    }
+
+    #[test]
+    fn command_identity_preserves_internal_bytes() {
+        assert_eq!(
+            command_fingerprint("  npm run dev -- --flag a  b\n"),
+            command_fingerprint("npm run dev -- --flag a  b")
+        );
+        assert_ne!(
+            command_fingerprint("npm run dev -- --flag a  b"),
+            command_fingerprint("npm run dev -- --flag a b")
+        );
+    }
+
+    #[test]
+    fn a_live_lease_with_a_foreign_listener_fails_closed() {
+        let candidate = prepared("C:/Projects/A", "C:/Projects/A", "npm run dev", 3000);
+        let leases = vec![lease(&candidate, 42)];
+        assert_eq!(
+            decide_ownership_with(&leases, &candidate, |_| true, |_| true, |_, _| false),
+            OwnershipDecision::LeaseOwnerMismatch
+        );
+    }
+
+    #[test]
+    fn a_live_lease_with_no_listener_remains_retryable() {
+        let candidate = prepared("C:/Projects/A", "C:/Projects/A", "npm run dev", 3000);
+        let leases = vec![lease(&candidate, 42)];
+        assert_eq!(
+            decide_ownership_with(&leases, &candidate, |_| true, |_| false, |_, _| false),
+            OwnershipDecision::ManagedNotReady
+        );
+    }
+
+    #[test]
+    fn listener_descendant_check_accepts_cmd_to_node_but_rejects_siblings() {
+        let parent = |pid| match pid {
+            300 => Some(200), // node -> cmd
+            200 => Some(100), // cmd -> shell
+            400 => Some(100), // unrelated sibling -> shell
+            100 => Some(1),
+            _ => None,
+        };
+        assert!(process_descends_from_with(300, 200, parent));
+        assert!(!process_descends_from_with(400, 200, parent));
+    }
+
+    #[test]
+    fn loopback_policy_covers_localhost_ipv4_ipv6_and_unspecified_hosts() {
+        for url in [
+            "http://localhost:3000",
+            "https://preview.localhost:4443/path",
+            "http://127.42.0.7:5173",
+            "http://[::1]:3000",
+            "http://0.0.0.0:3000",
+            "http://[::]:3000",
+        ] {
+            assert!(is_loopback_web_url(url), "{url}");
+        }
+        assert!(!is_loopback_web_url("https://example.com"));
+        assert!(!is_loopback_web_url("file:///tmp/index.html"));
     }
 
     #[test]

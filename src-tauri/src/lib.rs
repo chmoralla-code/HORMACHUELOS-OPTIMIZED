@@ -90,6 +90,15 @@ fn set_project_root(
     Ok(canonical)
 }
 
+#[tauri::command]
+fn validate_dev_server_lease(
+    lease_id: Option<String>,
+    project_root: String,
+    url: String,
+) -> Result<dev_server::DevServerLeaseValidation, String> {
+    dev_server::validate_dev_server_lease(lease_id.as_deref(), &project_root, &url)
+        .map_err(|error| error.to_string())
+}
 /// Return Hormachuelos' app-managed workspace for sessions that do not need a
 /// user-chosen folder. It deliberately stays out of the recent user-projects
 /// list: this is a private, durable scratch area rather than an opened project.
@@ -1462,6 +1471,7 @@ pub fn run() {
             app_updater::app_install_kind,
             app_updater::install_app_update,
             set_project_root,
+            validate_dev_server_lease,
             ensure_quick_session_workspace,
             list_recent_projects,
             remove_recent_project,

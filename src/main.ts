@@ -101,6 +101,7 @@ const runModelProfiles = new Map<
 const runProjectPaths = new Map<string, string>();
 /** start_dev_server calls awaiting a verified native metadata result. */
 const pendingDevServerTools = new Map<string, { sessionId: string; projectRoot: string }>();
+const devServerToolKey = (sessionId: string, toolId: string) => `${sessionId}\u0000${toolId}`;
 /** Native-issued opaque generation for each in-flight session run. */
 const activeRunNonces = new Map<string, string>();
 /** Serialize every native project-root mutation in user-selection order. */
@@ -271,6 +272,10 @@ async function openBuildPreview(opts: {
   title?: string;
   sessionId?: string;
   projectRoot?: string | null;
+  serverLeaseId?: string | null;
+  serverReady?: boolean;
+  /** A verified exact server result must not be hidden by session-wide dedupe. */
+  forceExactEntry?: boolean;
   /** When false, open a blank preview shell (no auto-picked HTML). Default true. */
   autoPickEntry?: boolean;
 }) {
@@ -289,7 +294,11 @@ async function openBuildPreview(opts: {
     const targetAlreadyOpen = opts.sessionId === activeSessionId
       ? sitePreview.isOpen && sitePreview.ownsView(opts.sessionId, projectRoot)
       : Boolean(storedPreview && sameProjectPath(storedPreview.projectRoot, projectRoot));
-    if (previewOpenedForRun.has(opts.sessionId) && targetAlreadyOpen) return;
+    if (
+      previewOpenedForRun.has(opts.sessionId)
+      && targetAlreadyOpen
+      && opts.forceExactEntry !== true
+    ) return;
     previewOpenedForRun.add(opts.sessionId);
   }
   let files = opts.files || [];
@@ -302,6 +311,8 @@ async function openBuildPreview(opts: {
     targetSession.preview = mergePreviewSessionState(targetSession.preview, {
       projectRoot,
       ownerSessionId: targetSession.id,
+      serverLeaseId: opts.serverLeaseId,
+      serverReady: opts.serverReady,
       files,
       entryPath: entry,
       title: opts.title || "Build preview",
@@ -328,6 +339,8 @@ async function openBuildPreview(opts: {
   await sitePreview.open({
     projectRoot,
     ownerSessionId: targetSessionId ?? null,
+    serverLeaseId: opts.serverLeaseId,
+    serverReady: opts.serverReady,
     files,
     entryPath: entry,
     title: opts.title || "Build preview",
@@ -350,7 +363,12 @@ async function openBuildPreview(opts: {
 
 const DEV_SERVER_META_PREFIX = "HORMACHUELOS_DEV_SERVER_META ";
 
-type VerifiedDevServerMeta = { url: string; projectRoot: string };
+type VerifiedDevServerMeta = {
+  url: string;
+  projectRoot: string;
+  leaseId: string;
+  ready: boolean;
+};
 
 function parseVerifiedDevServerMeta(
   content: string,
@@ -372,22 +390,68 @@ function parseVerifiedDevServerMeta(
     meta.kind !== "dev_server"
     || typeof meta.url !== "string"
     || typeof meta.projectRoot !== "string"
+    || typeof meta.leaseId !== "string"
+    || !/^dev-server-[a-z0-9-]{16,128}$/i.test(meta.leaseId)
+    || typeof meta.ready !== "boolean"
     || !sameProjectPath(meta.projectRoot, expectedProjectRoot)
   ) return null;
   try {
     const url = new URL(meta.url);
-    const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-    if (url.protocol !== "http:" || !loopback || url.username || url.password) return null;
-    return { url: url.toString(), projectRoot: meta.projectRoot };
+    if (!isExternalPreviewUrl(url.toString()) || url.protocol !== "http:"
+      || url.username || url.password) return null;
+    return {
+      url: url.toString(),
+      projectRoot: meta.projectRoot,
+      leaseId: meta.leaseId,
+      ready: meta.ready,
+    };
   } catch {
     return null;
   }
 }
 
 function clearPendingDevServerTools(sessionId: string): void {
-  for (const [toolId, pending] of pendingDevServerTools) {
-    if (pending.sessionId === sessionId) pendingDevServerTools.delete(toolId);
+  for (const [key, pending] of pendingDevServerTools) {
+    if (pending.sessionId === sessionId) pendingDevServerTools.delete(key);
   }
+}
+
+async function openVerifiedDevServerWhenReady(
+  pending: { sessionId: string; projectRoot: string },
+  meta: VerifiedDevServerMeta,
+): Promise<void> {
+  const deadline = Date.now() + 8_000;
+  let validation = await api.validateDevServerLease(
+    meta.leaseId,
+    pending.projectRoot,
+    meta.url,
+  ).catch(() => null);
+  while (
+    validation?.valid === true
+    && validation.ready !== true
+    && Date.now() < deadline
+  ) {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+    validation = await api.validateDevServerLease(
+      meta.leaseId,
+      pending.projectRoot,
+      meta.url,
+    ).catch(() => null);
+  }
+  const owner = sessionForId(pending.sessionId);
+  if (!owner || !sameProjectPath(owner.projectId, pending.projectRoot)) return;
+  const ready = validation?.valid === true
+    && validation.ready === true
+    && validation.leaseId === meta.leaseId;
+  await openBuildPreview({
+    sessionId: pending.sessionId,
+    projectRoot: pending.projectRoot,
+    entryPath: meta.url,
+    serverLeaseId: meta.leaseId,
+    serverReady: ready,
+    forceExactEntry: true,
+    title: ready ? "Dev server preview" : "Restart local server",
+  });
 }
 
 function routeVerifiedDevServerEvent(e: AgentEvent): void {
@@ -401,15 +465,21 @@ function routeVerifiedDevServerEvent(e: AgentEvent): void {
       && projectRoot
       && owner
       && sameProjectPath(owner.projectId, projectRoot)
-    ) pendingDevServerTools.set(e.payload.id, { sessionId: sid, projectRoot });
+    ) {
+      pendingDevServerTools.set(
+        devServerToolKey(sid, e.payload.id),
+        { sessionId: sid, projectRoot },
+      );
+    }
     return;
   }
   if (e.kind !== "tool_result") return;
-  const pending = pendingDevServerTools.get(e.payload.id);
+  const key = devServerToolKey(sid, e.payload.id);
+  const pending = pendingDevServerTools.get(key);
   if (!pending) return;
-  // A result consumes its pending record on every path, including failure or
-  // forged/mismatched metadata, so stale tool ids can never be replayed.
-  pendingDevServerTools.delete(e.payload.id);
+  // A result consumes its exact session+tool record on every path, including
+  // failure or forged metadata, so another run cannot replay the same tool id.
+  pendingDevServerTools.delete(key);
   if (
     !e.payload.ok
     || sid !== pending.sessionId
@@ -417,12 +487,9 @@ function routeVerifiedDevServerEvent(e: AgentEvent): void {
   ) return;
   const meta = parseVerifiedDevServerMeta(e.payload.content, pending.projectRoot);
   if (!meta) return;
-  void openBuildPreview({
-    sessionId: pending.sessionId,
-    projectRoot: pending.projectRoot,
-    entryPath: meta.url,
-    title: "Dev server preview",
-  });
+  // ready:false never loads the URL. Poll the exact native lease for a bounded
+  // interval; success opens it, otherwise Preview displays a safe restart state.
+  void openVerifiedDevServerWhenReady(pending, meta);
 }
 /**
  * A build only auto-opens the preview when the user's own request points at

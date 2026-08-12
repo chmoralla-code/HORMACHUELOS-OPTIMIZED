@@ -3282,11 +3282,9 @@ pub fn execute(
             };
             match crate::dev_server::prepare_dev_server(root, cwd, command, port)? {
                 crate::dev_server::PrepareDevServer::Reuse(lease) => {
-                    let ready = lease
-                        .port
-                        .map(crate::dev_server::local_port_is_open)
-                        .unwrap_or(false);
-                    format_dev_server_result(&lease, "reused", true, ready)
+                    let ready = wait_for_dev_server_ready(&lease, ctx);
+                    let status = if ready { "reused" } else { "starting" };
+                    format_dev_server_result(&lease, status, true, ready)
                 }
                 crate::dev_server::PrepareDevServer::Start(prepared) => {
                     let work_dir = prepared.work_dir.clone();
@@ -3310,7 +3308,7 @@ pub fn execute(
                             ));
                         }
                     };
-                    let ready = wait_for_dev_server_ready(lease.port, ctx);
+                    let ready = wait_for_dev_server_ready(&lease, ctx);
                     let status = if ready { "started" } else { "starting" };
                     format_dev_server_result(&lease, status, false, ready)
                 }
@@ -3938,14 +3936,25 @@ fn start_detached_command(
     Ok((child.id(), log_path))
 }
 
-fn wait_for_dev_server_ready(port: Option<u16>, ctx: &ToolRunContext) -> bool {
-    let Some(port) = port else {
+fn wait_for_dev_server_ready(
+    lease: &crate::dev_server::DevServerLease,
+    ctx: &ToolRunContext,
+) -> bool {
+    let Some(port) = lease.port else {
         return false;
     };
+    let url = format!("http://127.0.0.1:{port}");
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         if crate::dev_server::local_port_is_open(port) {
-            return true;
+            let validation = crate::dev_server::validate_dev_server_lease(
+                Some(&lease.lease_id),
+                &lease.project_root,
+                &url,
+            );
+            if validation.is_ok_and(|result| result.valid && result.ready) {
+                return true;
+            }
         }
         if ctx.cancel.load(Ordering::SeqCst) || Instant::now() >= deadline {
             return false;
