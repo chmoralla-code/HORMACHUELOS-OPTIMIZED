@@ -18,6 +18,12 @@ import type { SessionPreviewState, SessionPreviewTab } from "./session";
 import { clear, el } from "./util";
 import { icon } from "./icons";
 import { runFrameComputerUse, stopFrameComputerUse } from "./preview-computer-use";
+import {
+  isExternalPreviewUrl,
+  previewTabKindForEntry,
+} from "./preview-url-policy";
+
+export { isExternalPreviewUrl } from "./preview-url-policy";
 
 export type PreviewComputerUseMode = "off" | "auto" | "on";
 
@@ -252,11 +258,6 @@ function withoutUrlSuffix(value: string): { path: string; suffix: string } {
     : { path: value, suffix: "" };
 }
 
-export function isExternalPreviewUrl(value: string): boolean {
-  const trimmed = value.trim();
-  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(trimmed);
-}
-
 const BROWSER_HOME = "https://www.google.com/";
 const BROWSER_HISTORY_MAX = 32;
 
@@ -295,7 +296,8 @@ export function browserAddressToUrl(value: string): string | null {
 
 export function normalizePreviewEntry(projectRoot: string, value?: string | null): string | null {
   if (!projectRoot || !value) return null;
-  // A live dev server (localhost) can be previewed directly in the iframe.
+  // Live localhost servers are valid Preview entries, but are mounted in the
+  // native Preview Browser so Computer Use can observe and interact with them.
   if (isExternalPreviewUrl(value)) return value.trim();
   const root = decodePath(projectRoot).replace(/\/+$/, "");
   let candidate = decodePath(withoutUrlSuffix(value).path);
@@ -644,9 +646,16 @@ function cleanPreviewTabs(
   const seenEntries = new Set<string>();
   const clean: SessionPreviewTab[] = [];
   for (const raw of tabs) {
-    const kind = raw.kind === "browser" ? "browser" : "preview";
-    const history = cleanPreviewHistory(projectRoot, raw.history, kind);
+    const requestedKind = raw.kind === "browser" ? "browser" : "preview";
     const requestedIndex = Math.floor(Number(raw.historyIndex) || 0);
+    const rawActiveEntry = raw.entryPath
+      || raw.history?.[requestedIndex]
+      || raw.history?.[0]
+      || "";
+    // Migrate localhost tabs saved by older releases away from cross-origin
+    // iframes and into the native Preview Browser controller.
+    const kind = previewTabKindForEntry(rawActiveEntry, requestedKind);
+    const history = cleanPreviewHistory(projectRoot, raw.history, kind);
     const historyIndex = history.length
       ? Math.max(0, Math.min(history.length - 1, requestedIndex))
       : 0;
@@ -696,16 +705,20 @@ export function mergePreviewSessionState(
     entry = files.find((file) => /\.(apk|aab|ipa|exe|msi|dmg|wasm)$/i.test(file)) || null;
   }
   if (entry) {
+    const entryKind = previewTabKindForEntry(entry);
+    if (entryKind === "browser") entry = normalizeBrowserUrl(entry) || entry;
     const existingIndex = tabs.findIndex(
-      (tab) => tab.kind !== "browser" && tab.entryPath === entry,
+      (tab) => tab.kind === entryKind && tab.entryPath === entry,
     );
     if (existingIndex >= 0) {
       activeTabIndex = existingIndex;
     } else {
       tabs.push({
-        kind: "preview",
+        kind: entryKind,
         entryPath: entry,
-        title: opts.title || tabTitleFromPath(entry),
+        title: opts.title || (entryKind === "browser"
+          ? browserTitleFromUrl(entry)
+          : tabTitleFromPath(entry)),
         history: [entry],
         historyIndex: 0,
       });
@@ -1950,8 +1963,14 @@ export class SitePreview {
   /** Handle one backend request against the tab that is active right now. */
   async handleComputerUseRequest(request: PreviewComputerRequest): Promise<Record<string, unknown>> {
     if (!this.isOpen) throw new Error("Open the Preview window before using the AI cursor.");
-    const tab = this.activeTab;
+    let tab = this.activeTab;
     if (!tab) throw new Error("No active Preview tab is available for Computer Use.");
+    // Releases before 1.2.2 persisted localhost builds as cross-origin project
+    // iframes. Upgrade the logical tab before the first observation/action so
+    // Computer Use works immediately with an already-open saved session.
+    if (tab.kind === "preview" && isExternalPreviewUrl(tab.entryPath)) {
+      tab = await this.promoteExternalPreviewTab(tab);
+    }
     this.statusEl.textContent = request.operation === "observe"
       ? "AI cursor is observing this Preview tab…"
       : "AI cursor is controlling this Preview tab…";
@@ -2087,16 +2106,24 @@ export class SitePreview {
     const entry = normalizePreviewEntry(this.projectRoot, entryPath);
     if (!entry) return;
     this.showShell(opts?.title || "Preview");
-    const existing = this.tabs.find((tab) => tab.kind === "preview" && tab.entryPath === entry);
+    const entryKind = previewTabKindForEntry(entry);
+    const normalizedEntry = entryKind === "browser"
+      ? normalizeBrowserUrl(entry) || entry
+      : entry;
+    const existing = this.tabs.find(
+      (tab) => tab.kind === entryKind && tab.entryPath === normalizedEntry,
+    );
     if (existing) {
       this.activateTab(existing.id);
       await this.reload();
       if (generation === this.viewGeneration) this.emitStateChange();
       return;
     }
-    await this.openPathInTab(entry, {
+    await this.openPathInTab(normalizedEntry, {
       activate: true,
-      title: opts?.title || tabTitleFromPath(entry),
+      title: opts?.title || (entryKind === "browser"
+        ? browserTitleFromUrl(normalizedEntry)
+        : tabTitleFromPath(normalizedEntry)),
       pushHistory: true,
     });
     if (generation === this.viewGeneration) this.emitStateChange();
@@ -2602,6 +2629,10 @@ export class SitePreview {
     opts: { activate?: boolean; title?: string; pushHistory?: boolean },
   ) {
     const clean = entryPath.replace(/\\/g, "/");
+    if (previewTabKindForEntry(clean) === "browser") {
+      await this.openBrowserTab(clean, opts);
+      return;
+    }
     let tab = this.tabs.find((t) => t.kind === "preview" && t.entryPath === clean);
     if (!tab) {
       const id = `preview-tab-${++previewTabSeq}`;
@@ -2670,20 +2701,52 @@ export class SitePreview {
     if (generation === this.viewGeneration) this.emitStateChange();
   }
 
-  private async openBrowserTab(initialUrl = BROWSER_HOME) {
-    if (!this.projectRoot) return;
-    if (this.tabs.length >= 12) {
-      this.statusEl.textContent = "Close a tab before opening another one (12-tab limit).";
-      return;
-    }
+  private async openBrowserTab(
+    initialUrl = BROWSER_HOME,
+    opts: {
+      activate?: boolean;
+      title?: string;
+      replaceTabId?: string;
+    } = {},
+  ): Promise<PreviewTab | null> {
+    if (!this.projectRoot) return null;
     const url = normalizeBrowserUrl(initialUrl) || BROWSER_HOME;
+    const existing = this.tabs.find(
+      (candidate) => candidate.kind === "browser" && candidate.entryPath === url,
+    );
+    if (existing) {
+      if (opts.title) {
+        existing.title = opts.title;
+        existing.tabEl.querySelector(".site-preview-tab-title")!.textContent = existing.title;
+        existing.tabEl.title = url;
+      }
+      if (opts.activate !== false) {
+        if (this.selectionModeActive()) this.clearDesignMode();
+        this.activeTabId = existing.id;
+        this.selected = null;
+        this.updateEditTargetUi(null);
+      }
+      this.syncTabStrip();
+      if (opts.activate !== false) {
+        this.statusEl.textContent = `Browser · Loading ${browserTitleFromUrl(url)}…`;
+      }
+      this.emitStateChange();
+      await this.ensureBrowserSurface(existing);
+      return existing;
+    }
+    // A migration temporarily adds the native replacement before removing the
+    // legacy iframe, so it remains safe even when the 12-tab limit is full.
+    if (this.tabs.length >= 12 && !opts.replaceTabId) {
+      this.statusEl.textContent = "Close a tab before opening another one (12-tab limit).";
+      return null;
+    }
     const tabId = `preview-browser-${++previewTabSeq}`;
     const frame = this.createBrowserFrame(tabId);
     const tab: PreviewTab = {
       id: tabId,
       kind: "browser",
       entryPath: url,
-      title: browserTitleFromUrl(url),
+      title: opts.title || browserTitleFromUrl(url),
       history: [url],
       historyIndex: 0,
       frame,
@@ -2694,14 +2757,45 @@ export class SitePreview {
     };
     tab.tabEl = this.renderTabButton(tab);
     this.tabs.push(tab);
-    if (this.selectionModeActive()) this.clearDesignMode();
-    this.activeTabId = tabId;
-    this.selected = null;
-    this.updateEditTargetUi(null);
+    if (opts.activate !== false) {
+      if (this.selectionModeActive()) this.clearDesignMode();
+      this.activeTabId = tabId;
+      this.selected = null;
+      this.updateEditTargetUi(null);
+    }
     this.syncTabStrip();
-    this.statusEl.textContent = `Browser · Loading ${browserTitleFromUrl(url)}…`;
+    if (opts.activate !== false) {
+      this.statusEl.textContent = `Browser · Loading ${browserTitleFromUrl(url)}…`;
+    }
     this.emitStateChange();
     await this.ensureBrowserSurface(tab);
+    return tab;
+  }
+
+  /**
+   * Replace a legacy localhost iframe with an isolated native Preview Browser
+   * tab. The URL, port, title, active state, and Computer Use request stay in
+   * Preview; no system browser or user workaround is involved.
+   */
+  private async promoteExternalPreviewTab(
+    tab: PreviewTab,
+    entryPath = tab.entryPath,
+    title = tab.title,
+  ): Promise<PreviewTab> {
+    if (tab.kind === "browser") return tab;
+    const url = normalizeBrowserUrl(entryPath);
+    if (!url || !isExternalPreviewUrl(url)) return tab;
+    const wasActive = this.activeTabId === tab.id;
+    const replacement = await this.openBrowserTab(url, {
+      activate: wasActive,
+      title: title && title !== "New tab" ? title : browserTitleFromUrl(url),
+      replaceTabId: tab.id,
+    });
+    if (!replacement) {
+      throw new Error("The localhost Preview could not be upgraded for Computer Use.");
+    }
+    if (this.tabs.includes(tab)) this.closeTab(tab.id);
+    return replacement;
   }
 
   private async navigateBrowserHome() {
@@ -2774,6 +2868,11 @@ export class SitePreview {
       return;
     }
     if (tab) {
+      if (previewTabKindForEntry(next) === "browser") {
+        await this.promoteExternalPreviewTab(tab, next, browserTitleFromUrl(next));
+        this.emitStateChange();
+        return;
+      }
       tab.entryPath = next;
       tab.title = tabTitleFromPath(next);
       tab.tabEl.querySelector(".site-preview-tab-title")!.textContent = tab.title;
@@ -2869,15 +2968,16 @@ export class SitePreview {
       return;
     }
     this.statusEl.textContent = "Loading…";
+    if (isExternalPreviewUrl(tab.entryPath)) {
+      try {
+        await this.promoteExternalPreviewTab(tab);
+      } catch (error) {
+        this.statusEl.textContent = `Preview Browser upgrade failed: ${String(error)}`;
+      }
+      return;
+    }
     const frame = tab.frame;
     try {
-      // A live dev server URL (localhost) is loaded directly in the iframe.
-      if (isExternalPreviewUrl(tab.entryPath)) {
-        frame.removeAttribute("srcdoc");
-        frame.src = tab.entryPath;
-        this.statusEl.textContent = this.readyStatus(true);
-        return;
-      }
       if (/\.(apk|aab|ipa|exe|msi|dmg|wasm)$/i.test(tab.entryPath)) {
         frame.removeAttribute("srcdoc");
         frame.src = "about:blank";
