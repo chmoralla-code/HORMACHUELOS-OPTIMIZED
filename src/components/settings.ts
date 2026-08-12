@@ -667,6 +667,7 @@ export function defaultSettings(): Settings {
     capability_mode: "thinking",
     taglish: false,
     computer_use_enabled: false,
+    computer_use_prompt_activation: true,
     smart_agent_enabled: true,
     flavour_enabled: true,
     model_effort: "high",
@@ -696,7 +697,7 @@ export function normalizeSettings(s: Settings): Settings {
   const capsByMode: Record<string, string[]> = {
     plan: ["thinking", "guided"],
     auto: ["agent", "balanced"],
-    ask: ["investigate", "brief"],
+    ask: ["answer_max", "investigate", "brief"],
     full: ["autonomous", "max"],
     multi_agent: ["autonomous", "max"],
   };
@@ -706,6 +707,9 @@ export function normalizeSettings(s: Settings): Settings {
   }
   s.taglish = !!s.taglish;
   s.computer_use_enabled = !!s.computer_use_enabled;
+  // Missing on older settings means Auto: explicit user prompts may enable
+  // Computer Use for that request, while unrelated requests remain off.
+  s.computer_use_prompt_activation = s.computer_use_prompt_activation !== false;
   // Missing on older desktop settings means enabled: Smart Agent is a safe,
   // provider-neutral orchestration layer and does not change credentials.
   s.smart_agent_enabled = s.smart_agent_enabled !== false;
@@ -1507,10 +1511,6 @@ export class SettingsModal {
   private renderComputerUsePanel(): HTMLElement {
     const status = this.computerUseStatus;
     const supported = status?.supported ?? false;
-    const enabled = supported && !!this.settings.computer_use_enabled;
-    const warningText = (isEnabled: boolean) => isEnabled
-      ? "Preview-only control is enabled with zero approval prompts. The AI cursor can hover, click, type, scroll, and drag only inside the active Preview tab. Emergency stop: Ctrl+Alt+Esc."
-      : "Computer use is off. Enable it to control only the active Preview tab. Emergency stop: Ctrl+Alt+Esc.";
     const panel = el("section", {
       class: "computer-use-panel",
       "aria-labelledby": "computer-use-title",
@@ -1526,89 +1526,106 @@ export class SettingsModal {
     );
     head.appendChild(titleWrap);
 
-    const statusLabel = !status
-      ? "Unavailable"
-      : !supported
-        ? "Unsupported"
-        : status.paused
-          ? "Paused"
-          : enabled
-            ? "Ready"
-            : "Available";
-    const badge = el(
-      "span",
-      {
-        class: `computer-use-badge ${
-          status?.paused ? "paused" : supported ? "ready" : "unavailable"
-        }`,
-        role: "status",
-        "aria-live": "polite",
-      },
-      [statusLabel],
-    );
+    const badge = el("span", {
+      class: "computer-use-badge",
+      role: "status",
+      "aria-live": "polite",
+    });
     head.appendChild(badge);
     panel.appendChild(head);
 
-    const toggleId = this.nextFieldId();
-    const toggle = el("label", { class: "computer-use-toggle", for: toggleId });
-    const input = el("input", {
-      id: toggleId,
+    const helpId = this.nextFieldId();
+    const emergencyId = this.nextFieldId();
+    const alwaysId = this.nextFieldId();
+    const alwaysToggle = el("label", { class: "computer-use-toggle", for: alwaysId });
+    const alwaysInput = el("input", {
+      id: alwaysId,
       type: "checkbox",
-      "aria-describedby": "computer-use-help computer-use-emergency",
+      "aria-describedby": helpId + " " + emergencyId,
     }) as HTMLInputElement;
-    input.checked = !!this.settings.computer_use_enabled;
-    input.disabled = !supported;
-    input.addEventListener("change", () => {
-      this.settings.computer_use_enabled = input.checked;
-      if (supported && !status?.paused) {
-        badge.textContent = input.checked ? "Ready" : "Available";
-      }
-      warning.textContent = warningText(input.checked && supported);
-    });
-    toggle.appendChild(input);
-    const toggleCopy = el("span", { class: "computer-use-toggle-copy" });
-    toggleCopy.appendChild(el("span", { class: "computer-use-toggle-label" }, ["Enable computer use"]));
-    toggleCopy.appendChild(
+    alwaysInput.checked = !!this.settings.computer_use_enabled;
+    alwaysInput.disabled = !supported;
+    alwaysToggle.appendChild(alwaysInput);
+    const alwaysCopy = el("span", { class: "computer-use-toggle-copy" });
+    alwaysCopy.appendChild(el("span", { class: "computer-use-toggle-label" }, ["Always on"]));
+    alwaysCopy.appendChild(
       el("span", { class: "computer-use-toggle-note" }, [
         supported
-          ? "Lets the agent directly operate the active project or Browser tab inside Preview."
+          ? "Makes Preview Computer Use available on every request."
           : "Preview Computer Use is unavailable in this build.",
       ]),
     );
-    toggle.appendChild(toggleCopy);
-    panel.appendChild(toggle);
+    alwaysToggle.appendChild(alwaysCopy);
+    panel.appendChild(alwaysToggle);
 
-    const warning = el(
-      "div",
-      {
-        class: "computer-use-warning",
-        id: "computer-use-help",
-      },
-      [warningText(enabled)],
+    const autoId = this.nextFieldId();
+    const autoToggle = el("label", { class: "computer-use-toggle", for: autoId });
+    const autoInput = el("input", {
+      id: autoId,
+      type: "checkbox",
+      "aria-describedby": helpId + " " + emergencyId,
+    }) as HTMLInputElement;
+    autoInput.checked = this.settings.computer_use_prompt_activation !== false;
+    autoInput.disabled = !supported;
+    autoToggle.appendChild(autoInput);
+    const autoCopy = el("span", { class: "computer-use-toggle-copy" });
+    autoCopy.appendChild(
+      el("span", { class: "computer-use-toggle-label" }, ["Auto-enable from explicit prompts"]),
     );
+    autoCopy.appendChild(
+      el("span", { class: "computer-use-toggle-note" }, [
+        "Examples: “Playwright my website” or “use computer use and debug the Preview.”",
+      ]),
+    );
+    autoToggle.appendChild(autoCopy);
+    panel.appendChild(autoToggle);
+
+    const warning = el("div", { class: "computer-use-warning", id: helpId });
     panel.appendChild(warning);
+    const paint = () => {
+      this.settings.computer_use_enabled = alwaysInput.checked;
+      this.settings.computer_use_prompt_activation = autoInput.checked;
+      const paused = !!status?.paused;
+      const label = !status
+        ? "Unavailable"
+        : !supported
+          ? "Unsupported"
+          : paused
+            ? "Paused"
+            : alwaysInput.checked
+              ? "On"
+              : autoInput.checked
+                ? "Auto"
+                : "Off";
+      badge.textContent = label;
+      badge.className = "computer-use-badge " +
+        (paused ? "paused" : supported ? "ready" : "unavailable");
+      warning.textContent = alwaysInput.checked
+        ? "Computer Use is always available, but it remains strictly limited to the active Preview tab."
+        : autoInput.checked
+          ? "Auto mode activates Computer Use only when your prompt clearly requests Preview interaction."
+          : "Computer Use is fully off. The model cannot activate Preview control from an implicit prompt.";
+    };
+    alwaysInput.addEventListener("change", paint);
+    autoInput.addEventListener("change", paint);
+    paint();
 
     const controls = el("div", { class: "computer-use-controls" });
     const shortcut = status?.emergencyShortcut || "Ctrl+Alt+Esc";
-    const emergencyText = status?.emergencyShortcutAvailable === false
-      ? `${shortcut} could not be registered. Use the pause button to stop desktop actions.`
-      : `Emergency stop: press ${shortcut} to pause desktop actions immediately.`;
     controls.appendChild(
-      el("div", { class: "computer-use-emergency", id: "computer-use-emergency" }, [
-        emergencyText,
+      el("div", { class: "computer-use-emergency", id: emergencyId }, [
+        status?.emergencyShortcutAvailable === false
+          ? shortcut + " could not be registered. Use the pause button to stop Preview actions."
+          : "Emergency stop: press " + shortcut + " to pause Preview actions immediately.",
       ]),
     );
 
     if (supported && status) {
-      const pauseButton = el(
-        "button",
-        {
-          class: `btn sm ${status.paused ? "primary" : ""}`,
-          type: "button",
-          "aria-label": status.paused ? "Resume computer use" : "Pause computer use",
-        },
-        [status.paused ? "Resume" : "Pause"],
-      ) as HTMLButtonElement;
+      const pauseButton = el("button", {
+        class: "btn sm " + (status.paused ? "primary" : ""),
+        type: "button",
+        "aria-label": status.paused ? "Resume computer use" : "Pause computer use",
+      }, [status.paused ? "Resume" : "Pause"]) as HTMLButtonElement;
       pauseButton.addEventListener("click", async () => {
         pauseButton.disabled = true;
         pauseButton.textContent = status.paused ? "Resuming…" : "Pausing…";
@@ -1634,7 +1651,6 @@ export class SettingsModal {
     panel.appendChild(controls);
     return panel;
   }
-
   /** GitHub / Supabase / Vercel / … connect cards */
   private renderIntegrationsPanel(): HTMLElement {
     const wrap = el("div", { class: "integrations-list" });
