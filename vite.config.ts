@@ -21,7 +21,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: "src/index.html",
-        computerFx: "src/computer-fx.html",
       },
     },
   },
