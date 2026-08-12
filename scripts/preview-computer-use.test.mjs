@@ -104,7 +104,7 @@ test("frontend always selects the active Preview tab and stops on tab changes", 
   assert.match(preview, /computerUseTabList\(\)/);
   assert.match(preview, /runComputerUseTabAction/);
   assert.match(preview, /this\.openBrowserTab\(url/);
-  assert.match(preview, /this\.navigateBrowserTab\(current, url\)/);
+  assert.match(preview, /this\.navigateBrowserTab\(current, url, serverLeaseId\)/);
   assert.match(preview, /this\.activateTab\(tab\.id\)/);
   assert.match(preview, /activeTabUrl: active\.entryPath/);
   assert.match(preview, /needsObservation: true/);
@@ -263,9 +263,9 @@ test("dev-server Preview opens only from verified result metadata for its exact 
   assert.match(main, /normalizeToolName\(e\.payload\.name\) !== "start_dev_server"/);
   assert.match(main, /HORMACHUELOS_DEV_SERVER_META /);
   assert.match(main, /meta\.kind !== "dev_server"/);
-  assert.match(main, /url\.protocol !== "http:" \|\| !loopback/);
+  assert.match(main, /!isExternalPreviewUrl\(url\.toString\(\)\) \|\| url\.protocol !== "http:"/);
   assert.match(main, /!sameProjectPath\(meta\.projectRoot, expectedProjectRoot\)/);
-  assert.match(main, /pendingDevServerTools\.delete\(e\.payload\.id\)/);
+  assert.match(main, /const key = devServerToolKey\(sid, e\.payload\.id\);[\s\S]*pendingDevServerTools\.delete\(key\)/);
   assert.match(main, /sid !== pending\.sessionId/);
   assert.match(main, /sessionId: pending\.sessionId,[\s\S]*projectRoot: pending\.projectRoot,[\s\S]*entryPath: meta\.url/);
   assert.match(main, /if \(sid && isTerminalAgentEvent\(e\)\) clearPendingDevServerTools\(sid\)/);
@@ -294,25 +294,25 @@ test("saved local Preview tabs require a native live server lease", () => {
   assert.match(preview, /tab\.serverStatus = validation\?\.valid === true && validation\.ready === true/);
   assert.match(preview, /renderServerRestartState\(tab\)/);
   assert.match(preview, /if \(tab\.serverStatus === "restart_required"\)/);
-  assert.match(ipc, /validateDevServerLease: \(leaseId: string \| null, projectRoot: string, url: string\)/);
+  assert.match(ipc, /validateDevServerLease: \(\s*leaseId: string \| null,\s*projectRoot: string,\s*url: string,?\s*\)/);
   assert.match(devServer, /listener_belongs_to_process_tree\(port, lease\.pid\)/);
   assert.match(devServer, /reason: "listener_owner_mismatch"/);
 });
 
 test("verified server routing waits for ownership and bypasses broad run dedupe", () => {
   assert.match(main, /const devServerToolKey = \(sessionId: string, toolId: string\)/);
-  assert.match(main, /pendingDevServerTools\.set\(devServerToolKey\(sessionId, toolId\)/);
-  assert.match(main, /pendingDevServerTools\.get\(devServerToolKey\(sessionId, toolId\)\)/);
+  assert.match(main, /pendingDevServerTools\.set\(\s*devServerToolKey\(sid, e\.payload\.id\)/);
+  assert.match(main, /pendingDevServerTools\.get\(key\)/);
   assert.match(main, /forceExactEntry\?: boolean;/);
-  assert.match(main, /if \(!options\.forceExactEntry && previewOpenedForRun\.has\(targetSessionId\)\) return;/);
+  assert.match(main, /previewOpenedForRun\.has\(opts\.sessionId\)[\s\S]*opts\.forceExactEntry !== true/);
   assert.match(main, /const deadline = Date\.now\(\) \+ 8_000;/);
-  assert.match(main, /api\.validateDevServerLease\(meta\.leaseId, owner\.projectRoot, meta\.url\)/);
+  assert.match(main, /api\.validateDevServerLease\(\s*meta\.leaseId,\s*pending\.projectRoot,\s*meta\.url,?\s*\)/);
   assert.match(main, /serverReady: ready/);
   assert.match(main, /forceExactEntry: true/);
 });
 
 test("Computer Use rejects guessed localhost before frontend dispatch", () => {
-  assert.match(broker, /validate_loopback_navigation\(&owner, &args\)\?/);
+  assert.match(broker, /validate_loopback_navigation\(args, owner\)\?/);
   assert.match(broker, /validate_dev_server_lease\(None, &owner\.project_root, url\)/);
   assert.match(broker, /Local Preview navigation is allowed only for a ready development server lease owned by this exact project/);
   assert.match(preview, /api\.validateDevServerLease\(null, this\.projectRoot, url\)/);
