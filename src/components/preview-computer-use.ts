@@ -491,6 +491,8 @@ class PreviewFrameComputerController {
       #__horma-ai-cursor[data-gesture="scroll"]::after,#__horma-ai-cursor[data-gesture="drag"]::after{border-color:#6ceaff;opacity:.9;transform:scale(1)}
       #__horma-ai-cursor-core{position:absolute;left:5px;top:5px;width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px rgba(83,224,255,.5),0 0 12px #fff}
       #__horma-ai-cursor-label{position:absolute;left:28px;top:30px;white-space:nowrap;padding:4px 7px;border:1px solid rgba(123,230,255,.76);border-radius:999px;background:#07121ef2;color:#effdff;font:800 9px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:.08em;box-shadow:0 4px 12px rgba(0,0,0,.38);opacity:0;transform:translate3d(0,4px,0);transition:transform .14s cubic-bezier(.16,1,.3,1),opacity .14s ease}
+      #__horma-ai-cursor[data-label-x="left"] #__horma-ai-cursor-label{left:auto;right:32px}
+      #__horma-ai-cursor[data-label-y="up"] #__horma-ai-cursor-label{top:auto;bottom:32px}
       #__horma-ai-cursor[data-busy="true"] #__horma-ai-cursor-label{opacity:1;transform:translate3d(0,0,0)}
       #__horma-ai-target{position:fixed!important;z-index:2147483644!important;left:0!important;top:0!important;opacity:0;border:1px solid rgba(108,234,255,.94);border-radius:12px;background:linear-gradient(135deg,rgba(108,234,255,.06),rgba(123,97,255,.045));box-shadow:0 0 0 1px rgba(3,10,20,.82),0 0 0 4px rgba(108,234,255,.11),0 0 18px rgba(92,133,255,.22);transform:translate3d(0,0,0) scale(.97);transform-origin:center;will-change:transform,opacity;contain:layout style paint;transition:opacity .14s ease,transform .16s cubic-bezier(.16,1,.3,1)}
       #__horma-ai-target::before{content:"";position:absolute;inset:-3px;border-radius:inherit;background:linear-gradient(#6ceaff,#6ceaff) left top/14px 2px no-repeat,linear-gradient(#6ceaff,#6ceaff) left top/2px 14px no-repeat,linear-gradient(#8d73ff,#8d73ff) right top/14px 2px no-repeat,linear-gradient(#8d73ff,#8d73ff) right top/2px 14px no-repeat,linear-gradient(#8d73ff,#8d73ff) left bottom/14px 2px no-repeat,linear-gradient(#8d73ff,#8d73ff) left bottom/2px 14px no-repeat,linear-gradient(#6ceaff,#6ceaff) right bottom/14px 2px no-repeat,linear-gradient(#6ceaff,#6ceaff) right bottom/2px 14px no-repeat}
@@ -721,7 +723,11 @@ class PreviewFrameComputerController {
       x: clamp(point.x, 0, Math.max(0, this.view.innerWidth - 1)),
       y: clamp(point.y, 0, Math.max(0, this.view.innerHeight - 1)),
     };
-    if (this.cursor) this.cursor.style.transform = `translate3d(${this.cursorPoint.x}px,${this.cursorPoint.y}px,0)`;
+    if (this.cursor) {
+      this.cursor.style.transform = `translate3d(${this.cursorPoint.x}px,${this.cursorPoint.y}px,0)`;
+      this.cursor.dataset.labelX = this.cursorPoint.x > this.view.innerWidth - 150 ? "left" : "right";
+      this.cursor.dataset.labelY = this.cursorPoint.y > this.view.innerHeight - 56 ? "up" : "down";
+    }
   }
 
   private async animateTo(point: Point, signal: AbortSignal, duration?: number): Promise<void> {
