@@ -120,14 +120,20 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
             .and_then(Value::as_str)
             .context("A type action requires text.")?;
         *text_chars = text_chars.saturating_add(text.chars().count());
-        ensure!(*text_chars <= MAX_TEXT_CHARS, "Action batch text is too large.");
+        ensure!(
+            *text_chars <= MAX_TEXT_CHARS,
+            "Action batch text is too large."
+        );
     }
     if kind == "key" {
         let keys = object
             .get("keys")
             .and_then(Value::as_str)
             .context("A key action requires keys.")?;
-        ensure!(!keys.trim().is_empty() && keys.len() <= 96, "Invalid key chord.");
+        ensure!(
+            !keys.trim().is_empty() && keys.len() <= 96,
+            "Invalid key chord."
+        );
         ensure!(
             !keys.to_ascii_lowercase().contains("meta")
                 && !keys.to_ascii_lowercase().contains("win"),
@@ -139,7 +145,10 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
             .get("duration_ms")
             .and_then(Value::as_u64)
             .unwrap_or(250);
-        ensure!(duration <= 10_000, "One preview wait may not exceed 10 seconds.");
+        ensure!(
+            duration <= 10_000,
+            "One preview wait may not exceed 10 seconds."
+        );
     }
     Ok(())
 }
@@ -157,7 +166,10 @@ fn validate_tool_request(name: &str, args: &Value) -> Result<&'static str> {
                 .get("actions")
                 .and_then(Value::as_array)
                 .context("computer_actions requires an actions array.")?;
-            ensure!(!actions.is_empty(), "At least one preview action is required.");
+            ensure!(
+                !actions.is_empty(),
+                "At least one preview action is required."
+            );
             ensure!(
                 actions.len() <= MAX_ACTIONS,
                 "A preview action batch may contain at most {MAX_ACTIONS} actions."
@@ -234,15 +246,19 @@ pub fn execute_tool(
         }
         match rx.recv_timeout(Duration::from_millis(40)) {
             Ok(reply) if reply.ok => {
-                return Ok(reply.result.unwrap_or_else(|| json!({
-                    "ok": true,
-                    "scope": "active-preview-tab-only"
-                })));
+                return Ok(reply.result.unwrap_or_else(|| {
+                    json!({
+                        "ok": true,
+                        "scope": "active-preview-tab-only"
+                    })
+                }));
             }
             Ok(reply) => {
                 bail!(
                     "{}",
-                    reply.error.unwrap_or_else(|| "The active Preview tab rejected the action.".into())
+                    reply
+                        .error
+                        .unwrap_or_else(|| "The active Preview tab rejected the action.".into())
                 );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -330,7 +346,10 @@ mod tests {
 
     #[test]
     fn accepts_observe_and_bounded_batches() {
-        assert_eq!(validate_tool_request("computer_observe", &json!({})).unwrap(), "observe");
+        assert_eq!(
+            validate_tool_request("computer_observe", &json!({})).unwrap(),
+            "observe"
+        );
         assert_eq!(
             validate_tool_request(
                 "computer_actions",
