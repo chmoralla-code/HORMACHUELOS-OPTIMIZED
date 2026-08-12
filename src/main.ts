@@ -1696,6 +1696,42 @@ function openClientSuccessCenter() {
   clientSuccessCenter?.open();
 }
 
+export type PreviewComputerUsePromptIntent = "enable" | "disable" | "auto" | null;
+
+/**
+ * Convert only clear user intent into Preview Computer Use policy. This runs in
+ * the trusted desktop host before tools are advertised, so a model cannot grant
+ * itself broader access or escape the active Preview tab.
+ */
+export function resolvePreviewComputerUsePromptIntent(
+  value: string,
+): PreviewComputerUsePromptIntent {
+  const prompt = String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!prompt) return null;
+
+  const directDisable =
+    /\b(?:disable|turn off|switch off|stop|block|never use|do not use|don't use|dont use)\b.{0,48}\b(?:computer use|ai cursor|preview cursor)\b/
+      .test(prompt) ||
+    /\b(?:computer use|ai cursor|preview cursor)\b.{0,24}\b(?:off|disabled|blocked)\b/
+      .test(prompt);
+  if (directDisable) return "disable";
+
+  const directEnable =
+    /\b(?:enable|turn on|switch on|start|activate|use)\b.{0,48}\b(?:computer use|ai cursor|preview cursor)\b/
+      .test(prompt) ||
+    /\b(?:computer use|ai cursor|preview cursor)\b.{0,24}\b(?:on|enabled|active)\b/
+      .test(prompt);
+  if (directEnable) return "enable";
+
+  const playwrightRequest =
+    /\b(?:playwright|browser automation|automate the browser)\b/.test(prompt);
+  const previewAction =
+    /\b(?:debug|test|inspect|check|browse|navigate|interact|click|type|scroll|hover|open|verify)\b.{0,72}\b(?:my |the )?(?:website|site|web app|webpage|page|preview|browser tab)\b/
+      .test(prompt) ||
+    /\b(?:my |the )?(?:website|site|web app|webpage|page|preview|browser tab)\b.{0,72}\b(?:debug|test|inspect|check|browse|navigate|interact|click|type|scroll|hover|open|verify)\b/
+      .test(prompt);
+  return playwrightRequest || previewAction ? "auto" : null;
+}
 async function sendPrompt(submission: ChatPromptSubmission) {
   let prompt = redactChatCredentials(submission.modelText);
   const visiblePrompt = redactChatCredentials(submission.visibleText || submission.modelText);
@@ -1718,11 +1754,42 @@ async function sendPrompt(submission: ChatPromptSubmission) {
     reportError("Choose an AI provider and model before sending a request.");
     return;
   }
-  const runSettings = modelBar.settings ? {
-    ...modelBar.settings,
+  const computerUseIntent = resolvePreviewComputerUsePromptIntent(visiblePrompt);
+  let promptSettings = modelBar.settings;
+  if (promptSettings && (computerUseIntent === "enable" || computerUseIntent === "disable")) {
+    const updatedSettings = {
+      ...promptSettings,
+      computer_use_enabled: computerUseIntent === "enable",
+      computer_use_prompt_activation: computerUseIntent === "enable",
+    };
+    try {
+      await api.saveSettings(updatedSettings);
+      promptSettings = await api.getSettings();
+      modelBar.settings = promptSettings;
+      void sitePreview.refreshComputerUseControl();
+    } catch (error) {
+      // The current prompt is itself explicit user authorization, so preserve
+      // its one-run policy even if persistence is temporarily unavailable.
+      console.warn("Could not persist Preview Computer Use policy", error);
+      promptSettings = updatedSettings;
+      modelBar.settings = updatedSettings;
+    }
+  }
+  const promptActivationAllowed =
+    promptSettings?.computer_use_prompt_activation !== false;
+  const computerUseForRun = computerUseIntent === "disable"
+    ? false
+    : computerUseIntent === "enable"
+      ? true
+      : computerUseIntent === "auto" && promptActivationAllowed
+        ? true
+        : !!promptSettings?.computer_use_enabled;
+  const runSettings = promptSettings ? {
+    ...promptSettings,
     provider: runProfile.provider,
     model: runProfile.model,
-    model_effort: runProfile.effort || modelBar.settings.model_effort,
+    model_effort: runProfile.effort || promptSettings.model_effort,
+    computer_use_enabled: computerUseForRun,
   } : undefined;
   if (isHostedCatalogRestricted()) {
     const allowed = visibleProviders();
@@ -2365,6 +2432,15 @@ async function init() {
     syncActiveSessionModelLock();
   });
   await modelBar.load().catch((e) => console.error("modelbar load failed", e));
+  window.addEventListener("horma:computer-use-mode-changed", ((event: CustomEvent<{
+    enabled?: boolean;
+    promptActivation?: boolean;
+  }>) => {
+    if (!modelBar.settings) return;
+    modelBar.settings.computer_use_enabled = event.detail?.enabled === true;
+    modelBar.settings.computer_use_prompt_activation =
+      event.detail?.promptActivation !== false;
+  }) as EventListener);
   await refreshProviderReadiness().catch(() => false);
   // Prefer website plan usage; fall back to local license.json if website had none.
   if (!planActive) {
