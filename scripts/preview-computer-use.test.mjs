@@ -128,7 +128,7 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
   assert.doesNotMatch(browserController, /querySelectorAll\('\*'\)\.filter\(scrollable\)/);
   assert.match(browserController, /viewport\.scrollY is page-only/);
 
-  assert.match(tools, /With no target it scrolls under the visible AI cursor/);
+  assert.match(tools, /with no target it scrolls under the visible AI cursor/i);
   assert.match(tools, /Positive delta_y scrolls down and negative scrolls up/);
   assert.match(agent, /viewport\.scrollY measures only the page/);
   assert.match(agent, /do not repeat the identical scroll blindly/);
