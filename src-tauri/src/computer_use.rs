@@ -333,8 +333,7 @@ pub fn execute_tool(
         .map_err(|_| anyhow::anyhow!("Preview Computer Use response registry is unavailable."))?
         .insert(request_id.clone(), tx);
 
-    let request =
-        preview_computer_request(request_id.clone(), operation, args.clone(), owner)?;
+    let request = preview_computer_request(request_id.clone(), operation, args.clone(), owner)?;
     if let Err(error) = app.emit("preview-computer-request", &request) {
         let _ = pending().lock().map(|mut map| map.remove(&request_id));
         return Err(error).context("Could not send the action to the active Preview tab.");
@@ -467,13 +466,8 @@ mod tests {
             None,
             false,
         );
-        let request = preview_computer_request(
-            "request-7".into(),
-            "observe",
-            json!({}),
-            &owner,
-        )
-        .unwrap();
+        let request =
+            preview_computer_request("request-7".into(), "observe", json!({}), &owner).unwrap();
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["protocolVersion"], 3);
         assert_eq!(value["requestId"], "request-7");
