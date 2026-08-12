@@ -107,6 +107,8 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
                 | "key"
                 | "scroll"
                 | "drag"
+                | "set_value"
+                | "check"
                 | "wait"
                 | "open_tab"
                 | "navigate"
@@ -130,10 +132,37 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
             .and_then(Value::as_str)
             .context("A type action requires text.")?;
         *text_chars = text_chars.saturating_add(text.chars().count());
-        ensure!(
-            *text_chars <= MAX_TEXT_CHARS,
-            "Action batch text is too large."
-        );
+        ensure!(*text_chars <= MAX_TEXT_CHARS, "Action batch text is too large.");
+    }
+    if kind == "set_value" {
+        let value = object
+            .get("value")
+            .and_then(Value::as_str)
+            .context("A set_value action requires value.")?;
+        *text_chars = text_chars.saturating_add(value.chars().count());
+        ensure!(*text_chars <= MAX_TEXT_CHARS, "Action batch text is too large.");
+    }
+    if kind == "check" {
+        let expected = object
+            .get("expect")
+            .and_then(Value::as_object)
+            .context("A check action requires a non-empty expect object.")?;
+        ensure!(!expected.is_empty(), "A check action requires at least one expected state.");
+        for (key, value) in expected {
+            ensure!(
+                matches!(key.as_str(), "visible" | "enabled" | "checked" | "text" | "value" | "url" | "title"),
+                "Unsupported Preview check field: {key}."
+            );
+            if matches!(key.as_str(), "visible" | "enabled" | "checked") {
+                ensure!(value.is_boolean(), "Preview check {key} must be boolean.");
+            } else {
+                let text = value.as_str().with_context(|| format!("Preview check {key} must be text."))?;
+                ensure!(text.chars().count() <= 2_048, "Preview check {key} is too long.");
+            }
+        }
+        if let Some(mode) = object.get("match").and_then(Value::as_str) {
+            ensure!(matches!(mode, "contains" | "equals"), "Invalid Preview check match mode.");
+        }
     }
     if kind == "key" {
         let keys = object
@@ -150,15 +179,11 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
             "Win/Meta keys are outside Preview Computer Use."
         );
     }
-    if matches!(kind, "wait" | "open_tab" | "navigate" | "activate_tab") {
-        let duration = object
-            .get("duration_ms")
-            .and_then(Value::as_u64)
-            .unwrap_or(if kind == "wait" { 250 } else { 8_000 });
-        ensure!(
-            duration <= 10_000,
-            "One Preview wait may not exceed 10 seconds."
-        );
+    if let Some(duration) = object.get("duration_ms") {
+        let duration = duration
+            .as_u64()
+            .context("Preview duration_ms must be a non-negative integer.")?;
+        ensure!(duration <= 10_000, "One Preview action may not exceed 10 seconds.");
     }
     if matches!(kind, "open_tab" | "navigate") {
         let raw = object
@@ -448,6 +473,32 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn accepts_native_form_values_and_evidence_checks() {
+        assert!(validate_tool_request(
+            "computer_actions",
+            &json!({ "actions": [
+                { "type": "set_value", "ref": "p1", "value": "2026-08-12" },
+                { "type": "check", "ref": "p1", "match": "equals", "expect": {
+                    "visible": true,
+                    "enabled": true,
+                    "value": "2026-08-12"
+                }}
+            ] })
+        )
+        .is_ok());
+        assert!(validate_tool_request(
+            "computer_actions",
+            &json!({ "actions": [{ "type": "set_value", "ref": "p1" }] })
+        )
+        .is_err());
+        assert!(validate_tool_request(
+            "computer_actions",
+            &json!({ "actions": [{ "type": "check", "ref": "p1", "expect": {} }] })
+        )
+        .is_err());
     }
 
     #[test]
