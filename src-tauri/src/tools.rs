@@ -1167,12 +1167,12 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "start_dev_server",
-                "description": "Start a local web development server in a safe detached background process. Use this for npm/pnpm/yarn/Vite/Next/etc. dev servers instead of Start-Process, cmd.exe, start /b, or background shell tricks. The host handles Windows .cmd shims, redirects server output to a project log, and returns immediately so the agent can continue.",
+                "description": "Start or reuse a project-owned local web development server. Reuse requires the same canonical project root, working directory, command fingerprint, port, and live managed PID; an unknown or different-project listener is rejected. The host handles Windows .cmd shims, persists a safe lease outside the project, redirects output to a project log, and returns immediately.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "command": { "type": "string", "description": "Server command, e.g. npm run dev -- --host 127.0.0.1" },
-                        "cwd": { "type": "string", "description": "Working directory, absolute or project-relative. Defaults to the project root." },
+                        "cwd": { "type": "string", "description": "Existing project-relative directory, or an absolute canonical descendant of the active project root. Defaults to the active project root; paths outside it are rejected." },
                         "port": { "type": "integer", "description": "Optional local port to reuse or report, e.g. 5173 or 3000." }
                     },
                     "required": ["command"]
@@ -3275,34 +3275,49 @@ pub fn execute(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("missing command"))?;
             let cwd = args.get("cwd").and_then(|v| v.as_str());
-            let work_dir = match cwd {
-                Some(path) => resolve_path(root, path)?,
-                None => root.to_path_buf(),
-            };
             let port = match args.get("port").and_then(|v| v.as_u64()) {
                 Some(port @ 1..=65_535) => Some(port as u16),
                 Some(_) => anyhow::bail!("port must be between 1 and 65535"),
                 None => None,
             };
-            if let Some(port) = port.filter(|port| local_port_is_open(*port)) {
-                return Ok(format!(
-                    "A local development server is already reachable at http://127.0.0.1:{port}; reusing it instead of starting another."
-                ));
+            match crate::dev_server::prepare_dev_server(root, cwd, command, port)? {
+                crate::dev_server::PrepareDevServer::Reuse(lease) => {
+                    let ready = lease
+                        .port
+                        .map(crate::dev_server::local_port_is_open)
+                        .unwrap_or(false);
+                    format_dev_server_result(&lease, "reused", true, ready)
+                }
+                crate::dev_server::PrepareDevServer::Start(prepared) => {
+                    let work_dir = prepared.work_dir.clone();
+                    let (pid, log_path) = start_detached_command(
+                        &work_dir,
+                        command,
+                        ".hormachuelos-dev-server.log",
+                        true,
+                        ctx,
+                    )?;
+                    let lease = match crate::dev_server::register_started_server(
+                        prepared,
+                        pid,
+                        &log_path,
+                    ) {
+                        Ok(lease) => lease,
+                        Err(error) => {
+                            kill_process_tree(pid);
+                            return Err(error.context(
+                                "The detached server was stopped because its ownership lease could not be registered",
+                            ));
+                        }
+                    };
+                    let ready = lease
+                        .port
+                        .map(crate::dev_server::local_port_is_open)
+                        .unwrap_or(false);
+                    let status = if ready { "started" } else { "starting" };
+                    format_dev_server_result(&lease, status, false, ready)
+                }
             }
-            let (pid, log_path) = start_detached_command(
-                &work_dir,
-                command,
-                ".hormachuelos-dev-server.log",
-                true,
-                ctx,
-            )?;
-            let preview = port
-                .map(|port| format!(" Preview: http://127.0.0.1:{port}."))
-                .unwrap_or_default();
-            Ok(format!(
-                "Started local development server in background (PID {pid}).{preview} The agent can continue without waiting for the server process. Output is redirected to {}.",
-                log_path.display()
-            ))
         }
         "git_init" => run_hidden(root, "git init", 30, ctx),
         "git_add_all" => run_hidden(root, "git add -A", 60, ctx),
@@ -3374,6 +3389,11 @@ pub fn execute(
                 .get("url")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("missing url"))?;
+            if is_preview_only_local_url(url) {
+                anyhow::bail!(
+                    "Local development URLs are Preview-only. open_url deliberately will not launch {url} in a separate default-browser tab. Start or reuse the active project's server with start_dev_server, then use the exact URL from its HORMACHUELOS_DEV_SERVER_META line in the Preview tab."
+                );
+            }
             crate::integrations::open_browser(url)?;
             Ok(format!("Opened browser: {url}"))
         }
@@ -3921,9 +3941,64 @@ fn start_detached_command(
     Ok((child.id(), log_path))
 }
 
-fn local_port_is_open(port: u16) -> bool {
-    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(150)).is_ok()
+fn format_dev_server_result(
+    lease: &crate::dev_server::DevServerLease,
+    status: &str,
+    reused: bool,
+    ready: bool,
+) -> Result<String> {
+    let url = lease
+        .port
+        .map(|port| format!("http://127.0.0.1:{port}"));
+    let preview = url
+        .as_deref()
+        .map(|url| format!(" Preview: {url}."))
+        .unwrap_or_default();
+    let action = if reused {
+        "Reusing project-owned local development server"
+    } else {
+        "Started project-owned local development server in background"
+    };
+    let readable = format!(
+        "{action} (PID {}).{preview} Output is redirected to {}.",
+        lease.pid, lease.log_path
+    );
+    let metadata = json!({
+        "kind": "hormachuelos-dev-server",
+        "status": status,
+        "leaseId": &lease.lease_id,
+        "projectRoot": &lease.project_root,
+        "workDir": &lease.work_dir,
+        "commandFingerprint": &lease.command_fingerprint,
+        "port": lease.port,
+        "pid": lease.pid,
+        "url": url,
+        "logPath": &lease.log_path,
+        "reused": reused,
+        "ready": ready,
+    });
+    Ok(format!(
+        "{readable}\nHORMACHUELOS_DEV_SERVER_META {}",
+        serde_json::to_string(&metadata)?
+    ))
+}
+
+fn is_preview_only_local_url(input: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(input) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
 }
 
 fn run_hidden(
@@ -4561,6 +4636,23 @@ mod security_tests {
         assert!(!encoded.contains("super-secret"));
         assert!(!encoded.contains("also-secret"));
         assert!(!encoded.contains("OTHER"));
+    }
+
+    #[test]
+    fn local_development_urls_are_preview_only() {
+        for url in [
+            "http://localhost:3000/",
+            "https://app.localhost:5173/path",
+            "http://127.0.0.1:8080/",
+            "http://127.42.8.9/",
+            "http://[::1]:3000/",
+            "http://0.0.0.0:4173/",
+            "http://[::]:4173/",
+        ] {
+            assert!(is_preview_only_local_url(url), "did not block {url}");
+        }
+        assert!(!is_preview_only_local_url("https://example.com/"));
+        assert!(!is_preview_only_local_url("file:///tmp/index.html"));
     }
 
     #[test]
