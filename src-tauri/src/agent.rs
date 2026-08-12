@@ -2629,10 +2629,8 @@ The tool entries are historical summaries; use fresh tools for the current works
         if resp.tool_calls.is_empty() {
             let announced = reply_announces_pending_action(resp.text.as_deref().unwrap_or(""));
             let cut_off = reply_was_cut_off(&resp);
-            let has_visible_answer = response_has_visible_answer(
-                &resp,
-                visible_text_streamed.load(Ordering::SeqCst),
-            );
+            let has_visible_answer =
+                response_has_visible_answer(&resp, visible_text_streamed.load(Ordering::SeqCst));
             let continuation_reason = if stop_reason_requires_continuation(&resp.stop_reason) {
                 Some(AutomaticContinuationReason::OutputLimit)
             } else if cut_off && !auth_request_routed {
