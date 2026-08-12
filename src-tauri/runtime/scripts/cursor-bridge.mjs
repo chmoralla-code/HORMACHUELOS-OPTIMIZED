@@ -215,8 +215,10 @@ const READ_ONLY_TOOLS = new Set([
   "todo_write",
   "updatetodos",
   "update_todos",
-  "computer_list_windows",
+  // Preview Computer Use is an explicit, Preview-scoped authorization. Keep
+  // observation and actions together in Ask mode; neither can reach Windows.
   "computer_observe",
+  "computer_actions",
 ]);
 
 // Cursor can keep its async event stream open after a built-in inspection
