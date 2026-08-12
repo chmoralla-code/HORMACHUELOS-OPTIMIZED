@@ -542,15 +542,17 @@ class PreviewFrameComputerController {
       if ("isTrusted" in event && !(event as Event & { isTrusted: boolean }).isTrusted) return;
       this.hideVisuals();
     };
-    for (const type of ["pointermove", "pointerdown", "wheel", "keydown"]) {
-      this.document.addEventListener(type, this.humanTakeoverHandler, true);
+    if (typeof this.document.addEventListener === "function") {
+      for (const type of ["pointermove", "pointerdown", "wheel", "keydown"]) {
+        this.document.addEventListener(type, this.humanTakeoverHandler, true);
+      }
     }
   }
 
   private destroyOverlay(): void {
     if (this.settleTimer != null) this.view.clearTimeout(this.settleTimer);
     this.settleTimer = null;
-    if (this.humanTakeoverHandler) {
+    if (this.humanTakeoverHandler && typeof this.document.removeEventListener === "function") {
       for (const type of ["pointermove", "pointerdown", "wheel", "keydown"]) {
         this.document.removeEventListener(type, this.humanTakeoverHandler, true);
       }
@@ -611,7 +613,7 @@ class PreviewFrameComputerController {
   }
 
   private registerTransient(element: HTMLElement, ttl: number): void {
-    element.classList.add("__horma-ai-fx");
+    element.dataset.hormaAiFx = "transient";
     this.transientFx.push(element);
     while (this.transientFx.length > MAX_CURSOR_TRANSIENTS) this.transientFx.shift()?.remove();
     this.view.setTimeout(() => {
@@ -646,8 +648,14 @@ class PreviewFrameComputerController {
     const y = clamp(rect.top - padding, 2, Math.max(2, this.view.innerHeight - 6));
     const width = clamp(rect.width + padding * 2, 8, Math.max(8, this.view.innerWidth - x - 2));
     const height = clamp(rect.height + padding * 2, 8, Math.max(8, this.view.innerHeight - y - 2));
-    this.targetFrame.style.setProperty("--horma-target-x", `${x}px`);
-    this.targetFrame.style.setProperty("--horma-target-y", `${y}px`);
+    const targetStyle = this.targetFrame.style as CSSStyleDeclaration & Record<string, string>;
+    if (typeof targetStyle.setProperty === "function") {
+      targetStyle.setProperty("--horma-target-x", `${x}px`);
+      targetStyle.setProperty("--horma-target-y", `${y}px`);
+    } else {
+      targetStyle["--horma-target-x"] = `${x}px`;
+      targetStyle["--horma-target-y"] = `${y}px`;
+    }
     this.targetFrame.style.width = `${width}px`;
     this.targetFrame.style.height = `${height}px`;
     this.targetFrame.dataset.gesture = gesture;
