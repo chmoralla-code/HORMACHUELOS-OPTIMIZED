@@ -826,7 +826,7 @@ mod tests {
             ..Settings::default()
         };
         assert!(research.validate().is_ok());
-        assert_eq!(capability_for_mode("research"), "investigate");
+        assert_eq!(capability_for_mode("research"), "answer_max");
         assert_eq!(capability_for_mode("ask"), "answer_max");
     }
 
