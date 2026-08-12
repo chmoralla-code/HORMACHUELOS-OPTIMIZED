@@ -326,5 +326,5 @@ test("dev server ownership is byte-exact, descendant-bound, and retryable", () =
   assert.match(devServer, /process_descends_from_with/);
   assert.match(devServer, /OwnershipDecision::LeaseOwnerMismatch/);
   assert.match(devServer, /OwnershipDecision::ManagedNotReady =>/);
-  assert.match(tools, /validate_dev_server_lease\(Some\(&lease\.lease_id\), &lease\.project_root, &url\)/);
+  assert.match(tools, /validate_dev_server_lease\(\s*Some\(&lease\.lease_id\),\s*&lease\.project_root,\s*&url,?\s*\)/);
 });
