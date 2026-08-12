@@ -42,7 +42,15 @@ test("all model runtimes receive the same Preview-only tool contract", () => {
   assert.match(cursorNodeBridge, /"computer_observe"[\s\S]*"computer_actions"/);
   assert.doesNotMatch(
     agent,
-    /computer_list_windows|computer_focus_window|computer_click|computer_type_text|computer_game_sequence/,
+    /computer_\* tools: protected Windows desktop control/,
+  );
+  assert.doesNotMatch(
+    agent,
+    /TOOL REFERENCE:[^\n]*(?:computer_list_windows|computer_focus_window|computer_click|computer_type_text|computer_game_sequence)/,
+  );
+  assert.match(
+    agent,
+    /TOOL REFERENCE:[^\n]*computer_observe, computer_actions/,
   );
   assert.match(agent, /playwright this website/);
   assert.match(agent, /drive the live Preview first/);
