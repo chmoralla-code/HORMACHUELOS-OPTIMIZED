@@ -101,6 +101,15 @@ const runModelProfiles = new Map<
 const runProjectPaths = new Map<string, string>();
 /** start_dev_server calls awaiting a verified native metadata result. */
 const pendingDevServerTools = new Map<string, { sessionId: string; projectRoot: string }>();
+/** Native-issued opaque generation for each in-flight session run. */
+const activeRunNonces = new Map<string, string>();
+/** Serialize every native project-root mutation in user-selection order. */
+let projectRootMutationQueue: Promise<void> = Promise.resolve();
+function serializeProjectRootMutation(mutation: () => Promise<string>): Promise<string> {
+  const result = projectRootMutationQueue.then(mutation, mutation);
+  projectRootMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 /** The user's prompt for each in-flight run — used to gate auto-opening the preview. */
 const runPrompts = new Map<string, string>();
 /** Files created/edited during a run — used to auto-open the build preview. */
@@ -573,6 +582,7 @@ function releaseFrontendRun(sessionId: string): boolean {
   clearTerminalReconcileTimers(sessionId);
   if (verifiedRunCompletions.delete(sessionId)) completionCuePending = true;
   runModelProfiles.delete(sessionId);
+  activeRunNonces.delete(sessionId);
   runProjectPaths.delete(sessionId);
   runPrompts.delete(sessionId);
   runTouchedFiles.delete(sessionId);
@@ -1594,7 +1604,7 @@ async function refreshHeader() {
 }
 
 async function openQuickSessionWorkspace() {
-  const path = await api.ensureQuickSessionWorkspace();
+  const path = await serializeProjectRootMutation(() => api.ensureQuickSessionWorkspace());
   quickSessionWorkspacePath = path;
   await selectProject(path, { quickSession: true });
 }
@@ -1617,9 +1627,9 @@ async function selectProject(path: string, options: { quickSession?: boolean } =
   persistCurrentSession();
   flushSessionSaves();
   // Both commands atomically set the native root and return the canonical path.
-  const canonicalPath = quickSession
-    ? await api.ensureQuickSessionWorkspace()
-    : await api.setProjectRoot(path);
+  const canonicalPath = await serializeProjectRootMutation(() => quickSession
+    ? api.ensureQuickSessionWorkspace()
+    : api.setProjectRoot(path));
   if (selectionGeneration !== projectSelectionGeneration) return;
   if (quickSession) quickSessionWorkspacePath = canonicalPath;
   const wasRepaired = !quickSession && !sameProjectPath(path, canonicalPath);
@@ -2157,7 +2167,7 @@ function handleAgentEvent(e: AgentEvent) {
   if (sid && isTerminalAgentEvent(e)) clearPendingDevServerTools(sid);
   const owningSession = sid ? sessionForId(sid) : undefined;
   const smartStateChanged = owningSession ? applySmartAgentEvent(owningSession, e) : false;
-  if (e.kind === "start") cancelDoneWorkingCue();
+  if (e.kind === \
   if (sid && isVerifiedAgentCompletion(e)) verifiedRunCompletions.add(sid);
   if (smartStateChanged && isActive) syncSmartAgentPanel();
 
@@ -2704,6 +2714,7 @@ async function init() {
         if (
           !ownerSession
           || !request.runNonce?.trim()
+          || activeRunNonces.get(request.sessionId) !== request.runNonce
           || request.sessionId !== activeSessionId
           || !currentProjectPath
           || !sameProjectPath(request.projectRoot, currentProjectPath)

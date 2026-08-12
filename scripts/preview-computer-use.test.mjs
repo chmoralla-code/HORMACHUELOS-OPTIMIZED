@@ -14,7 +14,7 @@ const cursorBridge = read("src-tauri/src/cursor_bridge.rs");
 const preview = read("src/components/site-preview.ts");
 const main = read("src/main.ts");
 const ipc = read("src/ipc.ts");
-const session = read("src/components/session.ts");
+const session = read(\
 const frameController = read("src/components/preview-computer-use.ts");
 const browserController = read("src-tauri/src/preview_browser.rs");
 const agent = read("src-tauri/src/agent.rs");
@@ -207,7 +207,11 @@ test("Preview routing rejects stale project/session owners across async boundari
   assert.match(ipc, /setProjectRoot: \(path: string\): Promise<string>/);
   assert.match(ipc, /sessionId: string;[\s\S]*projectRoot: string;[\s\S]*runNonce: string;/);
 
-  const selectStart = main.indexOf("async function selectProject");
+  assert.match(main, /let projectRootMutationQueue: Promise<void> = Promise\\.resolve\\(\\)/);
+  assert.match(main, /serializeProjectRootMutation\\(\\(\\) => quickSession[\\s\\S]*api\\.ensureQuickSessionWorkspace\\(\\)[\\s\\S]*api\\.setProjectRoot\\(path\\)/);
+  assert.match(main, /openQuickSessionWorkspace\\(\\)[\\s\\S]*serializeProjectRootMutation\\(\\(\\) => api\\.ensureQuickSessionWorkspace\\(\\)\\)/);
+
+  const selectStart = main.indexOf(\
   const selectAwait = main.indexOf("await api.setProjectRoot(path)", selectStart);
   const selectGuard = main.indexOf("selectionGeneration !== projectSelectionGeneration", selectAwait);
   assert.ok(selectStart >= 0 && selectAwait > selectStart && selectGuard > selectAwait,
@@ -220,7 +224,14 @@ test("Preview routing rejects stale project/session owners across async boundari
     "a delayed Preview open must re-check its session owner after awaiting");
   assert.match(main, /ownerSessionId: targetSessionId \?\? null/);
   assert.match(main, /persistPreviewForSession\(owner\.sessionId, preview\)/);
-  assert.match(main, /!request\.runNonce\?\.trim\(\)/);
+  assert.match(main, /!request\\.runNonce\\?\\.trim\\(\\)/);
+  assert.match(main, /activeRunNonces\\.get\\(request\\.sessionId\\) !== request\\.runNonce/);
+  assert.match(main, /activeRunNonces\\.set\\(sid, nonce\\)/);
+  assert.match(main, /activeRunNonces\\.delete\\(sessionId\\)/);
+  assert.match(state, /run_nonce: uuid::Uuid::new_v4\\(\\)\\.to_string\\(\\)/);
+  assert.match(agent, /let run_nonce = run\\.run_nonce\\(\\)\\.to_string\\(\\)/);
+  assert.match(cursorRuntime, /let run_nonce = run\\.run_nonce\\(\\)\\.to_string\\(\\)/);
+  assert.match(agent, /\
   assert.match(main, /!sitePreview\.ownsView\(request\.sessionId, request\.projectRoot\)/);
 
   const restoreStart = preview.indexOf("async restoreSessionState");

@@ -408,10 +408,7 @@ async fn execute_cursor_host_tool(
             json!({ "stream": stream, "text": line }),
         );
     });
-    let run_nonce = run
-        .checkpoint()
-        .map(|checkpoint| checkpoint.id().to_string())
-        .unwrap_or_else(|| format!("session-run:{session_id}"));
+    let run_nonce = run.run_nonce().to_string();
     let context = crate::tools::ToolRunContext::owned(
         session_id,
         project_root.to_string_lossy().into_owned(),
@@ -937,7 +934,7 @@ pub async fn run_cursor_turn(
             "flavour_enabled": flavour.is_enabled(),
             "task_profile": task_profile,
             "execution_profile": execution_profile,
-            "checkpoint_id": run.checkpoint().map(|checkpoint| checkpoint.id()),
+            \
         }),
     );
     if flavour.is_enabled() {

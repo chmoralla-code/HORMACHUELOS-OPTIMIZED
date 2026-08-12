@@ -582,7 +582,7 @@ export type IntegrationTestResult = {
 };
 
 export type AgentEventPayload =
-  | { kind: "start"; payload: { prompt: string; permission_mode?: string; smart_agent_enabled?: boolean; flavour_enabled?: boolean; task_profile?: AgentTaskProfile; execution_profile?: Exclude<AgentExecutionProfile, "auto">; repair_budget?: number; checkpoint_id?: string | null } }
+  | { kind: "start"; payload: { prompt: string; permission_mode?: string; smart_agent_enabled?: boolean; flavour_enabled?: boolean; task_profile?: AgentTaskProfile; execution_profile?: Exclude<AgentExecutionProfile, "auto">; repair_budget?: number; checkpoint_id?: string | null; run_nonce: string } }
   | { kind: "task_plan"; payload: { title: string; summary: string; steps: { id: string; label: string; state: string }[]; active_step: number; status: string; detail?: string } }
   | { kind: "task_progress"; payload: { step: number; phase: string; status: string; detail: string; completed_before?: number; complete_all?: boolean } }
   | { kind: "thinking"; payload: { iteration: number } }

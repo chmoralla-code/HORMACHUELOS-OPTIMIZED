@@ -30,6 +30,8 @@ pub struct SessionRun {
     checkpoint: Mutex<Option<Arc<crate::checkpoint::RunCheckpoint>>>,
     protect_command_changes: AtomicBool,
     project_root: Mutex<Option<String>>,
+    /// Cryptographically opaque generation shared by every tool in this run.
+    run_nonce: String,
 }
 
 impl SessionRun {
@@ -42,6 +44,7 @@ impl SessionRun {
             checkpoint: Mutex::new(None),
             protect_command_changes: AtomicBool::new(false),
             project_root: Mutex::new(None),
+            run_nonce: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -61,6 +64,10 @@ impl SessionRun {
 
     pub fn protect_command_changes(&self) -> bool {
         self.protect_command_changes.load(Ordering::SeqCst)
+    }
+
+    pub fn run_nonce(&self) -> &str {
+        &self.run_nonce
     }
 
     pub fn set_project_root(&self, project_root: String) {
@@ -121,6 +128,7 @@ impl AppState {
         let recent = load_recent().unwrap_or_default();
         Self {
             project_root: Mutex::new(None),
+            run_nonce: uuid::Uuid::new_v4().to_string(),
             settings: Mutex::new(settings),
             recent_projects: Mutex::new(recent),
             runs: Arc::new(Mutex::new(HashMap::new())),
@@ -314,6 +322,17 @@ mod tests {
         assert_eq!(state.active_run_ids(), vec!["session-a"]);
         drop(other_guard);
         assert!(state.active_run_ids().is_empty());
+    }
+
+    #[test]
+    fn each_session_run_has_a_stable_unique_opaque_nonce() {
+        let first = super::SessionRun::new();
+        let second = super::SessionRun::new();
+        let first_nonce = first.run_nonce().to_string();
+
+        assert!(uuid::Uuid::parse_str(&first_nonce).is_ok());
+        assert_eq!(first.run_nonce(), first_nonce);
+        assert_ne!(first.run_nonce(), second.run_nonce());
     }
 
     #[test]

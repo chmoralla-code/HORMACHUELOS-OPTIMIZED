@@ -1855,10 +1855,7 @@ Current user request:\n{prompt}",
         );
     });
 
-    let run_nonce = run
-        .checkpoint()
-        .map(|checkpoint| checkpoint.id().to_string())
-        .unwrap_or_else(|| format!("session-run:{session_id}"));
+    let run_nonce = run.run_nonce().to_string();
     let tool_ctx = ToolRunContext::owned(
         session_id.clone(),
         root.to_string_lossy().into_owned(),
@@ -2215,7 +2212,7 @@ The tool entries are historical summaries; use fresh tools for the current works
             "task_profile": task_profile.wire_name(),
             "execution_profile": execution_profile.wire_name(),
             "repair_budget": execution_profile.repair_budget(),
-            "checkpoint_id": run.checkpoint().map(|checkpoint| checkpoint.id()),
+            \
         }),
     );
     if flavour.is_enabled() {
