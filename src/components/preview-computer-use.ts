@@ -71,6 +71,9 @@ const INTERACTIVE_SELECTOR = [
   "[role='radio']", "[role='tab']", "[role='menuitem']", "[role='option']",
   "[tabindex]:not([tabindex='-1'])", "canvas", "video",
 ].join(",");
+const MAX_OBSERVED_ELEMENTS = 80;
+const MAX_INTERACTIVE_SCAN = 320;
+const MAX_ANCESTOR_SCAN = 480;
 
 function elementScrollPosition(element: Element): PreviewScrollPosition {
   const html = element as HTMLElement;
@@ -82,15 +85,16 @@ function elementScrollPosition(element: Element): PreviewScrollPosition {
   };
 }
 
-function isScrollableElement(element: Element, view: Window): element is HTMLElement {
+function scrollableElementPosition(element: Element, view: Window): PreviewScrollPosition | null {
   if (!isHtmlElement(element)
     || element === view.document.body
-    || element === view.document.documentElement) return false;
+    || element === view.document.documentElement) return null;
   const position = elementScrollPosition(element);
-  if (position.maxX <= 1 && position.maxY <= 1) return false;
+  if (position.maxX <= 1 && position.maxY <= 1) return null;
   const style = view.getComputedStyle(element);
-  return (position.maxX > 1 && /^(auto|scroll|overlay)$/.test(style.overflowX))
+  const scrollable = (position.maxX > 1 && /^(auto|scroll|overlay)$/.test(style.overflowX))
     || (position.maxY > 1 && /^(auto|scroll|overlay)$/.test(style.overflowY));
+  return scrollable ? position : null;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -223,28 +227,58 @@ class PreviewFrameComputerController {
   observe(): Record<string, unknown> {
     const elements: ObservedElement[] = [];
     this.refs.clear();
-    const interactive = Array.from(this.document.querySelectorAll(INTERACTIVE_SELECTOR));
-    const candidates = new Set<Element>(interactive);
+
+    // Keep observation work strictly bounded. The pane under the AI cursor is
+    // inspected first, and scrollable ancestors are emitted before controls so
+    // a busy page cannot push its actual scroll target past the 80-ref limit.
+    const interactive: Element[] = [];
+    const scrollables: Element[] = [];
+    const scrollPositions = new Map<Element, PreviewScrollPosition>();
+    const inspectedAncestors = new Set<Element>();
     const addScrollableAncestors = (seed: Element | null) => {
       let node = seed;
-      while (node) {
-        if (isScrollableElement(node, this.view)) candidates.add(node);
+      while (node && inspectedAncestors.size < MAX_ANCESTOR_SCAN) {
+        if (inspectedAncestors.has(node)) break;
+        inspectedAncestors.add(node);
+        const position = scrollableElementPosition(node, this.view);
+        if (position && !scrollPositions.has(node)) {
+          scrollPositions.set(node, position);
+          scrollables.push(node);
+        }
         node = node.parentElement;
       }
     };
+
     addScrollableAncestors(this.document.elementFromPoint(this.cursorPoint.x, this.cursorPoint.y));
-    for (const element of interactive) addScrollableAncestors(element);
-    for (const element of Array.from(candidates)) {
-      if (elements.length >= 80 || !isVisible(element, this.view)) continue;
+    let scanned = 0;
+    for (const element of this.document.querySelectorAll(INTERACTIVE_SELECTOR)) {
+      if (scanned >= MAX_INTERACTIVE_SCAN || interactive.length >= MAX_OBSERVED_ELEMENTS) break;
+      scanned += 1;
+      if (!isVisible(element, this.view)) continue;
+      interactive.push(element);
+      addScrollableAncestors(element);
+    }
+
+    const emitted = new Set<Element>();
+    for (const element of [...scrollables, ...interactive]) {
+      if (elements.length >= MAX_OBSERVED_ELEMENTS) break;
+      if (emitted.has(element) || !isVisible(element, this.view)) continue;
+      emitted.add(element);
       const rect = element.getBoundingClientRect();
       const ref = `p${elements.length + 1}`;
       this.refs.set(ref, element);
       const input = element as HTMLInputElement;
+      const scrollPosition = scrollPositions.get(element);
+      const scrollableName = compact(
+        element.getAttribute("aria-label")
+          || element.getAttribute("title")
+          || element.id,
+      );
       const observed: ObservedElement = {
         ref,
         tag: element.tagName.toLowerCase(),
         role: compact(element.getAttribute("role") || element.tagName.toLowerCase(), 48),
-        name: elementName(element),
+        name: scrollPosition ? (scrollableName || "Scrollable region") : elementName(element),
         selector: selectorFor(element, this.document),
         rect: {
           x: Math.round(rect.x),
@@ -254,10 +288,9 @@ class PreviewFrameComputerController {
         },
         disabled: "disabled" in input && Boolean(input.disabled),
       };
-      if (isScrollableElement(element, this.view)) {
+      if (scrollPosition) {
         observed.scrollable = true;
-        observed.scroll = elementScrollPosition(element);
-        if (!observed.name) observed.name = "Scrollable region";
+        observed.scroll = scrollPosition;
       }
       if ("checked" in input && typeof input.checked === "boolean") observed.checked = input.checked;
       if ("value" in input && input.type !== "password" && compact(input.value)) {
@@ -281,35 +314,8 @@ class PreviewFrameComputerController {
       },
       cursor: { x: Math.round(this.cursorPoint.x), y: Math.round(this.cursorPoint.y) },
       elements,
-      content: this.visibleSemanticContent(),
       hint: "Use element refs with computer_actions. Scrollable regions include scroll x/y/maxX/maxY; use their ref for nested panes. viewport.scrollY is page-only. Coordinates are relative to this preview viewport.",
     };
-  }
-
-  private visibleSemanticContent(): Array<Record<string, unknown>> {
-    const content: Array<Record<string, unknown>> = [];
-    const seen = new Set<string>();
-    let totalChars = 0;
-    const selector = "h1,h2,h3,h4,h5,h6,p,li,th,td,[role='heading'],[role='row'],[role='cell']";
-    for (const element of Array.from(this.document.querySelectorAll(selector))) {
-      if (content.length >= 40 || totalChars >= 6_000 || !isVisible(element, this.view)) continue;
-      const text = compact((element as HTMLElement).innerText || element.textContent, 300);
-      if (!text || seen.has(text)) continue;
-      seen.add(text);
-      totalChars += text.length;
-      const rect = element.getBoundingClientRect();
-      content.push({
-        tag: element.tagName.toLowerCase(),
-        text,
-        rect: {
-          x: Math.round(rect.x),
-          y: Math.round(rect.y),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-        },
-      });
-    }
-    return content;
   }
 
   async runActions(actions: PreviewComputerAction[]): Promise<Record<string, unknown>> {
@@ -459,9 +465,10 @@ class PreviewFrameComputerController {
     const seen = new Set<Element>();
     let node: Element | null = element;
     while (node) {
-      if (!seen.has(node) && isScrollableElement(node, this.view)) {
+      const position = scrollableElementPosition(node, this.view);
+      if (!seen.has(node) && position) {
         seen.add(node);
-        candidates.push({ target: node, position: elementScrollPosition(node) });
+        candidates.push({ target: node, position });
       }
       node = node.parentElement;
     }
