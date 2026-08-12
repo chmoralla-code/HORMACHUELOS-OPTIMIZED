@@ -78,39 +78,39 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Reliable Page + Nested Scrolling
+          releaseName: Hormachuelos Optimized v__VERSION__ · Cinematic Cursor + Max Preview QA
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
-            Reliable Preview scrolling:
-            - scrolls the nearest movable nested table, list, modal, or page under the AI cursor
-            - observed scrollable panes receive refs with current and maximum X/Y positions
-            - positive delta_y scrolls down, negative scrolls up, and horizontal panes work too
-            - inner panes chain outward at their boundary instead of silently repeating a no-op
-            - every scroll reports measured before/after/applied movement, so page scrollY no longer misdiagnoses nested scrolling
-            - keeps all scrolling isolated to the active Preview tab with no desktop input access
+            Cinematic, readable AI cursor:
+            - adds a crisp cyan-violet target frame to every hovered or clicked Preview feature
+            - shows approach, hover, press, click, type, key, scroll, drag, success, and boundary states
+            - adds bounded motion beads, press compression, concentric click shockwaves, and scroll-direction cues
+            - separates the AI action label from the pointer and makes the cursor clearer at 52px
+            - yields immediately to trusted human mouse, wheel, or keyboard input, then clears all overlays
+            - uses only bounded transform/opacity effects, honors reduced motion, and never leaves the active Preview
 
-            Preview tab lifecycle fix:
-            - adds Preview-native navigate, open_tab, and activate_tab actions so Computer Use never loses the page to an external browser tab
-            - computer_observe now returns safe id/title/URL metadata for all Preview tabs while exposing DOM content only for the active tab
-            - switching or navigating is a single bounded action followed by a mandatory fresh observation, preventing stale element refs
-            - blocks credential-bearing and non-http(s) navigation and preserves the active-preview-tab-only safety boundary
-            - tells every model runtime that open_url launches the external default browser and must never be used for Preview navigation
+            Faster Computer Use:
+            - removes cosmetic movement delays from typing, keyboard, and native value actions
+            - skips zero-distance motion and uses distance-adaptive 45–120ms cursor travel
+            - verifies scrolling immediately, with at most two animation frames when the page updates asynchronously
+            - keeps scans, semantic content, trail particles, and transient effects under hard FPS-friendly caps
+            - returns compact action and check evidence to reduce model/tool round trips
 
-            Larger, clearer AI cursor:
-            - increases the in-page cursor footprint to 48px in project and native Browser previews
-            - adds a high-contrast AI label, halo pulse, brighter movement trail, and larger click ripple
-            - keeps movement and effects compositor-friendly with transform/opacity animation and pointer-events disabled
-            - respects reduced-motion preferences and never renders outside the Preview page
+            Smarter end-to-end Preview QA:
+            - observes bounded visible headings, labels, alerts, dialogs, table cells, and status text without starving action refs
+            - adds set_value for native date, time, datetime-local, number, range, color, select, text, and contenteditable controls
+            - reports native field validity and validation messages instead of abandoning date-picker workflows
+            - adds check actions for visible, enabled, checked, text, value, URL, and title evidence
+            - a failed check fails the batch, so the model cannot claim a test passed from dispatch alone
+            - batches deterministic steps, re-observes only after navigation/layout changes, and avoids blind identical retries
+            - Auto recognizes clear Playwright, QA, audit, UI-debug, form, dashboard, game, mouse, and keyboard requests
 
-            Ask Max + Preview Computer Use:
-            - Computer Use control remains available in the Preview hamburger menu: Off, Auto, or On
-            - Auto recognizes clear Playwright, browser-test, and Preview-debug requests
-            - "playwright this website" drives the live active Preview before source inspection or test authoring
-            - Cursor and direct providers receive the same Preview-only computer_observe + computer_actions contract
-            - localhost/127.0.0.1 servers remain routed through the native Preview Browser
-            - silent direct-provider and Cursor completions automatically retry from saved state
-            - preserves all FPS, Source Lens, Design Mode, session, model, and organized-reply improvements
+            Proven Preview control:
+            - keeps native open_tab, navigate, and activate_tab support plus reliable page/nested scrolling
+            - both project iframes and native Preview Browser run the same native-control, checking, scrolling, and visual behavior tests
+            - Computer Use remains auto-approved only inside the active Preview tab; it cannot control the Windows desktop
+            - CAPTCHAs, operating-system dialogs, credential-bearing navigation, and other security boundaries remain blocked
 
             Download page: https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/
           releaseDraft: false
