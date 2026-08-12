@@ -463,7 +463,12 @@ mod permission_mode_tests {
     fn preview_computer_tools_are_auto_approved_in_every_mode() {
         let root = Path::new("C:\\proj");
         for mode in ["ask", "auto", "plan", "full", "multi_agent"] {
-            assert!(!needs_tool_confirm("computer_observe", &json!({}), root, mode));
+            assert!(!needs_tool_confirm(
+                "computer_observe",
+                &json!({}),
+                root,
+                mode
+            ));
             assert!(!needs_tool_confirm(
                 "computer_actions",
                 &json!({ "actions": [{ "type": "click", "ref": "p1" }] }),
@@ -1562,7 +1567,7 @@ fn computer_tool_schemas() -> Vec<Value> {
                     "additionalProperties": false
                 }
             }
-        })
+        }),
     ]
 }
 
