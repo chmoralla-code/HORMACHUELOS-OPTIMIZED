@@ -17,7 +17,7 @@ export type Settings = {
   capability_mode: string;
   /** Reply in Taglish when enabled */
   taglish: boolean;
-  /** Allow the Cursor SDK agent to observe and control approved Windows apps. */
+  /** Allow any model to observe and control only the active Preview tab. */
   computer_use_enabled: boolean;
   /** Keep long build tasks on a durable plan and request a final verification pass. */
   smart_agent_enabled: boolean;
@@ -98,6 +98,20 @@ export type ComputerUseStatus = {
   paused: boolean;
   emergencyShortcut: string;
   emergencyShortcutAvailable: boolean;
+  scope: "active-preview-tab-only";
+  autoApproved: boolean;
+};
+
+export type PreviewComputerRequest = {
+  requestId: string;
+  protocolVersion: number;
+  operation: "observe" | "actions";
+  args: Record<string, unknown>;
+};
+
+export type PreviewComputerStop = {
+  requestId?: string;
+  reason?: string;
 };
 
 export type ComputerUseFxEvent = {
@@ -285,6 +299,17 @@ export const api = {
   getComputerUseStatus: (): Promise<ComputerUseStatus> => invoke("get_computer_use_status"),
   setComputerUsePaused: (paused: boolean): Promise<ComputerUseStatus> =>
     invoke("set_computer_use_paused", { paused }),
+  respondPreviewComputer: (
+    requestId: string,
+    ok: boolean,
+    result?: Record<string, unknown> | null,
+    error?: string | null,
+  ): Promise<void> => invoke("respond_preview_computer", {
+    requestId,
+    ok,
+    result: result ?? null,
+    error: error ?? null,
+  }),
   setApiKey: (provider: string, key: string): Promise<void> => invoke("set_api_key", { provider, key }),
   hasApiKey: (provider: string): Promise<boolean> => invoke("has_api_key", { provider }),
   clearApiKey: (provider: string): Promise<void> => invoke("clear_api_key", { provider }),
@@ -393,6 +418,12 @@ export const api = {
     label: string,
     action: "back" | "forward" | "reload" | "focus",
   ): Promise<void> => invoke("preview_browser_action", { label, action }),
+  /** Run observe/actions/stop only inside the named isolated Preview Browser tab. */
+  previewBrowserComputer: (
+    label: string,
+    operation: "observe" | "actions" | "stop",
+    args: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> => invoke("preview_browser_computer", { label, operation, args }),
   closePreviewBrowser: (label: string): Promise<void> =>
     invoke("close_preview_browser", { label }),
   onPreviewBrowserEvent: (
@@ -576,6 +607,18 @@ export type AgentEvent = AgentEventPayload & { session_id: string };
 
 export function onAgentEvent(cb: (e: AgentEvent) => void): Promise<UnlistenFn> {
   return listen<AgentEvent>("agent", (ev) => cb(ev.payload));
+}
+
+export function onPreviewComputerRequest(
+  cb: (request: PreviewComputerRequest) => void,
+): Promise<UnlistenFn> {
+  return listen<PreviewComputerRequest>("preview-computer-request", (event) => cb(event.payload));
+}
+
+export function onPreviewComputerStop(
+  cb: (request: PreviewComputerStop) => void,
+): Promise<UnlistenFn> {
+  return listen<PreviewComputerStop>("preview-computer-stop", (event) => cb(event.payload));
 }
 
 export function onComputerUseStatus(

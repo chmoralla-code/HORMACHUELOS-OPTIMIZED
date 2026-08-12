@@ -1,8 +1,9 @@
 import {
   api,
   onAgentEvent,
-  onComputerUseFx,
   onComputerUseStatus,
+  onPreviewComputerRequest,
+  onPreviewComputerStop,
   type AgentEvent,
 } from "./ipc";
 import { Sidebar } from "./components/sidebar";
@@ -21,7 +22,7 @@ import {
   mergePreviewSessionState,
   pickPreviewEntry,
 } from "./components/site-preview";
-import { mountComputerUseHud, updateComputerUseHud, clearComputerUseHud } from "./components/computer-use-hud";
+
 import {
   ensureWebsiteSession,
   fetchWebsiteAccount,
@@ -2468,13 +2469,21 @@ async function init() {
   syncWindowActivity();
   void reconcileActiveAgentSessions({ processQueue: true });
 
-  mountComputerUseHud();
-  onComputerUseFx((event) => {
-    updateComputerUseHud(event);
-    chat.handleComputerFx(event);
-  }).catch((error) => console.warn("computer fx bridge unavailable", error));
+  onPreviewComputerRequest((request) => {
+    void (async () => {
+      try {
+        const result = await sitePreview.handleComputerUseRequest(request);
+        await api.respondPreviewComputer(request.requestId, true, result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await api.respondPreviewComputer(request.requestId, false, null, message).catch(() => undefined);
+      }
+    })();
+  }).catch((error) => console.warn("preview computer bridge unavailable", error));
+  onPreviewComputerStop(() => sitePreview.stopComputerUse())
+    .catch((error) => console.warn("preview computer stop bridge unavailable", error));
   onComputerUseStatus((status) => {
-    if (status.paused) clearComputerUseHud();
+    if (status.paused) sitePreview.stopComputerUse();
   }).catch((error) => console.warn("computer use status bridge unavailable", error));
 }
 

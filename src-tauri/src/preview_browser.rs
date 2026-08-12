@@ -325,6 +325,39 @@ const BROWSER_INSPECTION_SCRIPT: &str = r#"
 })();
 "#;
 
+/// Preview-only DOM controller injected into each isolated Browser tab. It has
+/// no Tauri capability and cannot reach the desktop or other application tabs.
+const BROWSER_COMPUTER_SCRIPT: &str = r###"
+(() => {
+  if (window.top !== window || window.__hormaPreviewComputerUse) return;
+  const QUERY = "a[href],button,input,textarea,select,summary,[contenteditable='true'],[role='button'],[role='link'],[role='checkbox'],[role='radio'],[role='tab'],[role='menuitem'],[tabindex]:not([tabindex='-1']),canvas,video";
+  const refs = new Map();
+  let generation = 0, cursor = null, badge = null, point = {x:32,y:32};
+  const clip=(v,n=160)=>String(v||'').replace(/\s+/g,' ').trim().slice(0,n);
+  const clamp=(v,a,b)=>Math.min(b,Math.max(a,Number.isFinite(Number(v))?Number(v):a));
+  const visible=el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>=1&&r.height>=1&&r.bottom>=0&&r.right>=0&&r.top<=innerHeight&&r.left<=innerWidth&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||1)>.01};
+  const editable=el=>!!el&&(el.matches('input,textarea')||el.isContentEditable);
+  const cssPath=el=>{if(el.id){try{const s='#'+CSS.escape(el.id);if(document.querySelectorAll(s).length===1)return s}catch{}}const p=[];for(let n=el;n&&n!==document.documentElement&&p.length<5;n=n.parentElement){let s=n.tagName.toLowerCase(),q=n.parentElement;if(q){const peers=Array.from(q.children).filter(x=>x.tagName===n.tagName);if(peers.length>1)s+=`:nth-of-type(${peers.indexOf(n)+1})`}p.unshift(s);const candidate=p.join(' > ');try{if(document.querySelectorAll(candidate).length===1)return candidate}catch{}}return p.join(' > ')};
+  const ensureFx=()=>{if(cursor&&cursor.isConnected)return;const style=document.createElement('style');style.textContent=`
+#__horma_browser_cursor{position:fixed;z-index:2147483646;left:0;top:0;width:28px;height:28px;pointer-events:none;transform:translate3d(32px,32px,0);will-change:transform;contain:layout style paint;filter:drop-shadow(0 0 11px rgba(89,224,255,.9))}
+#__horma_browser_cursor:before{content:'';position:absolute;inset:1px 8px 8px 1px;border-radius:4px 50% 50% 50%;background:linear-gradient(145deg,#f7feff,#55dcff 42%,#835cff);clip-path:polygon(0 0,100% 68%,55% 73%,38% 100%);box-shadow:0 0 0 1px rgba(0,10,20,.72),0 0 20px rgba(93,215,255,.76)}
+#__horma_browser_cursor[data-active='true']:after{content:'';position:absolute;left:-7px;top:-7px;width:32px;height:32px;border:1px solid rgba(122,226,255,.7);border-radius:50%;animation:__horma_orbit .8s linear infinite}
+#__horma_browser_badge{position:fixed;z-index:2147483647;left:18px;bottom:18px;pointer-events:none;padding:8px 11px;border:1px solid rgba(107,222,255,.4);border-radius:999px;background:rgba(5,13,22,.88);color:#e2fbff;font:600 11px/1.25 ui-monospace,Consolas,monospace;letter-spacing:.055em;box-shadow:0 10px 28px rgba(0,0,0,.3);backdrop-filter:blur(12px)}
+.__horma_ripple{position:fixed;z-index:2147483645;width:10px;height:10px;margin:-5px;border:2px solid #6ee8ff;border-radius:50%;pointer-events:none;animation:__horma_ripple .46s ease-out forwards}.__horma_trail{position:fixed;z-index:2147483644;width:7px;height:7px;margin:-3px;border-radius:50%;pointer-events:none;background:#7feaff;box-shadow:0 0 12px #785fff;animation:__horma_trail .42s ease-out forwards}
+@keyframes __horma_orbit{to{transform:rotate(360deg)}}@keyframes __horma_ripple{to{opacity:0;transform:scale(4.8)}}@keyframes __horma_trail{to{opacity:0;transform:scale(.1)}}@media(prefers-reduced-motion:reduce){#__horma_browser_cursor[data-active='true']:after{animation:none}}`;(document.head||document.documentElement).appendChild(style);cursor=document.createElement('div');cursor.id='__horma_browser_cursor';cursor.setAttribute('aria-hidden','true');badge=document.createElement('div');badge.id='__horma_browser_badge';badge.setAttribute('aria-hidden','true');badge.textContent='AI cursor · Preview Browser only';(document.body||document.documentElement).append(cursor,badge)};
+  const status=(text,active=false)=>{ensureFx();badge.textContent='AI cursor · '+text;cursor.dataset.active=String(active)};
+  const place=p=>{point={x:clamp(p.x,0,Math.max(0,innerWidth-1)),y:clamp(p.y,0,Math.max(0,innerHeight-1))};ensureFx();cursor.style.transform=`translate3d(${point.x}px,${point.y}px,0)`};
+  const move=async(p,own,ms=170)=>{if(own!==generation)throw Error('Preview Computer Use stopped.');ensureFx();const end={x:clamp(p.x,0,innerWidth-1),y:clamp(p.y,0,innerHeight-1)},duration=matchMedia('(prefers-reduced-motion: reduce)').matches?0:clamp(ms,0,900);if(duration&&cursor.animate){const dot=document.createElement('i');dot.className='__horma_trail';dot.style.left=point.x+'px';dot.style.top=point.y+'px';(document.body||document.documentElement).appendChild(dot);setTimeout(()=>dot.remove(),500);const a=cursor.animate([{transform:`translate3d(${point.x}px,${point.y}px,0)`},{transform:`translate3d(${end.x}px,${end.y}px,0)`}],{duration,easing:'cubic-bezier(.2,.8,.2,1)',fill:'forwards'});try{await a.finished}catch{}}if(own!==generation)throw Error('Preview Computer Use stopped.');place(end)};
+  const sleep=(ms,own)=>new Promise((resolve,reject)=>{if(own!==generation)return reject(Error('Preview Computer Use stopped.'));const timer=setTimeout(()=>own===generation?resolve():reject(Error('Preview Computer Use stopped.')),ms);if(own!==generation){clearTimeout(timer);reject(Error('Preview Computer Use stopped.'))}});
+  const resolve=(a,end=false)=>{const ref=end?a.end_ref:a.ref,selector=end?a.end_selector:a.selector,x=Number(end?a.end_x:a.x),y=Number(end?a.end_y:a.y);let el=ref?refs.get(ref):null;if(!el&&selector){try{el=document.querySelector(selector)}catch{throw Error('Invalid Preview Browser selector.')}}if(!el&&Number.isFinite(x)&&Number.isFinite(y))el=document.elementFromPoint(x,y);if(!el&&!end)el=document.activeElement;if(el){const r=el.getBoundingClientRect();return{el,point:{x:Number.isFinite(x)?x:r.left+r.width/2,y:Number.isFinite(y)?y:r.top+r.height/2}}}if(Number.isFinite(x)&&Number.isFinite(y))return{el:null,point:{x,y}};throw Error('Preview Browser action needs a ref, selector, or x/y coordinates.')};
+  const pointer=(el,type,p,button=0)=>{const init={bubbles:true,cancelable:true,composed:true,clientX:p.x,clientY:p.y,button,buttons:type.endsWith('down')?1<<button:0,pointerId:1,pointerType:'mouse',isPrimary:true};try{el.dispatchEvent(new PointerEvent(type,init))}catch{el.dispatchEvent(new MouseEvent(type.replace('pointer','mouse'),init))}};
+  const typeText=(el,text,clear)=>{el.focus?.({preventScroll:true});if(el.matches('input,textarea')){const start=clear?0:(el.selectionStart??el.value.length),end=clear?el.value.length:(el.selectionEnd??start);el.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));el.setRangeText(text,start,end,'end');el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));el.dispatchEvent(new Event('change',{bubbles:true}))}else{if(clear){const r=document.createRange();r.selectNodeContents(el);const s=getSelection();s.removeAllRanges();s.addRange(r)}el.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));if(!document.execCommand('insertText',false,text))el.textContent=clear?text:(el.textContent||'')+text;el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}))}};
+  const keyPress=(el,chord)=>{const parts=String(chord).split('+').map(v=>v.trim()).filter(Boolean),key=parts.pop()||chord,mods=parts.map(v=>v.toLowerCase()),init={key:key==='Space'?' ':key,code:key==='Space'?'Space':key,bubbles:true,cancelable:true,ctrlKey:mods.includes('ctrl')||mods.includes('control'),altKey:mods.includes('alt'),shiftKey:mods.includes('shift')};const allowed=el.dispatchEvent(new KeyboardEvent('keydown',init));if(allowed&&init.ctrlKey&&String(key).toLowerCase()==='a'&&editable(el)){if(el.matches('input,textarea'))el.select();else{const r=document.createRange();r.selectNodeContents(el);const s=getSelection();s.removeAllRanges();s.addRange(r)}}else if(allowed&&key==='Enter'){if(el.matches('button,a[href]'))el.click();else if(editable(el))el.closest('form')?.requestSubmit()}else if(allowed&&key==='Tab'){const all=Array.from(document.querySelectorAll(QUERY)).filter(v=>visible(v)&&v.tabIndex>=0),i=Math.max(0,all.indexOf(el));all[(i+(init.shiftKey?-1:1)+all.length)%all.length]?.focus()}el.dispatchEvent(new KeyboardEvent('keyup',init))};
+  const observe=()=>{refs.clear();document.querySelectorAll('[data-horma-ai-ref]').forEach(el=>el.removeAttribute('data-horma-ai-ref'));const elements=[];for(const el of document.querySelectorAll(QUERY)){if(elements.length>=80||!visible(el))continue;const ref='p'+(elements.length+1),r=el.getBoundingClientRect(),input=el;refs.set(ref,el);el.setAttribute('data-horma-ai-ref',ref);const item={ref,tag:el.tagName.toLowerCase(),role:clip(el.getAttribute('role')||el.tagName.toLowerCase(),48),name:clip(el.getAttribute('aria-label')||el.getAttribute('title')||el.getAttribute('alt')||input.placeholder||el.innerText||el.textContent||input.name||el.id),selector:cssPath(el),rect:{x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)},disabled:Boolean(input.disabled)};if(typeof input.checked==='boolean')item.checked=input.checked;if('value'in input&&input.type!=='password'&&clip(input.value))item.value=clip(input.value,120);elements.push(item)}status(`Observed ${elements.length} target${elements.length===1?'':'s'}`);return{scope:'active-preview-tab-only',tabKind:'browser',title:clip(document.title,200),url:location.href,viewport:{width:innerWidth,height:innerHeight,scrollX:Math.round(scrollX),scrollY:Math.round(scrollY),devicePixelRatio},cursor:{x:Math.round(point.x),y:Math.round(point.y)},elements,hint:'Use ref values with computer_actions. Coordinates are relative to this Browser preview viewport.'}};
+  const action=async(a,own)=>{const duration=clamp(a.duration_ms??170,0,900);if(a.type==='wait'){await sleep(clamp(a.duration_ms??250,0,10000),own);return}if(a.type==='scroll'){let t;try{t=resolve(a)}catch{t={el:document.scrollingElement,point}}await move(t.point,own,duration);const dx=clamp(a.delta_x??0,-4000,4000),dy=clamp(a.delta_y??520,-4000,4000);t.el?.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,clientX:t.point.x,clientY:t.point.y,deltaX:dx,deltaY:dy}));const scroller=t.el&&t.el.scrollHeight>t.el.clientHeight?t.el:window;scroller.scrollBy({left:dx,top:dy,behavior:'auto'});await sleep(60,own);return}if(a.type==='drag'){const s=resolve(a),e=resolve(a,true);if(!s.el)throw Error('Drag start target was not found.');await move(s.point,own,duration);pointer(s.el,'pointerdown',s.point);s.el.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true}));await move(e.point,own,Math.max(220,duration));const out=e.el||document.elementFromPoint(e.point.x,e.point.y)||s.el;pointer(out,'pointermove',e.point);out.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,clientX:e.point.x,clientY:e.point.y}));out.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,clientX:e.point.x,clientY:e.point.y}));pointer(out,'pointerup',e.point);s.el.dispatchEvent(new DragEvent('dragend',{bubbles:true}));return}const t=resolve(a);await move(t.point,own,duration);if(!t.el)return;if(a.type==='move'||a.type==='hover'){['pointerover','pointerenter','pointermove'].forEach(v=>pointer(t.el,v,t.point));return}if(a.type==='click'){const button=a.button==='right'?2:a.button==='middle'?1:0;pointer(t.el,'pointerover',t.point,button);pointer(t.el,'pointerdown',t.point,button);t.el.focus?.({preventScroll:true});pointer(t.el,'pointerup',t.point,button);if(button===0){const count=a.clicks===2?2:1;for(let i=0;i<count;i++)t.el.click?.();if(count===2)t.el.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,clientX:t.point.x,clientY:t.point.y}))}else if(button===2)t.el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:t.point.x,clientY:t.point.y,button:2}));const r=document.createElement('i');r.className='__horma_ripple';r.style.left=t.point.x+'px';r.style.top=t.point.y+'px';(document.body||document.documentElement).appendChild(r);setTimeout(()=>r.remove(),520);return}if(a.type==='type'){const el=editable(t.el)?t.el:document.activeElement;if(!editable(el))throw Error('Type target is not editable.');typeText(el,String(a.text??''),Boolean(a.clear));return}if(a.type==='key'){t.el.focus?.({preventScroll:true});keyPress(t.el,String(a.keys||''))}};
+  window.__hormaPreviewComputerUse={stop(){generation++;status('Stopped');return{ok:true,scope:'active-preview-tab-only'}},observe,async actions(args){const own=++generation;if(!refs.size)observe();const list=Array.isArray(args?.actions)?args.actions:[],results=[];for(let i=0;i<list.length;i++){if(own!==generation)throw Error('Preview Computer Use stopped.');status(`${i+1}/${list.length} · ${list[i].type}`,true);await action(list[i],own);results.push({index:i,type:list[i].type,ok:true})}status(`Complete · ${list.length} action${list.length===1?'':'s'}`);return{ok:true,scope:'active-preview-tab-only',completed:list.length,results,cursor:{x:Math.round(point.x),y:Math.round(point.y)}}},handle(op,args){if(op==='observe')return Promise.resolve(observe());if(op==='actions')return this.actions(args);if(op==='stop')return Promise.resolve(this.stop());return Promise.reject(Error('Unsupported Preview Computer Use operation.'))}};
+})();
+"###;
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewBrowserBounds {
@@ -609,13 +642,13 @@ fn capture_page_offset(metrics: &serde_json::Value) -> Result<(f64, f64), String
 }
 
 #[cfg(windows)]
-async fn call_browser_devtools(
+async fn call_browser_devtools_with_timeout(
     webview: &Webview,
     method: &str,
     parameters: serde_json::Value,
+    timeout: std::time::Duration,
 ) -> Result<serde_json::Value, String> {
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
     use tokio::sync::oneshot;
     use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR};
 
@@ -667,10 +700,25 @@ async fn call_browser_devtools(
         })
         .map_err(|error| format!("Could not schedule Browser capture: {error}"))?;
 
-    tokio::time::timeout(Duration::from_secs(3), receiver)
+    tokio::time::timeout(timeout, receiver)
         .await
         .map_err(|_| "Browser screenshot timed out.".to_string())?
         .map_err(|_| "Browser screenshot was cancelled.".to_string())?
+}
+
+#[cfg(windows)]
+async fn call_browser_devtools(
+    webview: &Webview,
+    method: &str,
+    parameters: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    call_browser_devtools_with_timeout(
+        webview,
+        method,
+        parameters,
+        std::time::Duration::from_secs(3),
+    )
+    .await
 }
 
 #[cfg(windows)]
@@ -747,6 +795,7 @@ pub async fn create_preview_browser(
         .zoom_hotkeys_enabled(true)
         .devtools(cfg!(debug_assertions))
         .initialization_script(BROWSER_INSPECTION_SCRIPT)
+        .initialization_script(BROWSER_COMPUTER_SCRIPT)
         .on_navigation(move |next| {
             if let Some(event) = inspection_navigation(next) {
                 if let Ok((kind, target)) = event {
@@ -964,6 +1013,62 @@ pub async fn navigate_preview_browser(
     get_browser(&app, &label)?
         .navigate(url)
         .map_err(|error| error.to_string())
+}
+
+/// Execute a bounded Preview Computer Use request inside one isolated Browser
+/// child WebView. Only the trusted main WebView can call this command.
+#[tauri::command]
+pub async fn preview_browser_computer(
+    caller: Webview,
+    app: AppHandle,
+    label: String,
+    operation: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    ensure_main_caller(&caller)?;
+    if !matches!(operation.as_str(), "observe" | "actions" | "stop") {
+        return Err("Unsupported Preview Computer Use operation.".into());
+    }
+    let webview = get_browser(&app, &label)?;
+
+    #[cfg(windows)]
+    {
+        let operation = serde_json::to_string(&operation).map_err(|error| error.to_string())?;
+        let args = serde_json::to_string(&args).map_err(|error| error.to_string())?;
+        let expression = format!(
+            "window.__hormaPreviewComputerUse ? window.__hormaPreviewComputerUse.handle({operation}, {args}) : Promise.reject(new Error('Preview Browser controller is not ready.'))"
+        );
+        let response = call_browser_devtools_with_timeout(
+            &webview,
+            "Runtime.evaluate",
+            serde_json::json!({
+                "expression": expression,
+                "awaitPromise": true,
+                "returnByValue": true,
+                "userGesture": true,
+            }),
+            std::time::Duration::from_secs(70),
+        )
+        .await?;
+        if let Some(exception) = response.get("exceptionDetails") {
+            let message = exception
+                .pointer("/exception/description")
+                .or_else(|| exception.get("text"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Preview Browser action failed.");
+            return Err(message.chars().take(1_000).collect());
+        }
+        return response
+            .pointer("/result/value")
+            .cloned()
+            .ok_or_else(|| "Preview Browser action returned no result.".to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (webview, operation, args);
+        Err("Preview Browser Computer Use currently requires the Windows WebView2 runtime.".into())
+    }
 }
 
 #[tauri::command]

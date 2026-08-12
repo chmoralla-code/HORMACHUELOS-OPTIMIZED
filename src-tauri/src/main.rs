@@ -1,11 +1,7 @@
 // Always hide the OS console for the GUI app on Windows.
-// Agent PowerShell tools still run headless via CREATE_NO_WINDOW and stream
-// into the in-app Console panel — that path is unchanged.
+// Agent PowerShell tools still run headless and stream into the in-app Console.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() {
-    if ai_forge_lib::computer_use::run_helper_if_requested() {
-        return;
-    }
     ai_forge_lib::run()
 }

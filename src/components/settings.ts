@@ -1509,8 +1509,8 @@ export class SettingsModal {
     const supported = status?.supported ?? false;
     const enabled = supported && !!this.settings.computer_use_enabled;
     const warningText = (isEnabled: boolean) => isEnabled
-      ? "Full desktop control is enabled with zero approval prompts. A live cursor + typing FX overlay follows every action. Emergency stop: Ctrl+Alt+Esc."
-      : "Computer use is off. Enable it to allow desktop actions. Emergency stop: Ctrl+Alt+Esc.";
+      ? "Preview-only control is enabled with zero approval prompts. The AI cursor can hover, click, type, scroll, and drag only inside the active Preview tab. Emergency stop: Ctrl+Alt+Esc."
+      : "Computer use is off. Enable it to control only the active Preview tab. Emergency stop: Ctrl+Alt+Esc.";
     const panel = el("section", {
       class: "computer-use-panel",
       "aria-labelledby": "computer-use-title",
@@ -1522,7 +1522,7 @@ export class SettingsModal {
       el("div", { class: "computer-use-title", id: "computer-use-title" }, ["Computer use"]),
     );
     titleWrap.appendChild(
-      el("div", { class: "computer-use-subtitle" }, ["Windows desktop control for any provider"]),
+      el("div", { class: "computer-use-subtitle" }, ["Active Preview-tab control for any provider"]),
     );
     head.appendChild(titleWrap);
 
@@ -1571,8 +1571,8 @@ export class SettingsModal {
     toggleCopy.appendChild(
       el("span", { class: "computer-use-toggle-note" }, [
         supported
-          ? "Lets the agent observe selected app windows and request desktop actions on any model."
-          : "Computer Use is currently available on Windows only.",
+          ? "Lets the agent directly operate the active project or Browser tab inside Preview."
+          : "Preview Computer Use is unavailable in this build.",
       ]),
     );
     toggle.appendChild(toggleCopy);

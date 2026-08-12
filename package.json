@@ -1,7 +1,7 @@
 {
   "name": "hormachuelos-optimized",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.1.0-1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,7 +20,8 @@
     "desktop:debug": "npm run build && cargo tauri build --debug",
     "installer:art": "powershell -ExecutionPolicy Bypass -File scripts/generate-installer-art.ps1",
     "release": "node scripts/publish-release.mjs",
-    "test:fps": "node --test scripts/fps-optimized-guard.test.mjs"
+    "test:fps": "node --test scripts/fps-optimized-guard.test.mjs",
+    "test:computer-use": "node --test scripts/preview-computer-use.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.1.0",

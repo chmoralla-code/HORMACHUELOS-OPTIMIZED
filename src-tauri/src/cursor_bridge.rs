@@ -120,8 +120,11 @@ impl CursorPassActivity {
 
 fn cursor_host_tool_is_available(name: &str, permission_mode: &str) -> bool {
     let name = crate::tools::normalize_tool_name(name);
-    if matches!(name.as_str(), "done" | "todo_write") || crate::tools::is_computer_tool(&name) {
+    if matches!(name.as_str(), "done" | "todo_write") {
         return false;
+    }
+    if crate::tools::is_computer_tool(&name) {
+        return true;
     }
     if !crate::tools::is_supported_tool_name(&name) {
         return false;
@@ -134,8 +137,8 @@ fn cursor_host_tool_is_available(name: &str, permission_mode: &str) -> bool {
 /// tool schemas. Cursor's built-in tool set changes between SDK releases; the
 /// host bridge keeps every advertised AI-Forge tool backed by the same native
 /// dispatcher and permission checks used by non-Cursor providers.
-fn cursor_host_tool_schemas(permission_mode: &str) -> Vec<Value> {
-    crate::tools::schemas(false)
+fn cursor_host_tool_schemas(permission_mode: &str, computer_use_enabled: bool) -> Vec<Value> {
+    crate::tools::schemas(computer_use_enabled)
         .into_iter()
         .filter_map(|schema| {
             let function = schema.get("function")?;
@@ -906,7 +909,7 @@ pub async fn run_cursor_turn(
             "model": model,
             "permission_mode": permission_mode,
             "permission_enforcement": cursor_permission_enforcement(permission_mode),
-            "host_approval_callbacks": computer_use_active,
+            "host_approval_callbacks": false,
             "computer_use": computer_use_active,
             "smart_agent_enabled": smart_agent_active,
             "flavour_enabled": flavour.is_enabled(),
@@ -1106,16 +1109,7 @@ async fn run_cursor_attempt(
     let bridge_arg = bridge.to_string_lossy().to_string();
     let cancel = run.cancel.clone();
     let computer_use_active = computer_use_enabled && !crate::computer_use::is_paused();
-    let computer_helper_path = if computer_use_active {
-        std::env::current_exe()
-            .ok()
-            .map(strip_windows_verbatim)
-            .map(|path| path.to_string_lossy().into_owned())
-    } else {
-        None
-    };
-    let computer_session_secret = computer_use_active.then(|| uuid::Uuid::new_v4().to_string());
-    let host_tool_schemas = cursor_host_tool_schemas(permission_mode);
+    let host_tool_schemas = cursor_host_tool_schemas(permission_mode, computer_use_active);
 
     emit(&app, session_id, "thinking", json!({ "iteration": 0 }));
 
@@ -1131,9 +1125,9 @@ async fn run_cursor_attempt(
         "agentId": resume_agent_id,
         "sessionId": session_id,
         "completionMarker": requires_project_completion.then_some("[[HORMACHUELOS_TASK_COMPLETE]]"),
-        "computerUseEnabled": computer_use_active,
-        "computerHelperPath": computer_helper_path,
-        "computerSessionSecret": computer_session_secret,
+        // The legacy Cursor-side Win32 helper is permanently disabled. Preview
+        // tools are ordinary host tools backed by the scoped Rust/UI broker.
+        "computerUseEnabled": false,
         "hostToolSchemas": host_tool_schemas,
     });
 
@@ -1604,12 +1598,12 @@ mod tests {
 
     #[test]
     fn cursor_registers_every_eligible_native_tool_with_permission_filtering() {
-        let full = cursor_host_tool_schemas("full");
+        let full = cursor_host_tool_schemas("full", true);
         let actual = full
             .iter()
             .map(|schema| schema["name"].as_str().expect("host tool name").to_string())
             .collect::<BTreeSet<_>>();
-        let expected = crate::tools::schemas(false)
+        let expected = crate::tools::schemas(true)
             .into_iter()
             .filter_map(|schema| {
                 let name = schema["function"]["name"].as_str()?.to_string();
@@ -1627,11 +1621,15 @@ mod tests {
             schema["description"].is_string() && schema["inputSchema"]["type"] == "object"
         }));
 
-        let ask = cursor_host_tool_schemas("ask");
+        let ask = cursor_host_tool_schemas("ask", true);
         assert!(ask.iter().all(|schema| {
-            crate::tools::is_readonly_tool(schema["name"].as_str().expect("ask tool name"))
+            let name = schema["name"].as_str().expect("ask tool name");
+            crate::tools::is_readonly_tool(name) || crate::tools::is_computer_tool(name)
         }));
         assert!(ask.iter().any(|schema| schema["name"] == "grep"));
+        assert!(ask
+            .iter()
+            .any(|schema| schema["name"] == "computer_actions"));
         assert!(!ask.iter().any(|schema| schema["name"] == "write_file"));
     }
 

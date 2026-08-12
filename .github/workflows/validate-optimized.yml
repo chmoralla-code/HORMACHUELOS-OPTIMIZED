@@ -40,6 +40,8 @@ jobs:
 
       - name: Run FPS regression guards
         run: npm run test:fps
+      - name: Run Preview Computer Use isolation guards
+        run: npm run test:computer-use
 
       - name: Run reply-formatting guard
         run: npm run test:reply-formatting
