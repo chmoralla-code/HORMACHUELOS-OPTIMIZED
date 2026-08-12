@@ -34,17 +34,16 @@ export function previewScrollCanMove(
 
 /**
  * Candidates are ordered from the element under the AI cursor out to the page.
- * Explicit ref/selector targets stay locked to the nearest candidate; coordinate
- * and cursor scrolling may chain to the first ancestor that can actually move.
+ * Explicit targets, coordinates, and cursor scrolling all chain to the first
+ * ancestor that can move, matching normal wheel behavior at pane boundaries.
  */
 export function choosePreviewScrollCandidate<T>(
   candidates: Array<PreviewScrollCandidate<T>>,
   deltaX: number,
   deltaY: number,
-  lockNearest: boolean,
+  _lockNearest: boolean,
 ): PreviewScrollCandidate<T> | null {
   if (candidates.length === 0) return null;
-  if (lockNearest) return candidates[0];
   return candidates.find((candidate) =>
     previewScrollCanMove(candidate.position, deltaX, deltaY)
   ) ?? candidates[0];
