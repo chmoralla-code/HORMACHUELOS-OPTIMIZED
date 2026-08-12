@@ -113,7 +113,11 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
   assert.match(frameController, /before, after/);
   assert.match(frameController, /moved, boundary: !moved/);
   assert.match(frameController, /scrollable = true|scrollable: true/);
-  assert.match(frameController, /visibleSemanticContent/);
+  assert.match(frameController, /MAX_INTERACTIVE_SCAN = 320/);
+  assert.match(frameController, /MAX_ANCESTOR_SCAN = 480/);
+  assert.match(frameController, /inspectedAncestors/);
+  assert.match(frameController, /\[\.\.\.scrollables, \.\.\.interactive\]/);
+  assert.doesNotMatch(frameController, /visibleSemanticContent/);
   assert.doesNotMatch(frameController, /querySelectorAll\("\*"\)/);
   assert.match(frameController, /viewport\.scrollY is page-only/);
 
@@ -124,7 +128,10 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
   assert.match(browserController, /before,after,applied/);
   assert.match(browserController, /moved,boundary:!moved/);
   assert.match(browserController, /item\.scrollable=true/);
-  assert.match(browserController, /content\.push\(/);
+  assert.match(browserController, /MAX_SCAN=320,MAX_ANCESTORS=480/);
+  assert.match(browserController, /inspected=new Set\(\)/);
+  assert.match(browserController, /\[\.\.\.scrollables,\.\.\.interactive\]/);
+  assert.doesNotMatch(browserController, /const content=\[\]/);
   assert.doesNotMatch(browserController, /querySelectorAll\('\*'\)\.filter\(scrollable\)/);
   assert.match(browserController, /viewport\.scrollY is page-only/);
 
