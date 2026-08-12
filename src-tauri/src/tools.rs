@@ -1124,7 +1124,7 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "start_dev_server",
-                "description": "Start or reuse a project-owned local web development server. Reuse requires the same canonical project root, working directory, command fingerprint, port, and live managed PID; an unknown or different-project listener is rejected. The host handles Windows .cmd shims, persists a safe lease outside the project, redirects output to a project log, and returns immediately.",
+                "description": "Start or reuse a project-owned local web development server. Reuse requires the same canonical project root, working directory, command fingerprint, port, and live managed PID; an unknown or different-project listener is rejected. The host handles Windows .cmd shims, persists a safe lease outside the project, redirects output to a project log, and performs a bounded readiness check before returning.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3267,10 +3267,7 @@ pub fn execute(
                             ));
                         }
                     };
-                    let ready = lease
-                        .port
-                        .map(crate::dev_server::local_port_is_open)
-                        .unwrap_or(false);
+                    let ready = wait_for_dev_server_ready(lease.port, ctx);
                     let status = if ready { "started" } else { "starting" };
                     format_dev_server_result(&lease, status, false, ready)
                 }
@@ -3898,6 +3895,22 @@ fn start_detached_command(
     Ok((child.id(), log_path))
 }
 
+fn wait_for_dev_server_ready(port: Option<u16>, ctx: &ToolRunContext) -> bool {
+    let Some(port) = port else {
+        return false;
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if crate::dev_server::local_port_is_open(port) {
+            return true;
+        }
+        if ctx.cancel.load(Ordering::SeqCst) || Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(75));
+    }
+}
+
 fn format_dev_server_result(
     lease: &crate::dev_server::DevServerLease,
     status: &str,
@@ -3919,7 +3932,7 @@ fn format_dev_server_result(
         lease.pid, lease.log_path
     );
     let metadata = json!({
-        "kind": "hormachuelos-dev-server",
+        "kind": "dev_server",
         "status": status,
         "leaseId": &lease.lease_id,
         "projectRoot": &lease.project_root,
@@ -4711,7 +4724,7 @@ mod security_tests {
             .into_iter()
             .collect()
         );
-        assert_eq!(metadata["kind"], "hormachuelos-dev-server");
+        assert_eq!(metadata["kind"], "dev_server");
         assert_eq!(metadata["status"], "starting");
         assert_eq!(metadata["reused"], false);
         assert_eq!(metadata["ready"], false);
