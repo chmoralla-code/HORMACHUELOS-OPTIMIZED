@@ -2,6 +2,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   api,
   type AgentTaskProfile,
+  type ComputerUseStatus,
   type DesignDomContext,
   type DesignSourceLocation,
   type DesignTargetProbe,
@@ -17,6 +18,8 @@ import type { SessionPreviewState, SessionPreviewTab } from "./session";
 import { clear, el } from "./util";
 import { icon } from "./icons";
 import { runFrameComputerUse, stopFrameComputerUse } from "./preview-computer-use";
+
+export type PreviewComputerUseMode = "off" | "auto" | "on";
 
 export type PreviewOpenOptions = {
   projectRoot: string;
@@ -818,6 +821,11 @@ export class SitePreview {
   private previewActionsToggle: HTMLButtonElement;
   private previewActionsMenu: HTMLElement;
   private previewActionsMenuCleanup: (() => void) | null = null;
+  private computerUseControl: HTMLElement;
+  private computerUseMode: PreviewComputerUseMode = "auto";
+  private computerUseStatus: ComputerUseStatus | null = null;
+  private computerUseBusy = false;
+  private computerUseMessage = "";
   private buildMenuToggle: HTMLButtonElement;
   private buildMenu: HTMLElement;
   private buildMenuCleanup: (() => void) | null = null;
@@ -1079,6 +1087,13 @@ export class SitePreview {
     }) as HTMLButtonElement;
     close.addEventListener("click", () => this.close());
 
+    this.computerUseControl = el("section", {
+      class: "site-preview-computer-use",
+      "aria-label": "Preview Computer Use",
+    });
+    this.renderComputerUseControl();
+    void this.refreshComputerUseControl();
+
     const actions = el("div", { class: "site-preview-actions" });
     const actionsLauncher = el("div", { class: "site-preview-actions-launcher" });
     this.previewActionsToggle = el("button", {
@@ -1099,6 +1114,7 @@ export class SitePreview {
       hidden: "true",
     });
     this.previewActionsMenu.append(
+      this.computerUseControl,
       buildLauncher,
       this.makePublicBtn,
       this.androidBtn,
@@ -1413,6 +1429,162 @@ export class SitePreview {
     this.scheduleBrowserBoundsSync();
   }
 
+  public async refreshComputerUseControl(): Promise<void> {
+    try {
+      const [settings, status] = await Promise.all([
+        api.getSettings(),
+        api.getComputerUseStatus(),
+      ]);
+      this.computerUseMode = settings.computer_use_enabled
+        ? "on"
+        : settings.computer_use_prompt_activation !== false
+          ? "auto"
+          : "off";
+      this.computerUseStatus = status;
+      this.computerUseMessage = "";
+    } catch (error) {
+      this.computerUseMessage = "Computer Use settings unavailable: " + String(error);
+    }
+    this.renderComputerUseControl();
+  }
+
+  private renderComputerUseControl() {
+    clear(this.computerUseControl);
+    const status = this.computerUseStatus;
+    const supported = status?.supported === true;
+    const paused = status?.paused === true;
+
+    const head = el("div", { class: "site-preview-computer-head" });
+    const titleWrap = el("div", { class: "site-preview-computer-title-wrap" });
+    titleWrap.append(
+      el("span", { class: "site-preview-computer-pulse", "aria-hidden": "true" }),
+      el("span", { class: "site-preview-computer-title" }, ["Computer Use"]),
+    );
+    const badgeText = paused
+      ? "Paused"
+      : !status
+        ? "Loading"
+        : !supported
+          ? "Unavailable"
+          : this.computerUseMode === "on"
+            ? "On"
+            : this.computerUseMode === "auto"
+              ? "Auto"
+              : "Off";
+    const badge = el("span", {
+      class: "site-preview-computer-badge is-" + (paused ? "paused" : this.computerUseMode),
+      role: "status",
+      "aria-live": "polite",
+    }, [badgeText]);
+    head.append(titleWrap, badge);
+
+    const copy = el("div", { class: "site-preview-computer-copy" }, [
+      "AI cursor control stays inside the active Preview tab.",
+    ]);
+    const modes = el("div", {
+      class: "site-preview-computer-modes",
+      role: "radiogroup",
+      "aria-label": "Computer Use activation policy",
+    });
+    const definitions: Array<{
+      id: PreviewComputerUseMode;
+      label: string;
+      title: string;
+    }> = [
+      { id: "off", label: "Off", title: "Block Computer Use until you change this setting." },
+      { id: "auto", label: "Auto", title: "Enable for clear prompts such as Playwright or debug this Preview." },
+      { id: "on", label: "On", title: "Make Computer Use available on every request." },
+    ];
+    for (const definition of definitions) {
+      const selected = definition.id === this.computerUseMode;
+      const button = el("button", {
+        class: "site-preview-computer-mode" + (selected ? " is-selected" : ""),
+        type: "button",
+        role: "radio",
+        "aria-checked": String(selected),
+        title: definition.title,
+        disabled: String(this.computerUseBusy || !supported),
+      }, [definition.label]) as HTMLButtonElement;
+      button.disabled = this.computerUseBusy || !supported;
+      button.addEventListener("click", () => {
+        void this.setComputerUseMode(definition.id);
+      });
+      modes.appendChild(button);
+    }
+
+    const detail = this.computerUseMode === "on"
+      ? "Available for every request."
+      : this.computerUseMode === "auto"
+        ? "Clear requests like “Playwright my website” activate it for that run."
+        : "Implicit prompts cannot activate it.";
+    const foot = el("div", { class: "site-preview-computer-foot" });
+    foot.appendChild(el("span", {}, [detail]));
+    if (paused && supported) {
+      const resume = el("button", {
+        class: "site-preview-computer-resume",
+        type: "button",
+      }, ["Resume"]) as HTMLButtonElement;
+      resume.addEventListener("click", async () => {
+        resume.disabled = true;
+        try {
+          this.computerUseStatus = await api.setComputerUsePaused(false);
+          this.computerUseMessage = "Preview Computer Use resumed.";
+        } catch (error) {
+          this.computerUseMessage = "Could not resume: " + String(error);
+        }
+        this.renderComputerUseControl();
+      });
+      foot.appendChild(resume);
+    }
+
+    this.computerUseControl.append(head, copy, modes, foot);
+    if (this.computerUseMessage) {
+      this.computerUseControl.appendChild(
+        el("div", { class: "site-preview-computer-message", role: "status" }, [
+          this.computerUseMessage,
+        ]),
+      );
+    }
+    this.computerUseControl.appendChild(
+      el("div", { class: "site-preview-computer-scope" }, [
+        "ACTIVE PREVIEW TAB ONLY · EMERGENCY STOP CTRL+ALT+ESC",
+      ]),
+    );
+  }
+
+  private async setComputerUseMode(mode: PreviewComputerUseMode): Promise<void> {
+    if (this.computerUseBusy || mode === this.computerUseMode) return;
+    const previous = this.computerUseMode;
+    this.computerUseMode = mode;
+    this.computerUseBusy = true;
+    this.computerUseMessage = "Saving " + mode.toUpperCase() + " policy…";
+    this.renderComputerUseControl();
+    try {
+      const settings = await api.getSettings();
+      settings.computer_use_enabled = mode === "on";
+      settings.computer_use_prompt_activation = mode !== "off";
+      await api.saveSettings(settings);
+      this.computerUseStatus = await api.getComputerUseStatus().catch(() => this.computerUseStatus);
+      this.computerUseMessage = mode === "on"
+        ? "Computer Use is available on every request."
+        : mode === "auto"
+          ? "Explicit Preview interaction prompts can activate Computer Use."
+          : "Computer Use is blocked until you turn it on.";
+      window.dispatchEvent(new CustomEvent("horma:computer-use-mode-changed", {
+        detail: {
+          mode,
+          enabled: settings.computer_use_enabled,
+          promptActivation: settings.computer_use_prompt_activation,
+        },
+      }));
+    } catch (error) {
+      this.computerUseMode = previous;
+      this.computerUseMessage = "Could not save Computer Use policy: " + String(error);
+    } finally {
+      this.computerUseBusy = false;
+      this.renderComputerUseControl();
+    }
+  }
   private togglePreviewActionsMenu() {
     if (this.previewActionsMenu.hidden) this.openPreviewActionsMenu();
     else this.closePreviewActionsMenu(true);
@@ -1426,6 +1598,7 @@ export class SitePreview {
    */
   private openPreviewActionsMenu() {
     this.closeNewTabMenu();
+    void this.refreshComputerUseControl();
     this.closeBuildMenu();
     this.previewActionsMenuCleanup?.();
     this.previewActionsMenuCleanup = null;
@@ -1460,9 +1633,10 @@ export class SitePreview {
     };
     requestAnimationFrame(() => {
       if (this.previewActionsMenu.hidden) return;
-      const firstControl = this.activeTab?.kind === "browser"
-        ? this.designBtn
-        : this.buildMenuToggle;
+      const firstControl =
+        this.computerUseControl.querySelector<HTMLButtonElement>(
+          ".site-preview-computer-mode[aria-checked='true']",
+        ) || (this.activeTab?.kind === "browser" ? this.designBtn : this.buildMenuToggle);
       firstControl.focus({ preventScroll: true });
     });
   }
