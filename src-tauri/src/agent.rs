@@ -137,6 +137,18 @@ fn has_streamed_reasoning(resp: &LlmResponse) -> bool {
         .unwrap_or(false)
 }
 
+/// A regular question is complete only after the user received substantive
+/// visible text. Some streaming providers return `text: None` after already
+/// emitting content, so the live-stream signal is part of this check.
+fn response_has_visible_answer(resp: &LlmResponse, visible_text_streamed: bool) -> bool {
+    visible_text_streamed
+        || resp
+            .text
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|text| !text.is_empty())
+}
+
 /// An automatic recovery counts as forward progress when the model took a
 /// concrete tool action, or streamed real reasoning that ended in a clean,
 /// finished reply. Reasoning is genuine model work — DeepSeek / Hormachuelos
@@ -212,6 +224,8 @@ enum AutomaticContinuationReason {
     ProviderBlip,
     /// A streamed search/read call opened but never produced a final call.
     InspectionToolStall,
+    /// Provider completed a regular question without any visible answer.
+    EmptyAnswer,
 }
 
 impl AutomaticContinuationReason {
@@ -227,6 +241,7 @@ impl AutomaticContinuationReason {
             Self::ProviderBlip => {
                 "Provider paused briefly — retrying from the last unfinished step…"
             }
+            Self::EmptyAnswer => "No visible answer was returned — retrying the question…",
             Self::InspectionToolStall => {
                 "Search tool stopped responding — retrying with corrected project paths…"
             }
@@ -266,6 +281,12 @@ Inspect the latest files/commands if needed, take the next concrete tool action,
 The previous search/read request stopped streaming before it became an executable tool call. The workspace and conversation are preserved. \n\
 Continue the SAME task now. For project-root list/search calls use path `.`; never use an empty path or `..`. \n\
 Retry with corrected arguments, a narrower query, or a different registered inspection tool. Do not repeat the identical stalled call and do not only narrate the next action."
+            }
+            Self::EmptyAnswer => {
+                "[System - Empty answer recovery]\n\
+The previous model turn ended without any visible answer or executable tool call. Answer the ORIGINAL user question now. \n\
+If evidence is needed, use the allowed read/search tools and then synthesize the result. If no inspection is needed, answer directly. \n\
+Always finish with a substantive user-visible answer; never end with only reasoning, a status update, or tool output. Do not apologize for or mention this automatic retry."
             }
         }
     }
@@ -1872,35 +1893,25 @@ PLAN MODE RULES:\n\
 - Pure questions still get direct answers with no tools.\n\
 - Keep language simple and human. No marketing fluff.",
         "ask" => "\
-=== ACTIVE MODE: ASK (investigate first, change later) ===\n\
-You are a research analyst and code archaeologist — not a builder by default.\n\
+=== ACTIVE MODE: ASK (maximum answer reliability) ===\n\
+You are an evidence-first research analyst and code archaeologist. Your primary job is to ANSWER the user's question clearly and completely.\n\
 \n\
-GOAL: Answer questions with evidence from the project (and allowed tools). Prefer facts over implementation.\n\
+ANSWER CONTRACT:\n\
+- Every turn must end with a substantive visible answer. Never finish with only thinking, a status line, raw tool output, or an announced next step.\n\
+- Answer straightforward questions directly from reliable context; do not force tool use when it adds no value.\n\
+- For project-specific or uncertain questions, investigate with the smallest useful set of read-only tools: list_dir, glob, grep, read_file, file_info, git_status, web_search, or browse_page.\n\
+- After tools return, always synthesize the evidence into an answer. If a tool fails, use the evidence that remains, state the exact gap, and still give the best supported answer.\n\
+- For non-trivial questions, structure the response as: direct answer, key findings with paths, risks/unknowns, and recommended next step.\n\
+- Cite concrete project-relative paths and concise findings; distinguish verified facts from inference.\n\
+- Use session history for follow-ups and resolve words such as 'it', 'that', and 'continue' from this chat.\n\
+- Use ask_user only when a missing choice would materially change the answer.\n\
 \n\
-BEHAVIOR:\n\
-- Investigate with read-only tools first: list_dir, glob, grep, read_file, file_info.\n\
-- Dig across multiple files when needed; cite concrete paths and short excerpts.\n\
-- Structure answers as a research brief when the question is non-trivial:\n\
-  1) Summary (1–3 sentences)\n\
-  2) Findings (bullets with file paths)\n\
-  3) Risks / unknowns\n\
-  4) Suggested next step: switch to Plan or Build if they want implementation\n\
-- Use ask_user only when the question is ambiguous (scope / which subsystem).\n\
-- open_url is fine for docs or references the user asked about.\n\
+READ-ONLY BY DEFAULT:\n\
+- Do not scaffold, edit, install, run mutating commands, or ship features unless the user explicitly asks to implement, fix, build, apply, release, or deploy.\n\
+- If implementation is explicitly requested while Ask is active, mutations still require UI approval and should use the smallest coherent change set.\n\
+- Pure Ask turns end with the answer, not a product-delivery done card.\n\
 \n\
-DO NOT (unless the user explicitly says implement / fix / build / apply):\n\
-- Scaffold projects, mass-edit files, install packages, or ship features.\n\
-- Call done as if a product was delivered — ask mode ends with an evidence-based answer.\n\
-\n\
-IF the user explicitly asks you to implement after investigating:\n\
-- Mutating tools (write/edit/run/git/delete/etc.) still require Approve in the UI.\n\
-- Prefer a minimal change set; re-check files before editing.\n\
-\n\
-ASK MODE RULES:\n\
-- Reads are free; every mutation needs approval.\n\
-- Do not invent architecture that is not in the repo — verify with tools.\n\
-- Keep language clear and human. No marketing fluff.",
-        "auto" => "\
+Keep language precise, organized, and human. No filler or marketing fluff.",        "auto" => "\
 === ACTIVE MODE: AUTO (balanced builder) ===\n\
 You implement efficiently inside the project with smart defaults.\n\
 \n\
@@ -1974,7 +1985,7 @@ BEHAVIOR:\n\
         "guided" => "=== CAPABILITY: GUIDED ===\n- Move step by step. Prefer ask_user for each major fork.\n- Keep tool batches small.\n\n",
         "agent" => "=== CAPABILITY: AGENT ===\n- Use tools freely for in-project work. Prefer action over long narration.\n\n",
         "balanced" => "=== CAPABILITY: BALANCED ===\n- Smart defaults. Concise replies. Limit exploratory tool loops.\n\n",
-        "investigate" => "=== CAPABILITY: INVESTIGATE ===\n- Deep multi-file research with list_dir/glob/grep/read_file/web_search/browse_page.\n- Cite paths and evidence.\n\n",
+        "investigate" => "=== CAPABILITY: INVESTIGATE MAX ===\n- Use deep, bounded multi-file and public-source research when the question needs it.\n- Cross-check important claims, cite paths/evidence, distinguish facts from inference, and always synthesize a visible answer after tools.\n\n",
         "brief" => "=== CAPABILITY: BRIEF ===\n- Short answers. Few tool loops. Grab key paths, then answer.\n\n",
         "autonomous" => "=== CAPABILITY: AUTONOMOUS ===\n- Full tool access. Finish end-to-end; verify with build/test when possible.\n\n",
         "max" => "=== CAPABILITY: MAX ===\n- Maximum agentic power. Use every relevant tool including web_search/browse_page.\n- Prefer complete delivery: scaffold â†’ implement â†’ verify â†’ self-heal â†’ done.\n\n",
@@ -2102,9 +2113,8 @@ TOOL REFERENCE: read_file, write_file, edit_file, list_dir, glob, grep, run_comm
     } else if mode == "ask" && !has_history {
         format!(
             "{prompt}\n\n\
-[Ask mode active] Investigate with read/search tools as needed, then answer with evidence \
-(paths + findings). Do not implement or scaffold unless I explicitly ask. Prefer a short research brief \
-for non-trivial questions."
+[Ask mode active] Always return a substantive visible answer. Answer directly when reliable context is enough; otherwise investigate with read/search tools, then synthesize evidence with concrete paths and findings. \
+Do not implement or scaffold unless I explicitly ask. Never end on reasoning, status, or raw tool output."
         )
     } else if mode == "plan" && !has_history {
         format!(
@@ -2124,7 +2134,7 @@ Continue or adjust earlier plans instead of restarting from zero unless the user
     } else if mode == "ask" {
         format!(
             "{prompt}\n\n\
-[Ask mode · continuing session] Use session history. Keep investigating with evidence. \
+[Ask mode · continuing session] Use this session's history to resolve follow-ups. Always return a substantive visible answer; investigate only as needed, cite evidence, and synthesize after tools. \
 Do not implement unless I explicitly ask. Mutating tools still need approval."
         )
     } else if mode == "full" {
@@ -2264,6 +2274,8 @@ The tool entries are historical summaries; use fresh tools for the current works
 
         let text_streamed = Arc::new(AtomicBool::new(false));
         let text_streamed_for_sink = text_streamed.clone();
+        let visible_text_streamed = Arc::new(AtomicBool::new(false));
+        let visible_text_streamed_for_sink = visible_text_streamed.clone();
         let app_for_text = app.clone();
         let sid_for_text = session_id.clone();
         let secrets_for_text = known_integration_secrets.clone();
@@ -2273,6 +2285,9 @@ The tool entries are historical summaries; use fresh tools for the current works
                 return;
             }
             text_streamed_for_sink.store(true, Ordering::SeqCst);
+            if !text.trim().is_empty() {
+                visible_text_streamed_for_sink.store(true, Ordering::SeqCst);
+            }
             emit(
                 &app_for_text,
                 &sid_for_text,
@@ -2613,6 +2628,10 @@ The tool entries are historical summaries; use fresh tools for the current works
         if resp.tool_calls.is_empty() {
             let announced = reply_announces_pending_action(resp.text.as_deref().unwrap_or(""));
             let cut_off = reply_was_cut_off(&resp);
+            let has_visible_answer = response_has_visible_answer(
+                &resp,
+                visible_text_streamed.load(Ordering::SeqCst),
+            );
             let continuation_reason = if stop_reason_requires_continuation(&resp.stop_reason) {
                 Some(AutomaticContinuationReason::OutputLimit)
             } else if cut_off && !auth_request_routed {
@@ -2625,6 +2644,8 @@ The tool entries are historical summaries; use fresh tools for the current works
                 && (mode != "plan" || task_profile.is_design_edit())
             {
                 Some(AutomaticContinuationReason::CompletionCheck)
+            } else if !has_visible_answer && !auth_request_routed {
+                Some(AutomaticContinuationReason::EmptyAnswer)
             } else if announced && !auth_request_routed && mode != "plan" {
                 Some(AutomaticContinuationReason::AnnouncedAction)
             } else {
@@ -2646,14 +2667,14 @@ The tool entries are historical summaries; use fresh tools for the current works
                     smart_agent.pause(
                         &app,
                         &session_id,
-                        "Automatic recovery paused after repeated provider replies without a tool action.",
+                        "Automatic recovery paused after repeated provider replies without a complete visible answer or concrete tool action.",
                     );
                     emit(
                         &app,
                         &session_id,
                         "text",
                         json!({
-                            "text": "\n\n— Automatic recovery paused after repeated replies without a concrete tool action. Your workspace and session progress are preserved."
+                            "text": "\n\n— Automatic recovery paused after repeated replies without a complete visible answer or concrete tool action. Your workspace and session progress are preserved."
                         }),
                     );
                     emit(
@@ -4093,6 +4114,31 @@ mod tests {
     }
 
     #[test]
+    fn visible_answer_guard_rejects_blank_provider_completions() {
+        let blank = LlmResponse {
+            text: Some("  \n\t".into()),
+            tool_calls: Vec::new(),
+            reasoning_content: None,
+            stop_reason: "stop".into(),
+            usage_tokens: 0,
+        };
+        assert!(!response_has_visible_answer(&blank, false));
+        assert!(response_has_visible_answer(&blank, true));
+
+        let answer = LlmResponse {
+            text: Some("The active provider is configured in src-tauri/src/config.rs.".into()),
+            tool_calls: Vec::new(),
+            reasoning_content: None,
+            stop_reason: "stop".into(),
+            usage_tokens: 0,
+        };
+        assert!(response_has_visible_answer(&answer, false));
+        assert!(AutomaticContinuationReason::EmptyAnswer
+            .instruction()
+            .contains("substantive user-visible answer"));
+    }
+
+    #[test]
     fn cut_off_replies_are_detected_and_resumed() {
         // The model produced reasoning but the visible answer was cut off at a
         // dangling word (the exact "suddenly stops at 'Let'" symptom).
@@ -4176,6 +4222,7 @@ mod tests {
         assert!(!AutomaticContinuationReason::CompletionCheck.resumes_visible_reply());
         assert!(!AutomaticContinuationReason::AnnouncedAction.resumes_visible_reply());
         assert!(!AutomaticContinuationReason::InspectionToolStall.resumes_visible_reply());
+        assert!(!AutomaticContinuationReason::EmptyAnswer.resumes_visible_reply());
     }
 
     #[test]
