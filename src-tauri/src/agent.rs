@@ -3518,14 +3518,13 @@ mod tests {
         parallel_readonly_batch_len, provider_tool_result_content, public_tool_arguments,
         public_tool_preview_delta, reply_announces_pending_action, reply_was_cut_off,
         resolve_tool_preview_name, response_has_visible_answer, response_made_concrete_progress,
-        starts_as_explanatory_request,
-        stop_reason_requires_continuation, task_likely_requires_project_completion,
-        task_requires_project_completion, tool_confirm_summary, truncate_utf8, uses_cursor_sdk,
-        AgentTaskProfile, AutomaticContinuationReason, HistoryToolCall, HistoryTurn,
-        InspectionPreviewWatchState, ACTIVE_RUN_CONTEXT_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_BYTES,
-        FAST_DESIGN_HISTORY_MAX_TURNS, MAX_CONSECUTIVE_STALLED_RECOVERIES,
-        NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS, PROVIDER_TOOL_RESULT_MAX_BYTES,
-        STREAMED_INSPECTION_TOOL_TIMEOUT,
+        starts_as_explanatory_request, stop_reason_requires_continuation,
+        task_likely_requires_project_completion, task_requires_project_completion,
+        tool_confirm_summary, truncate_utf8, uses_cursor_sdk, AgentTaskProfile,
+        AutomaticContinuationReason, HistoryToolCall, HistoryTurn, InspectionPreviewWatchState,
+        ACTIVE_RUN_CONTEXT_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_TURNS,
+        MAX_CONSECUTIVE_STALLED_RECOVERIES, NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS,
+        PROVIDER_TOOL_RESULT_MAX_BYTES, STREAMED_INSPECTION_TOOL_TIMEOUT,
     };
     use crate::llm::{ChatMessage, LlmResponse, ToolCall};
     use anyhow::anyhow;
