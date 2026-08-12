@@ -3904,9 +3904,7 @@ fn format_dev_server_result(
     reused: bool,
     ready: bool,
 ) -> Result<String> {
-    let url = lease
-        .port
-        .map(|port| format!("http://127.0.0.1:{port}"));
+    let url = lease.port.map(|port| format!("http://127.0.0.1:{port}"));
     let preview = url
         .as_deref()
         .map(|url| format!(" Preview: {url}."))
