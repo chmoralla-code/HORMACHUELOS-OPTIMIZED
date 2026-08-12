@@ -21,7 +21,7 @@ pub mod tools;
 pub mod workspace;
 
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 #[derive(serde::Serialize)]
