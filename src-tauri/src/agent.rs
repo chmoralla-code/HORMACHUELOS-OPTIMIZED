@@ -2212,7 +2212,8 @@ The tool entries are historical summaries; use fresh tools for the current works
             "task_profile": task_profile.wire_name(),
             "execution_profile": execution_profile.wire_name(),
             "repair_budget": execution_profile.repair_budget(),
-            \
+            "checkpoint_id": run.checkpoint().map(|checkpoint| checkpoint.id()),
+            "run_nonce": run.run_nonce(),
         }),
     );
     if flavour.is_enabled() {

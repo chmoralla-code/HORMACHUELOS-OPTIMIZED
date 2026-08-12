@@ -934,7 +934,8 @@ pub async fn run_cursor_turn(
             "flavour_enabled": flavour.is_enabled(),
             "task_profile": task_profile,
             "execution_profile": execution_profile,
-            \
+            "checkpoint_id": run.checkpoint().map(|checkpoint| checkpoint.id()),
+            "run_nonce": run.run_nonce(),
         }),
     );
     if flavour.is_enabled() {

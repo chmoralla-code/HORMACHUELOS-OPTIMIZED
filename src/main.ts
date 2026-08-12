@@ -2167,7 +2167,11 @@ function handleAgentEvent(e: AgentEvent) {
   if (sid && isTerminalAgentEvent(e)) clearPendingDevServerTools(sid);
   const owningSession = sid ? sessionForId(sid) : undefined;
   const smartStateChanged = owningSession ? applySmartAgentEvent(owningSession, e) : false;
-  if (e.kind === \
+  if (e.kind === "start") {
+    cancelDoneWorkingCue();
+    const nonce = e.payload.run_nonce?.trim();
+    if (sid && nonce) activeRunNonces.set(sid, nonce);
+  }
   if (sid && isVerifiedAgentCompletion(e)) verifiedRunCompletions.add(sid);
   if (smartStateChanged && isActive) syncSmartAgentPanel();
 
