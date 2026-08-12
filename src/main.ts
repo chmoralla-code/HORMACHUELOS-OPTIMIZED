@@ -66,6 +66,10 @@ let sitePreview: SitePreview;
 let smartAgentPanel: SmartAgentPanel | null = null;
 let clientSuccessCenter: ClientSuccessCenter | null = null;
 let currentProjectPath: string | null = null;
+/** Invalidates every async project selection that started before the latest click. */
+let projectSelectionGeneration = 0;
+/** Invalidates delayed Preview restores after a project/session switch. */
+let previewRestoreGeneration = 0;
 /** Quick Sessions use an app-managed workspace, never a user-selected folder. */
 type WorkspaceMode = "project" | "quick";
 let currentWorkspaceMode: WorkspaceMode = "project";
@@ -263,6 +267,7 @@ async function openBuildPreview(opts: {
 }) {
   if (!currentProjectPath || !sitePreview) return;
   if (opts.projectRoot && !sameProjectPath(opts.projectRoot, currentProjectPath)) return;
+  const selectionGeneration = projectSelectionGeneration;
   const projectRoot = opts.projectRoot || currentProjectPath;
   const targetSessionId = opts.sessionId || activeSessionId || undefined;
   if (opts.sessionId) {
@@ -274,39 +279,57 @@ async function openBuildPreview(opts: {
     previewOpenedForRun.add(opts.sessionId);
   }
   let files = opts.files || [];
-  if (!files.length) {
-    files = [...(await snapshotProjectFiles(projectRoot))];
+  if (!files.length) files = [...(await snapshotProjectFiles(projectRoot))];
+  if (
+    selectionGeneration !== projectSelectionGeneration
+    || !currentProjectPath
+    || !sameProjectPath(projectRoot, currentProjectPath)
+  ) {
+    if (opts.sessionId) previewOpenedForRun.delete(opts.sessionId);
+    return;
   }
   const autoPick = opts.autoPickEntry !== false;
   const entry = opts.entryPath || (autoPick ? pickPreviewEntry(files) : null);
-  const targetSession = sessionForId(targetSessionId);
-
-  // A background agent may finish a game or app while the user is reading a
-  // different session. Store its preview on its own session, but never mount it
-  // into the currently visible session's iframe panel.
-  if (targetSessionId && targetSessionId !== activeSessionId) {
+  const stageForOwner = () => {
+    const targetSession = sessionForId(targetSessionId);
     if (!targetSession || !sameProjectPath(targetSession.projectId, projectRoot)) return;
     targetSession.preview = mergePreviewSessionState(targetSession.preview, {
       projectRoot,
+      ownerSessionId: targetSession.id,
       files,
       entryPath: entry,
       title: opts.title || "Build preview",
     });
     sessionRegistry.set(targetSession.id, targetSession);
     saveSession(targetSession);
+  };
+
+  // A background agent may finish while another session is visible. Persist its
+  // Preview on the owning session without mounting it into the visible panel.
+  if (targetSessionId && targetSessionId !== activeSessionId) {
+    stageForOwner();
     return;
   }
-
+  const expectedActiveSessionId = activeSessionId;
   await sitePreview.open({
     projectRoot,
+    ownerSessionId: targetSessionId ?? null,
     files,
     entryPath: entry,
     title: opts.title || "Build preview",
     autoPickEntry: autoPick,
   });
-  // The component emits this itself for regular UI actions. Persist here too so
-  // an automatically opened preview is durable even if a view transition raced it.
-  if (targetSessionId && targetSessionId === activeSessionId) {
+  if (
+    selectionGeneration !== projectSelectionGeneration
+    || activeSessionId !== expectedActiveSessionId
+    || !currentProjectPath
+    || !sameProjectPath(projectRoot, currentProjectPath)
+    || (targetSessionId ? !sitePreview.ownsView(targetSessionId, projectRoot) : false)
+  ) {
+    stageForOwner();
+    return;
+  }
+  if (targetSessionId) {
     persistPreviewForSession(targetSessionId, sitePreview.captureSessionState());
   }
 }
@@ -646,6 +669,8 @@ function syncSmartAgentPanel() {
 
 function syncVisiblePreviewIntoSession(session: Session) {
   if (!sitePreview || sitePreview.isRestoring) return;
+  // Never copy another session's mounted Preview into the session being saved.
+  if (!sitePreview.ownsView(session.id, session.projectId)) return;
   const preview = sitePreview.captureSessionState();
   if (preview && sameProjectPath(preview.projectRoot, session.projectId)) {
     session.preview = preview;
@@ -669,27 +694,39 @@ function persistPreviewForSession(
 
 function restoreActiveSessionPreview() {
   if (!sitePreview) return;
+  const restoreGeneration = ++previewRestoreGeneration;
   const sessionId = activeSessionId;
   const session = sessionForId(sessionId);
+  const projectRoot = currentProjectPath;
   const preview = session?.preview;
   if (
-    !sessionId ||
-    !session ||
-    !currentProjectPath ||
-    !preview ||
-    !sameProjectPath(session.projectId, currentProjectPath) ||
-    !sameProjectPath(preview.projectRoot, currentProjectPath)
+    !sessionId
+    || !session
+    || !projectRoot
+    || !preview
+    || !sameProjectPath(session.projectId, projectRoot)
+    || !sameProjectPath(preview.projectRoot, projectRoot)
   ) {
     sitePreview.clearSessionView();
     renderWorkspaceMenu();
     return;
   }
-  void sitePreview.restoreSessionState(preview).then(
+  void sitePreview.restoreSessionState(preview, { sessionId, projectRoot }).then(
     () => {
-      if (activeSessionId === sessionId) renderWorkspaceMenu();
+      if (
+        restoreGeneration === previewRestoreGeneration
+        && activeSessionId === sessionId
+        && currentProjectPath
+        && sameProjectPath(currentProjectPath, projectRoot)
+      ) renderWorkspaceMenu();
     },
     (error) => {
-      if (activeSessionId !== sessionId) return;
+      if (
+        restoreGeneration !== previewRestoreGeneration
+        || activeSessionId !== sessionId
+        || !currentProjectPath
+        || !sameProjectPath(currentProjectPath, projectRoot)
+      ) return;
       sitePreview.clearSessionView();
       renderWorkspaceMenu();
       reportError(`Could not restore this session's preview: ${String(error)}`);
@@ -1492,12 +1529,17 @@ function repairProjectRootReferences(requestedPath: string, canonicalPath: strin
 }
 
 async function selectProject(path: string, options: { quickSession?: boolean } = {}) {
+  const selectionGeneration = ++projectSelectionGeneration;
   const quickSession = options.quickSession === true || isQuickSessionWorkspace(path);
   const nextMode: WorkspaceMode = quickSession ? "quick" : "project";
   persistCurrentSession();
   flushSessionSaves();
-  if (!quickSession) await api.setProjectRoot(path);
-  const canonicalPath = quickSession ? path : (await api.getProjectRoot()) || path;
+  // Both commands atomically set the native root and return the canonical path.
+  const canonicalPath = quickSession
+    ? await api.ensureQuickSessionWorkspace()
+    : await api.setProjectRoot(path);
+  if (selectionGeneration !== projectSelectionGeneration) return;
+  if (quickSession) quickSessionWorkspacePath = canonicalPath;
   const wasRepaired = !quickSession && !sameProjectPath(path, canonicalPath);
 
   if (sameProjectPath(currentProjectPath, canonicalPath) && currentWorkspaceMode === nextMode) {
@@ -1506,6 +1548,10 @@ async function selectProject(path: string, options: { quickSession?: boolean } =
       currentProjectPath = canonicalPath;
       activateProjectWorkspace(canonicalPath);
       await workspacePanel.setProject(canonicalPath);
+      if (selectionGeneration !== projectSelectionGeneration) {
+        if (currentProjectPath) await workspacePanel.setProject(currentProjectPath);
+        return;
+      }
       await refreshHeader();
     }
     return;
@@ -1519,6 +1565,10 @@ async function selectProject(path: string, options: { quickSession?: boolean } =
   refreshSidebar();
   chat.setProjectReady(true);
   await workspacePanel.setProject(canonicalPath);
+  if (selectionGeneration !== projectSelectionGeneration) {
+    if (currentProjectPath) await workspacePanel.setProject(currentProjectPath);
+    return;
+  }
   await refreshHeader();
 }
 
@@ -2201,11 +2251,11 @@ async function init() {
   sitePreview = new SitePreview(document.getElementById("site-preview-slot"));
   smartAgentPanel = new SmartAgentPanel(document.getElementById("smart-agent-status")!);
   syncSmartAgentPanel();
-  sitePreview.setStateChangeHandler((preview) => {
-    // The preview component only emits user-driven changes, never a restore of
-    // another session. Keep the serialized preview alongside the active chat.
-    persistPreviewForSession(activeSessionId, preview);
-    renderWorkspaceMenu();
+  sitePreview.setStateChangeHandler((preview, owner) => {
+    // Persist to the mounted Preview's immutable owner, not whichever chat became
+    // active while an asynchronous reload/event callback was still completing.
+    persistPreviewForSession(owner.sessionId, preview);
+    if (owner.sessionId === activeSessionId) renderWorkspaceMenu();
   });
   chat = new Chat({
     onSend: sendPrompt,
@@ -2566,6 +2616,17 @@ async function init() {
   onPreviewComputerRequest((request) => {
     void (async () => {
       try {
+        const ownerSession = sessionForId(request.sessionId);
+        if (
+          !ownerSession
+          || request.sessionId !== activeSessionId
+          || !currentProjectPath
+          || !sameProjectPath(request.projectRoot, currentProjectPath)
+          || !sameProjectPath(request.projectRoot, ownerSession.projectId)
+          || !sitePreview.ownsView(request.sessionId, request.projectRoot)
+        ) {
+          throw new Error("Computer Use request owner does not match the active Preview session/project.");
+        }
         const result = await sitePreview.handleComputerUseRequest(request);
         await api.respondPreviewComputer(request.requestId, true, result);
       } catch (error) {

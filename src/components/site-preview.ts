@@ -31,8 +31,16 @@ export { isExternalPreviewUrl } from "./preview-url-policy";
 
 export type PreviewComputerUseMode = "off" | "auto" | "on";
 
+export type PreviewStateOwner = {
+  sessionId: string | null;
+  projectRoot: string;
+  generation: number;
+};
+
 export type PreviewOpenOptions = {
   projectRoot: string;
+  /** Session that exclusively owns this mounted Preview. */
+  ownerSessionId?: string | null;
   entryPath?: string | null;
   files?: string[];
   title?: string;
@@ -656,10 +664,20 @@ function cleanPreviewTabs(
       || raw.history?.[requestedIndex]
       || raw.history?.[0]
       || "";
+    const serverOwner = raw.serverOwner?.trim() || "";
     // Migrate localhost tabs saved by older releases away from cross-origin
     // iframes and into the native Preview Browser controller.
     const kind = previewTabKindForEntry(rawActiveEntry, requestedKind);
-    const history = cleanPreviewHistory(projectRoot, raw.history, kind);
+    // Bare localhost tabs from older releases can point at a different project's
+    // reused port. Restore them only when explicit canonical ownership matches.
+    if (
+      kind === "browser"
+      && isExternalPreviewUrl(rawActiveEntry)
+      && (!serverOwner || !samePreviewProject(serverOwner, projectRoot))
+    ) continue;
+    const history = cleanPreviewHistory(projectRoot, raw.history, kind)
+      .filter((entry) => !isExternalPreviewUrl(entry)
+        || (Boolean(serverOwner) && samePreviewProject(serverOwner, projectRoot)));
     const historyIndex = history.length
       ? Math.max(0, Math.min(history.length - 1, requestedIndex))
       : 0;
@@ -674,6 +692,9 @@ function cleanPreviewTabs(
     seenEntries.add(entryKey);
     clean.push({
       kind,
+      ...(kind === "browser" && isExternalPreviewUrl(entryPath)
+        ? { serverOwner: projectRoot }
+        : {}),
       entryPath: history[normalizedIndex] || entryPath,
       title: raw.title?.trim().slice(0, 160) || (kind === "browser"
         ? browserTitleFromUrl(entryPath)
@@ -719,6 +740,9 @@ export function mergePreviewSessionState(
     } else {
       tabs.push({
         kind: entryKind,
+        ...(entryKind === "browser" && isExternalPreviewUrl(entry)
+          ? { serverOwner: projectRoot }
+          : {}),
         entryPath: entry,
         title: opts.title || (entryKind === "browser"
           ? browserTitleFromUrl(entry)
@@ -755,6 +779,8 @@ type PreviewTab = {
   browserReady?: boolean;
   browserFailed?: boolean;
   browserLoading?: boolean;
+  /** Canonical project root that owns a localhost Browser tab. */
+  serverOwner?: string;
 };
 
 let previewTabSeq = 0;
@@ -858,6 +884,8 @@ export class SitePreview {
   private androidMode = false;
   private softwareMode = false;
   private projectRoot = "";
+  private ownerSessionId: string | null = null;
+  /** Cached project-relative source map used to pre-rank Design Mode edits. */
   /** Cached project-relative source map used to pre-rank Design Mode edits. */
   private projectFiles: string[] = [];
   private tabs: PreviewTab[] = [];
@@ -874,7 +902,7 @@ export class SitePreview {
   private sourceHoverSignature = "";
   private sourceHoverResolution: DesignTargetResolution | null = null;
   private onDescribe: PreviewDescribeHandler | null = null;
-  private onStateChange: ((state: SessionPreviewState | null) => void) | null = null;
+  private onStateChange: ((state: SessionPreviewState | null, owner: PreviewStateOwner) => void) | null = null;
   private closing = false;
   private closeTimer: number | null = null;
   private closeGeneration = 0;
@@ -1747,8 +1775,15 @@ export class SitePreview {
   }
 
   /** Called after a user changes the visible preview for the selected session. */
-  setStateChangeHandler(cb: (state: SessionPreviewState | null) => void) {
+  setStateChangeHandler(cb: (state: SessionPreviewState | null, owner: PreviewStateOwner) => void) {
     this.onStateChange = cb;
+  }
+
+  /** True only when this mounted view belongs to the supplied session/project. */
+  ownsView(sessionId: string, projectRoot: string): boolean {
+    return this.ownerSessionId === sessionId
+      && Boolean(this.projectRoot)
+      && samePreviewProject(this.projectRoot, projectRoot);
   }
 
   get isOpen(): boolean {
@@ -1772,6 +1807,7 @@ export class SitePreview {
         title: tab.title,
         history: [...tab.history],
         historyIndex: tab.historyIndex,
+        ...(tab.serverOwner ? { serverOwner: tab.serverOwner } : {}),
       })),
       activeTabIndex,
       designMode: this.designMode,
@@ -1796,16 +1832,27 @@ export class SitePreview {
    * Rebuild just one session's preview. Iframes are intentionally recreated so
    * a game's live DOM, timers, and user input never leak into another session.
    */
-  async restoreSessionState(state: SessionPreviewState | null | undefined): Promise<void> {
+  async restoreSessionState(
+    state: SessionPreviewState | null | undefined,
+    owner?: { sessionId?: string | null; projectRoot?: string | null },
+  ): Promise<void> {
+    const projectRoot = state?.projectRoot?.trim();
+    if (
+      projectRoot
+      && owner?.projectRoot
+      && !samePreviewProject(projectRoot, owner.projectRoot)
+    ) {
+      throw new Error("Saved Preview state does not belong to the selected project.");
+    }
     const generation = ++this.viewGeneration;
     this.stateRestoreDepth += 1;
     try {
       this.teardownSessionView();
-      const projectRoot = state?.projectRoot?.trim();
       if (!projectRoot) return;
 
       const tabs = cleanPreviewTabs(projectRoot, state?.tabs);
       this.projectRoot = projectRoot;
+      this.ownerSessionId = owner?.sessionId ?? null;
       this.projectFiles = [];
       this.designMode = state?.designMode === true;
       this.sourceLensMode = !this.designMode && state?.sourceLensMode === true;
@@ -1814,6 +1861,9 @@ export class SitePreview {
       this.syncModeUi();
       this.showShell("Preview");
 
+      // Mount the complete logical tab set and select the intended active tab
+      // synchronously. Computer Use can now wait on browserCreating instead of
+      // racing the restore and incorrectly reporting that no active tab exists.
       for (const savedTab of tabs) {
         if (generation !== this.viewGeneration) return;
         const id = `preview-tab-${++previewTabSeq}`;
@@ -1833,13 +1883,12 @@ export class SitePreview {
           historyIndex: savedTab.historyIndex,
           frame,
           tabEl: null as unknown as HTMLButtonElement,
+          serverOwner: savedTab.serverOwner,
         };
         tab.tabEl = this.renderTabButton(tab);
         this.tabs.push(tab);
-        await this.reloadTab(tab);
       }
       if (generation !== this.viewGeneration) return;
-
       if (!this.tabs.length) {
         this.statusEl.textContent = "No HTML preview found in this build.";
         return;
@@ -1852,6 +1901,14 @@ export class SitePreview {
       this.selected = null;
       this.syncModeUi();
       this.syncTabStrip();
+
+      const active = this.tabs[activeIndex];
+      const reloadOrder = [active, ...this.tabs.filter((tab) => tab !== active)];
+      for (const tab of reloadOrder) {
+        if (generation !== this.viewGeneration) return;
+        await this.reloadTab(tab);
+      }
+      if (generation !== this.viewGeneration) return;
       this.statusEl.textContent = this.activeTab?.kind === "browser"
         ? this.readyStatus()
         : /\.(apk|aab|ipa|exe|msi|dmg|wasm)$/i.test(this.entryPath)
@@ -1865,7 +1922,11 @@ export class SitePreview {
 
   private emitStateChange(force = false) {
     if (this.stateRestoreDepth > 0 && !force) return;
-    this.onStateChange?.(this.captureSessionState());
+    this.onStateChange?.(this.captureSessionState(), {
+      sessionId: this.ownerSessionId,
+      projectRoot: this.projectRoot,
+      generation: this.viewGeneration,
+    });
   }
 
   private syncModeUi() {
@@ -1955,6 +2016,8 @@ export class SitePreview {
     document.querySelector(".workbench")?.classList.remove("preview-open");
     this.destroyAllTabs();
     this.projectRoot = "";
+    this.ownerSessionId = null;
+    this.projectFiles = [];
     this.projectFiles = [];
     this.selected = null;
     this.editInput.value = "";
@@ -2117,6 +2180,9 @@ export class SitePreview {
 
   /** Handle one backend request against the tab that is active right now. */
   async handleComputerUseRequest(request: PreviewComputerRequest): Promise<Record<string, unknown>> {
+    if (!this.ownsView(request.sessionId, request.projectRoot)) {
+      throw new Error("Computer Use request owner does not match the active Preview session/project.");
+    }
     if (!this.isOpen) throw new Error("Open the Preview window before using the AI cursor.");
     if (!this.activeTab) throw new Error("No active Preview tab is available for Computer Use.");
     this.setComputerUseActive(true);
@@ -2205,8 +2271,21 @@ export class SitePreview {
 
   async open(opts: PreviewOpenOptions) {
     const generation = ++this.viewGeneration;
+    const nextOwnerSessionId = opts.ownerSessionId ?? null;
+    const projectChanged = Boolean(this.projectRoot)
+      && !samePreviewProject(this.projectRoot, opts.projectRoot);
+    const ownerChanged = this.ownerSessionId !== nextOwnerSessionId;
+    if (projectChanged || ownerChanged) {
+      this.stateRestoreDepth += 1;
+      try {
+        this.teardownSessionView();
+      } finally {
+        this.stateRestoreDepth -= 1;
+      }
+    }
     this.cancelCloseTeardown();
     this.projectRoot = opts.projectRoot;
+    this.ownerSessionId = nextOwnerSessionId;
     let files = opts.files?.length
       ? opts.files
       : await this.listProjectFilesSafe();
@@ -2449,6 +2528,7 @@ export class SitePreview {
   }
 
   private recordBrowserLocation(tab: PreviewTab, url: string) {
+    if (isExternalPreviewUrl(url)) tab.serverOwner = this.projectRoot;
     const current = tab.history[tab.historyIndex];
     if (current === url) {
       tab.entryPath = url;
@@ -2893,6 +2973,7 @@ export class SitePreview {
       (candidate) => candidate.kind === "browser" && candidate.entryPath === url,
     );
     if (existing) {
+      if (isExternalPreviewUrl(url)) existing.serverOwner = this.projectRoot;
       if (opts.title) {
         existing.title = opts.title;
         existing.tabEl.querySelector(".site-preview-tab-title")!.textContent = existing.title;
@@ -2932,6 +3013,7 @@ export class SitePreview {
       browserCreating: null,
       browserReady: false,
       browserLoading: true,
+      serverOwner: isExternalPreviewUrl(url) ? this.projectRoot : undefined,
     };
     tab.tabEl = this.renderTabButton(tab);
     this.tabs.push(tab);

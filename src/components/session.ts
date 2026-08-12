@@ -95,6 +95,8 @@ export function appendAssistantTranscriptChunk(
 export interface SessionPreviewTab {
   /** Missing on older sessions, where every tab was a project preview. */
   kind?: "preview" | "browser";
+  /** Canonical project root that owned a persisted localhost server URL. */
+  serverOwner?: string;
   entryPath: string;
   title: string;
   history: string[];
@@ -280,7 +282,7 @@ const MULTI_AGENT_TOOL_NAME_MAX = 120;
 function safeMultiAgentToolText(value: unknown, max: number): string {
   if (typeof value !== "string") return "";
   return value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/[^@-^_\u007f]/g, " ")
     .trim()
     .slice(0, max);
 }
@@ -415,13 +417,20 @@ function sanitizeSessionPreview(value: unknown): SessionPreviewState | undefined
     const tab = candidate as Record<string, unknown>;
     const kind = tab.kind === "browser" ? "browser" : "preview";
     const sanitizeEntry = kind === "browser" ? sanitizeBrowserUrl : sanitizePreviewPath;
+    const serverOwner = typeof tab.serverOwner === "string" ? tab.serverOwner.trim() : "";
+    const ownerKey = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const ownsLocalServer = Boolean(serverOwner) && ownerKey(serverOwner) === ownerKey(projectRoot);
+    const isLocalServer = (entry: string) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(entry);
     const rawHistory = Array.isArray(tab.history)
       ? tab.history.slice(0, SESSION_PREVIEW_MAX_HISTORY)
       : [];
     const history = rawHistory
       .map(sanitizeEntry)
-      .filter((path): path is string => Boolean(path));
-    const entryPath = sanitizeEntry(tab.entryPath) || history[0];
+      .filter((path): path is string => Boolean(path))
+      .filter((path) => !isLocalServer(path) || ownsLocalServer);
+    let entryPath = sanitizeEntry(tab.entryPath);
+    if (entryPath && isLocalServer(entryPath) && !ownsLocalServer) entryPath = null;
+    entryPath ||= history[0];
     const entryKey = `${kind}:${entryPath || ""}`;
     if (!entryPath || seenEntries.has(entryKey)) continue;
     seenEntries.add(entryKey);
@@ -433,6 +442,7 @@ function sanitizeSessionPreview(value: unknown): SessionPreviewState | undefined
       : entryPath.split("/").pop() || entryPath;
     tabs.push({
       kind,
+      ...(ownsLocalServer ? { serverOwner: projectRoot } : {}),
       entryPath: history[historyIndex] || entryPath,
       title,
       history,
@@ -722,7 +732,7 @@ export function snapshotSessionsForUpdate(currentSessions: Iterable<Session>): R
 function sanitizeSessionModelId(value: unknown, max: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const text = value.trim();
-  if (!text || text.length > max || /[\u0000-\u001f\u007f]/.test(text)) return undefined;
+  if (!text || text.length > max || /[^@-^_\u007f]/.test(text)) return undefined;
   return text;
 }
 
