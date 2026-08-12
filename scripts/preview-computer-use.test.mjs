@@ -113,6 +113,8 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
   assert.match(frameController, /before, after/);
   assert.match(frameController, /moved, boundary: !moved/);
   assert.match(frameController, /scrollable = true|scrollable: true/);
+  assert.match(frameController, /visibleSemanticContent/);
+  assert.doesNotMatch(frameController, /querySelectorAll\("\*"\)/);
   assert.match(frameController, /viewport\.scrollY is page-only/);
 
   assert.match(browserController, /document\.elementFromPoint\(point\.x,point\.y\)/);
@@ -122,6 +124,8 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
   assert.match(browserController, /before,after,applied/);
   assert.match(browserController, /moved,boundary:!moved/);
   assert.match(browserController, /item\.scrollable=true/);
+  assert.match(browserController, /content\.push\(/);
+  assert.doesNotMatch(browserController, /querySelectorAll\('\*'\)\.filter\(scrollable\)/);
   assert.match(browserController, /viewport\.scrollY is page-only/);
 
   assert.match(tools, /With no target it scrolls under the visible AI cursor/);
