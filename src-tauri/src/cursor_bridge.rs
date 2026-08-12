@@ -408,13 +408,20 @@ async fn execute_cursor_host_tool(
             json!({ "stream": stream, "text": line }),
         );
     });
-    let context = crate::tools::ToolRunContext {
-        cancel: run.cancel.clone(),
-        active_pid: run.active_pid.clone(),
-        on_console_line: Some(on_console_line),
-        checkpoint: run.checkpoint(),
-        protect_command_changes: run.protect_command_changes(),
-    };
+    let run_nonce = run
+        .checkpoint()
+        .map(|checkpoint| checkpoint.id().to_string())
+        .unwrap_or_else(|| format!("session-run:{session_id}"));
+    let context = crate::tools::ToolRunContext::owned(
+        session_id,
+        project_root.to_string_lossy().into_owned(),
+        run_nonce,
+        run.cancel.clone(),
+        run.active_pid.clone(),
+        Some(on_console_line),
+        run.checkpoint(),
+        run.protect_command_changes(),
+    );
     let tool_name = name.clone();
     let tool_arguments = arguments.clone();
     let tool_root = project_root.to_path_buf();
