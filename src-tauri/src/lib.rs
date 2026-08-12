@@ -4,6 +4,7 @@ pub mod checkpoint;
 pub mod computer_use;
 pub mod config;
 pub mod cursor_bridge;
+pub mod dev_server;
 pub mod design_source;
 pub mod execution_profile;
 pub mod flavour;
