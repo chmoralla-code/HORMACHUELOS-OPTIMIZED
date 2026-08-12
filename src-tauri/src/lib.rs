@@ -72,7 +72,10 @@ fn get_project_root(state: tauri::State<'_, state::AppState>) -> Option<String> 
 }
 
 #[tauri::command]
-fn set_project_root(path: String, state: tauri::State<'_, state::AppState>) -> Result<String, String> {
+fn set_project_root(
+    path: String,
+    state: tauri::State<'_, state::AppState>,
+) -> Result<String, String> {
     let selected = workspace::canonical_project_root(std::path::Path::new(&path))
         .map_err(|error| error.to_string())?;
     let root =
