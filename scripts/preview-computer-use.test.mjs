@@ -117,7 +117,10 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
   assert.match(frameController, /MAX_ANCESTOR_SCAN = 480/);
   assert.match(frameController, /inspectedAncestors/);
   assert.match(frameController, /\[\.\.\.scrollables, \.\.\.interactive\]/);
-  assert.doesNotMatch(frameController, /visibleSemanticContent/);
+  assert.match(frameController, /visibleSemanticContent/);
+  assert.match(frameController, /MAX_SEMANTIC_SCAN = 240/);
+  assert.match(frameController, /MAX_VISIBLE_CONTENT = 32/);
+  assert.match(frameController, /content: visibleSemanticContent/);
   assert.doesNotMatch(frameController, /querySelectorAll\("\*"\)/);
   assert.match(frameController, /viewport\.scrollY is page-only/);
 
@@ -131,7 +134,9 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
   assert.match(browserController, /MAX_SCAN=320,MAX_ANCESTORS=480/);
   assert.match(browserController, /inspected=new Set\(\)/);
   assert.match(browserController, /\[\.\.\.scrollables,\.\.\.interactive\]/);
-  assert.doesNotMatch(browserController, /const content=\[\]/);
+  assert.match(browserController, /const semantic=/);
+  assert.match(browserController, /scanned<240&&out\.length<32/);
+  assert.match(browserController, /content:semantic\(\)/);
   assert.doesNotMatch(browserController, /querySelectorAll\('\*'\)\.filter\(scrollable\)/);
   assert.match(browserController, /viewport\.scrollY is page-only/);
 
@@ -141,21 +146,46 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
   assert.match(agent, /do not repeat the identical scroll blindly/);
 });
 
-test("project and Browser tabs render a compositor-friendly in-preview cursor", () => {
+test("project and Browser tabs render bounded cinematic cursor feedback", () => {
   for (const source of [frameController, browserController]) {
     assert.match(source, /translate3d/);
-    assert.match(source, /width:48px;height:48px/);
+    assert.match(source, /width:52px/);
     assert.match(source, /will-change:transform,opacity|willChange/);
+    assert.match(source, /contain:(?:layout style paint|strict)/);
     assert.match(source, /pointer-events:none/);
-    assert.match(source, /(?:cursor-label|browser_label)/);
-    assert.match(source, /(?:horma-pulse|horma_pulse)/);
+    assert.match(source, /data-gesture|dataset\.gesture/);
+    assert.match(source, /prefers-reduced-motion/);
+    assert.match(source, /(?:ai-target|browser_target)/);
+    assert.match(source, /(?:trail|shockwave)/);
     assert.match(source, /hover/);
     assert.match(source, /click/);
     assert.match(source, /scroll/);
     assert.match(source, /drag/);
+    assert.doesNotMatch(source, /backdrop-filter/);
+    assert.doesNotMatch(source, /animation:[^;]*(?:infinite|linear infinite)/);
   }
+  assert.match(frameController, /MAX_CURSOR_TRAIL_SPARKS = 3/);
+  assert.match(frameController, /MAX_CURSOR_TRANSIENTS = 8/);
+  assert.match(browserController, /transients\.length>8/);
   assert.match(browserController, /initialization_script\(BROWSER_COMPUTER_SCRIPT\)/);
   assert.match(browserController, /ensure_main_caller\(&caller\)/);
+});
+
+test("Preview Computer Use can fill native controls and verify evidence", () => {
+  for (const source of [frameController, browserController]) {
+    assert.match(source, /set_value/);
+    assert.match(source, /check/);
+    assert.match(source, /inputType/);
+    assert.match(source, /validationMessage/);
+    assert.match(source, /(?:MouseEvent|mouseEvent)/);
+    assert.match(source, /(?:visibleSemanticContent|const semantic=)/);
+  }
+  assert.match(tools, /Exact standards-format value/);
+  assert.match(tools, /"set_value"[\s\S]*"check"/);
+  assert.match(broker, /accepts_native_form_values_and_evidence_checks/);
+  assert.match(agent, /PREVIEW COMPUTER USE · MAX QA/);
+  assert.match(agent, /set_value/);
+  assert.match(agent, /check/);
 });
 
 test("desktop overlay assets stay deleted", () => {
