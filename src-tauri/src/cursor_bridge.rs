@@ -1627,7 +1627,9 @@ mod tests {
             crate::tools::is_readonly_tool(name) || crate::tools::is_computer_tool(name)
         }));
         assert!(ask.iter().any(|schema| schema["name"] == "grep"));
-        assert!(ask.iter().any(|schema| schema["name"] == "computer_actions"));
+        assert!(ask
+            .iter()
+            .any(|schema| schema["name"] == "computer_actions"));
         assert!(!ask.iter().any(|schema| schema["name"] == "write_file"));
     }
 
