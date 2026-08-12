@@ -280,6 +280,8 @@ async function openBuildPreview(opts: {
   serverReady?: boolean;
   /** A verified exact server result must not be hidden by session-wide dedupe. */
   forceExactEntry?: boolean;
+  /** Optional run generation that must still own a verified exact server open. */
+  expectedRunNonce?: string;
   /** When false, open a blank preview shell (no auto-picked HTML). Default true. */
   autoPickEntry?: boolean;
 }) {
@@ -306,7 +308,15 @@ async function openBuildPreview(opts: {
     previewOpenedForRun.add(opts.sessionId);
   }
   let files = opts.files || [];
-  if (!files.length) files = [...(await snapshotProjectFiles(projectRoot))];
+  // Exact dev-server routing does not need a file snapshot; avoiding that await
+  // also narrows the terminal/new-run handoff window.
+  if (!files.length && !opts.forceExactEntry) {
+    files = [...(await snapshotProjectFiles(projectRoot))];
+  }
+  if (
+    opts.expectedRunNonce
+    && activeRunNonces.get(targetSessionId || "") !== opts.expectedRunNonce
+  ) return;
   const autoPick = opts.autoPickEntry !== false;
   const entry = opts.entryPath || (autoPick ? pickPreviewEntry(files) : null);
   const stageForOwner = () => {
@@ -340,6 +350,10 @@ async function openBuildPreview(opts: {
     return;
   }
   const expectedActiveSessionId = activeSessionId;
+  if (
+    opts.expectedRunNonce
+    && activeRunNonces.get(targetSessionId || "") !== opts.expectedRunNonce
+  ) return;
   await sitePreview.open({
     projectRoot,
     ownerSessionId: targetSessionId ?? null,
@@ -462,6 +476,7 @@ async function openVerifiedDevServerWhenReady(
     serverLeaseId: meta.leaseId,
     serverReady: ready,
     forceExactEntry: true,
+    expectedRunNonce: pending.runNonce,
     title: ready ? "Dev server preview" : "Restart local server",
   });
 }

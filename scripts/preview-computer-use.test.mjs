@@ -313,6 +313,7 @@ test("saved local Preview tabs require a native live server lease", () => {
   assert.match(preview, /await api\.closePreviewBrowser\(tab\.id\)[\s\S]*tab\.browserReady = false[\s\S]*tab\.browserLoading = false/);
   assert.match(preview, /const nextServerReady = opts\.serverReady !== false/);
   assert.match(preview, /\|\| !nextServerReady/);
+  assert.match(preview, /!this\.tabs\.includes\(tab\)[\s\S]*\|\| tab\.serverStatus === "restart_required"[\s\S]*closePreviewBrowser\(tab\.id\)/);
   assert.match(ipc, /validateDevServerLease: \(\s*leaseId: string \| null,\s*projectRoot: string,\s*url: string,?\s*\)/);
   assert.match(devServer, /listener_belongs_to_process_tree\(port, lease\.pid\)/);
   assert.match(devServer, /reason: "listener_owner_mismatch"/);
@@ -333,6 +334,10 @@ test("verified server routing waits for ownership and bypasses broad run dedupe"
   assert.match(main, /if \(!stillOwnsRun\(\)\) return;[\s\S]*await api\.validateDevServerLease/);
   assert.match(main, /const runNonce = activeRunNonces\.get\(sid\)/);
   assert.match(main, /\{ sessionId: sid, projectRoot, runNonce \}/);
+  assert.match(main, /expectedRunNonce\?: string/);
+  assert.match(main, /!files\.length && !opts\.forceExactEntry/);
+  assert.match(main, /activeRunNonces\.get\(targetSessionId \|\| ""\) !== opts\.expectedRunNonce/);
+  assert.match(main, /expectedRunNonce: pending\.runNonce/);
   assert.match(main, /if \(sid && isTerminalAgentEvent\(e\)\) \{[\s\S]*activeRunNonces\.delete\(sid\)/);
 });
 

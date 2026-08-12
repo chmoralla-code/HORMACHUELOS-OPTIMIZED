@@ -2612,8 +2612,15 @@ export class SitePreview {
       if (!bounds) throw new Error("Browser viewport is not ready.");
       const visible = this.isOpen && tab.id === this.activeTabId && this.newTabMenu.hidden;
       await api.createPreviewBrowser(tab.id, tab.entryPath || BROWSER_HOME, bounds, visible);
-      if (!this.tabs.includes(tab)) {
+      if (
+        !this.tabs.includes(tab)
+        || tab.serverStatus === "restart_required"
+      ) {
         await api.closePreviewBrowser(tab.id).catch(() => undefined);
+        tab.browserReady = false;
+        if (tab.serverStatus === "restart_required") {
+          this.renderServerRestartState(tab);
+        }
         return;
       }
       tab.browserReady = true;
