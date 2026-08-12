@@ -17,8 +17,10 @@ export type Settings = {
   capability_mode: string;
   /** Reply in Taglish when enabled */
   taglish: boolean;
-  /** Allow any model to observe and control only the active Preview tab. */
+  /** Keep Preview Computer Use available for every request. */
   computer_use_enabled: boolean;
+  /** Allow explicit chat prompts to activate Preview Computer Use for one request. */
+  computer_use_prompt_activation: boolean;
   /** Keep long build tasks on a durable plan and request a final verification pass. */
   smart_agent_enabled: boolean;
   /** Recall bounded project preferences and private per-session working memory. */
