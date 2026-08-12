@@ -1606,8 +1606,8 @@ async function refreshHeader() {
 async function openQuickSessionWorkspace() {
   // The click is one queued native mutation. A second ensure after a newer
   // project click could otherwise put Quick Sessions back on top.
-  await selectProject(quickSessionWorkspacePath || \
-
+  await selectProject(quickSessionWorkspacePath || "Quick Sessions", { quickSession: true });
+}
 function repairProjectRootReferences(requestedPath: string, canonicalPath: string): void {
   if (sameProjectPath(requestedPath, canonicalPath)) return;
   const migrated = rehomeSessionsToProjectRoot(requestedPath, canonicalPath);

@@ -211,8 +211,12 @@ test("Preview routing rejects stale project/session owners across async boundari
 
   assert.match(main, /let projectRootMutationQueue: Promise<void> = Promise\.resolve\(\)/);
   assert.match(main, /serializeProjectRootMutation\(\(\) => quickSession[\s\S]*api\.ensureQuickSessionWorkspace\(\)[\s\S]*api\.setProjectRoot\(path\)/);
-  const quickOpenStart = main.indexOf(\
-
+  const quickOpenStart = main.indexOf("async function openQuickSessionWorkspace");
+  const quickOpenEnd = main.indexOf("function repairProjectRootReferences", quickOpenStart);
+  const quickOpen = main.slice(quickOpenStart, quickOpenEnd);
+  assert.match(quickOpen, /await selectProject\(/);
+  assert.doesNotMatch(quickOpen, /ensureQuickSessionWorkspace|serializeProjectRootMutation/,
+    "a Quick click must enqueue exactly one root mutation, so a later Project click remains last");
   const selectStart = main.indexOf("async function selectProject");
   const selectAwait = main.indexOf("await serializeProjectRootMutation", selectStart);
   const selectGuard = main.indexOf("selectionGeneration !== projectSelectionGeneration", selectAwait);
