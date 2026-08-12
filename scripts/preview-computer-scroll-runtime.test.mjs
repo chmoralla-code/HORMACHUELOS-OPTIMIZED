@@ -13,6 +13,8 @@ class FakeElement {
       clientWidth = width, clientHeight = height, scrollWidth = clientWidth,
       scrollHeight = clientHeight, scrollLeft = 0, scrollTop = 0,
       overflowX = "visible", overflowY = "visible", text = "",
+      type = "text", value = "", disabled = false, checked = false,
+      required = false, min = "", max = "", step = "", name = "", placeholder = "",
     } = options;
     this.tagName = tag.toUpperCase();
     this.id = id;
@@ -31,6 +33,18 @@ class FakeElement {
     this.dataset = {};
     this.isConnected = Boolean(parent);
     this.attributes = new Map();
+    this.type = type;
+    this.value = value;
+    this.disabled = disabled;
+    this.checked = checked;
+    this.required = required;
+    this.min = min;
+    this.max = max;
+    this.step = step;
+    this.name = name;
+    this.placeholder = placeholder;
+    this.validationMessage = "";
+    this.isContentEditable = false;
     this.computedStyle = {
       overflowX, overflowY, display: "block", visibility: "visible", opacity: "1",
     };
@@ -40,8 +54,21 @@ class FakeElement {
     };
   }
 
-  focus() {}
-  matches() { return false; }
+  focus() { this.focused = true; }
+  click() { this.clicked = (this.clicked || 0) + 1; }
+  checkValidity() { return this.validationMessage === ""; }
+  matches(selector) {
+    return String(selector).split(",").some((part) => {
+      const value = part.trim().toLowerCase();
+      if (value.startsWith("#")) return value.slice(1) === this.id.toLowerCase();
+      if (value === "input" || value.startsWith("input[")) return this.tagName === "INPUT";
+      if (value === "textarea") return this.tagName === "TEXTAREA";
+      if (value === "select") return this.tagName === "SELECT";
+      if (value === "button") return this.tagName === "BUTTON";
+      if (value === "a[href]") return this.tagName === "A";
+      return false;
+    });
+  }
   getBoundingClientRect() { return { ...this.rect }; }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   hasAttribute(name) { return this.attributes.has(name); }
@@ -95,6 +122,10 @@ function makeScene() {
   const cell = new FakeElement("td", {
     parent: pane, top: 220, left: 140, width: 300, height: 40, text: "EMPLOYEE",
   });
+  const deadline = new FakeElement("input", {
+    id: "deadline", type: "date", parent: body, top: 500, left: 100,
+    width: 220, height: 40, value: "", required: true,
+  });
 
   const hitPane = (x, y) => x >= 100 && x <= 700 && y >= 150 && y <= 450;
   const document = {
@@ -106,9 +137,15 @@ function makeScene() {
     title: "Role Management",
     location: { href: "http://localhost:3100/supervisor/users" },
     elementFromPoint: (x, y) => hitPane(Number(x), Number(y)) ? cell : body,
-    querySelector: (selector) => selector === "#roles-table" ? pane : null,
+    querySelector: (selector) => selector === "#roles-table"
+      ? pane
+      : selector === "#deadline"
+        ? deadline
+        : null,
     querySelectorAll: (selector) => {
       if (selector === "#roles-table") return [pane];
+      if (selector === "#deadline") return [deadline];
+      if (String(selector).includes("input")) return [deadline];
       if (selector === "[data-horma-ai-ref]") {
         return pane.hasAttribute("data-horma-ai-ref") ? [pane] : [];
       }
@@ -117,7 +154,7 @@ function makeScene() {
     createElement: (tag) => new FakeElement(tag),
   };
 
-  return { page, head, body, pane, cell, document };
+  return { page, head, body, pane, cell, deadline, document };
 }
 
 function setRootScroll(scene, y, mirror) {
@@ -189,6 +226,39 @@ async function exerciseScrollRuntime({ scene, drive, observe, setPageY }) {
   assert.equal(result.results[0].target, "nested");
 }
 
+
+async function exerciseNativeControlRuntime({ scene, drive }) {
+  let result = await drive([
+    { type: "set_value", selector: "#deadline", value: "2026-08-31" },
+    {
+      type: "check",
+      selector: "#deadline",
+      match: "equals",
+      expect: { visible: true, enabled: true, value: "2026-08-31" },
+    },
+  ]);
+  assert.equal(scene.deadline.value, "2026-08-31", "native date values must be filled directly");
+  assert.equal(result.ok, true);
+  assert.equal(result.passed, true);
+  assert.equal(result.results[0].inputType, "date");
+  assert.equal(result.results[0].valid, true);
+  assert.equal(result.results[1].passed, true);
+  assert.deepEqual(Array.from(result.results[1].failures), []);
+
+  result = await drive([
+    {
+      type: "check",
+      selector: "#deadline",
+      match: "equals",
+      expect: { value: "2027-01-01" },
+    },
+  ]);
+  assert.equal(result.ok, false, "a failed evidence check must fail the batch");
+  assert.equal(result.passed, false);
+  assert.equal(result.failedChecks, 1);
+  assert.deepEqual(Array.from(result.results[0].failures), ["value"]);
+}
+
 function compileTypeScript(source) {
   return ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
@@ -248,14 +318,18 @@ test("same-origin controller scrolls nested panes and chains at their boundary",
   installGlobal(t, "window", view);
   installGlobal(t, "CSS", { escape: (value) => String(value) });
   installGlobal(t, "WheelEvent", FakeEvent);
+  installGlobal(t, "InputEvent", FakeEvent);
+  installGlobal(t, "Event", FakeEvent);
 
   const { runFrameComputerUse } = await loadSameOriginController();
+  const drive = (actions) => runFrameComputerUse(frame, request("actions", actions));
   await exerciseScrollRuntime({
     scene,
-    drive: (actions) => runFrameComputerUse(frame, request("actions", actions)),
+    drive,
     observe: () => runFrameComputerUse(frame, request("observe")),
     setPageY: (y) => setRootScroll(scene, y, (value) => { view.scrollY = value; }),
   });
+  await exerciseNativeControlRuntime({ scene, drive });
 });
 
 function extractNativeBrowserController() {
@@ -291,6 +365,7 @@ test("native Preview Browser script scrolls nested panes and chains at their bou
     InputEvent: FakeEvent,
     KeyboardEvent: FakeEvent,
     DragEvent: FakeEvent,
+    Event: FakeEvent,
   };
   context.window = context;
   context.top = context;
@@ -304,10 +379,12 @@ test("native Preview Browser script scrolls nested panes and chains at their bou
   const controller = context.__hormaPreviewComputerUse;
   assert.ok(controller, "native Preview Browser controller must install in the page context");
 
+  const drive = (actions) => controller.actions({ actions });
   await exerciseScrollRuntime({
     scene,
-    drive: (actions) => controller.actions({ actions }),
+    drive,
     observe: () => controller.observe(),
     setPageY: (y) => setRootScroll(scene, y, (value) => { context.scrollY = value; }),
   });
+  await exerciseNativeControlRuntime({ scene, drive });
 });

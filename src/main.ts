@@ -1723,12 +1723,23 @@ export function resolvePreviewComputerUsePromptIntent(
       .test(prompt);
   if (directEnable) return "enable";
 
+  const previewTarget =
+    /\b(?:website|site|web app|webpage|page|preview|browser tab|ui|interface|form|dashboard|modal|menu|table|game)\b/;
+  const browserTask =
+    /\b(?:debug|test|qa|audit|inspect|check|browse|navigate|interact|click|type|fill|select|submit|scroll|hover|open|verify|reproduce|play|try|run through|walk through|exercise)\b/;
   const playwrightRequest =
     /\b(?:playwright|browser automation|automate the browser)\b/.test(prompt);
+  const informationalOnly =
+    /\b(?:what is|what's|explain|tell me about|how does)\b.{0,40}\b(?:playwright|browser automation|computer use)\b/
+      .test(prompt) &&
+    !browserTask.test(prompt.replace(/\b(?:what is|what's|explain|tell me about|how does)\b.{0,40}/, ""));
+  if (informationalOnly) return null;
+
   const previewAction =
-    /\b(?:debug|test|inspect|check|browse|navigate|interact|click|type|scroll|hover|open|verify)\b.{0,72}\b(?:my |the )?(?:website|site|web app|webpage|page|preview|browser tab)\b/
+    (browserTask.test(prompt) && previewTarget.test(prompt)) ||
+    /\b(?:test|qa|audit|check|verify|exercise)\b.{0,48}\b(?:every|all)\b.{0,32}\b(?:feature|flow|button|control|screen)\b/
       .test(prompt) ||
-    /\b(?:my |the )?(?:website|site|web app|webpage|page|preview|browser tab)\b.{0,72}\b(?:debug|test|inspect|check|browse|navigate|interact|click|type|scroll|hover|open|verify)\b/
+    /\b(?:keyboard|mouse|cursor)\b.{0,48}\b(?:test|use|play|type|control)\b.{0,48}\b(?:preview|browser|website|site|game)\b/
       .test(prompt);
   return playwrightRequest || previewAction ? "auto" : null;
 }

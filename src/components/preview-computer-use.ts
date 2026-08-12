@@ -21,6 +21,8 @@ export type PreviewComputerAction = {
     | "key"
     | "scroll"
     | "drag"
+    | "set_value"
+    | "check"
     | "wait"
     | "open_tab"
     | "navigate"
@@ -34,6 +36,7 @@ export type PreviewComputerAction = {
   end_x?: number;
   end_y?: number;
   text?: string;
+  value?: string;
   keys?: string;
   button?: "left" | "right" | "middle";
   clicks?: number;
@@ -41,6 +44,16 @@ export type PreviewComputerAction = {
   delta_y?: number;
   duration_ms?: number;
   clear?: boolean;
+  match?: "contains" | "equals";
+  expect?: {
+    visible?: boolean;
+    enabled?: boolean;
+    checked?: boolean;
+    text?: string;
+    value?: string;
+    url?: string;
+    title?: string;
+  };
   /** Safe http(s) address for Preview-native open_tab and navigate actions. */
   url?: string;
   /** Exact Preview tab id returned by computer_observe. */
@@ -62,6 +75,11 @@ type ObservedElement = {
   scroll?: PreviewScrollPosition;
   checked?: boolean;
   value?: string;
+  inputType?: string;
+  required?: boolean;
+  min?: string;
+  max?: string;
+  step?: string;
 };
 
 const controllers = new WeakMap<Document, PreviewFrameComputerController>();
@@ -74,6 +92,21 @@ const INTERACTIVE_SELECTOR = [
 const MAX_OBSERVED_ELEMENTS = 80;
 const MAX_INTERACTIVE_SCAN = 320;
 const MAX_ANCESTOR_SCAN = 480;
+const MAX_SEMANTIC_SCAN = 240;
+const MAX_VISIBLE_CONTENT = 32;
+const MAX_VISIBLE_CONTENT_CHARS = 6_000;
+const MAX_CURSOR_TRAIL_SPARKS = 3;
+const MAX_CURSOR_TRANSIENTS = 8;
+const CURSOR_SETTLE_MS = 900;
+const FEATURE_SELECTOR = [
+  "button", "a[href]", "input", "textarea", "select", "summary",
+  "[contenteditable='true']", "[role='button']", "[role='link']", "[role='checkbox']",
+  "[role='radio']", "[role='tab']", "[role='menuitem']", "[role='option']",
+].join(",");
+const SEMANTIC_SELECTOR = [
+  "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "label", "legend", "th", "td",
+  "[role='heading']", "[role='alert']", "[role='status']", "[role='dialog']",
+].join(",");
 
 function elementScrollPosition(element: Element): PreviewScrollPosition {
   const html = element as HTMLElement;
@@ -152,6 +185,75 @@ function isVisible(element: Element, view: Window): boolean {
   return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") > 0.01;
 }
 
+function isEffectivelyVisible(element: Element, view: Window): boolean {
+  if (!isVisible(element, view)) return false;
+  let rect = element.getBoundingClientRect();
+  let left = Math.max(0, rect.left);
+  let top = Math.max(0, rect.top);
+  let right = Math.min(view.innerWidth, rect.right);
+  let bottom = Math.min(view.innerHeight, rect.bottom);
+  if (right - left < 1 || bottom - top < 1) return false;
+
+  let ancestor = element.parentElement;
+  for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
+    if (ancestor.getAttribute("aria-hidden") === "true" || ancestor.hasAttribute("inert")) return false;
+    if (ancestor.tagName.toLowerCase() === "details" && !ancestor.hasAttribute("open")) return false;
+    const style = view.getComputedStyle(ancestor);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || "1") <= 0.01) return false;
+    const bounds = ancestor.getBoundingClientRect();
+    if (/^(hidden|clip|auto|scroll|overlay)$/.test(style.overflowX)) {
+      left = Math.max(left, bounds.left);
+      right = Math.min(right, bounds.right);
+    }
+    if (/^(hidden|clip|auto|scroll|overlay)$/.test(style.overflowY)) {
+      top = Math.max(top, bounds.top);
+      bottom = Math.min(bottom, bounds.bottom);
+    }
+    if (right - left < 1 || bottom - top < 1) return false;
+  }
+  return true;
+}
+
+function visibleSemanticContent(document: Document, view: Window): Array<Record<string, unknown>> {
+  const output: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  const root = document.body || document.documentElement;
+  if (!root || typeof document.createTreeWalker !== "function") return output;
+  const nodeFilter = view as Window & { NodeFilter?: { SHOW_ELEMENT?: number } };
+  const showElement = nodeFilter.NodeFilter?.SHOW_ELEMENT ?? 1;
+  const walker = document.createTreeWalker(root, showElement);
+  let scanned = 0;
+  let totalChars = 0;
+  while (scanned < MAX_SEMANTIC_SCAN && output.length < MAX_VISIBLE_CONTENT) {
+    const node = walker.nextNode();
+    if (!node) break;
+    scanned += 1;
+    const element = node as Element;
+    try {
+      if (!element.matches(SEMANTIC_SELECTOR) || !isEffectivelyVisible(element, view)) continue;
+    } catch {
+      continue;
+    }
+    const text = compact((element as HTMLElement).innerText || element.textContent, 240);
+    if (!text || seen.has(text)) continue;
+    if (totalChars + text.length > MAX_VISIBLE_CONTENT_CHARS) break;
+    seen.add(text);
+    totalChars += text.length;
+    const rect = element.getBoundingClientRect();
+    output.push({
+      tag: element.tagName.toLowerCase(),
+      role: compact(element.getAttribute("role") || element.tagName.toLowerCase(), 48),
+      text,
+      selector: selectorFor(element, document),
+      rect: {
+        x: Math.round(rect.x), y: Math.round(rect.y),
+        width: Math.round(rect.width), height: Math.round(rect.height),
+      },
+    });
+  }
+  return output;
+}
+
 function elementName(element: Element): string {
   const html = element as HTMLElement;
   const input = element as HTMLInputElement;
@@ -199,29 +301,41 @@ function abortError(): DOMException {
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(abortError());
-    const timer = window.setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => {
+    const finish = () => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, ms);
+    const onAbort = () => {
       window.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
       reject(abortError());
-    }, { once: true });
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
 class PreviewFrameComputerController {
   private refs = new Map<string, Element>();
   private abortController: AbortController | null = null;
+  private overlayStyle: HTMLStyleElement | null = null;
   private cursor: HTMLElement | null = null;
   private cursorCore: HTMLElement | null = null;
+  private cursorLabel: HTMLElement | null = null;
+  private targetFrame: HTMLElement | null = null;
+  private targetPlate: HTMLElement | null = null;
   private status: HTMLElement | null = null;
   private cursorPoint: Point = { x: 32, y: 32 };
+  private settleTimer: number | null = null;
+  private transientFx: HTMLElement[] = [];
+  private humanTakeoverHandler: ((event: Event) => void) | null = null;
 
   constructor(private readonly document: Document, private readonly view: Window) {}
 
   stop(): void {
     this.abortController?.abort();
     this.abortController = null;
-    this.setStatus("Stopped", false);
-    if (this.cursor) this.cursor.dataset.state = "idle";
+    this.destroyOverlay();
   }
 
   observe(): Record<string, unknown> {
@@ -293,6 +407,13 @@ class PreviewFrameComputerController {
         observed.scroll = scrollPosition;
       }
       if ("checked" in input && typeof input.checked === "boolean") observed.checked = input.checked;
+      if (element.tagName.toLowerCase() === "input") {
+        observed.inputType = compact(input.type || "text", 32);
+        observed.required = Boolean(input.required);
+        if (compact(input.min)) observed.min = compact(input.min, 80);
+        if (compact(input.max)) observed.max = compact(input.max, 80);
+        if (compact(input.step)) observed.step = compact(input.step, 40);
+      }
       if ("value" in input && input.type !== "password" && compact(input.value)) {
         observed.value = compact(input.value, 120);
       }
@@ -314,6 +435,7 @@ class PreviewFrameComputerController {
       },
       cursor: { x: Math.round(this.cursorPoint.x), y: Math.round(this.cursorPoint.y) },
       elements,
+      content: visibleSemanticContent(this.document, this.view),
       hint: "Use element refs with computer_actions. Scrollable regions include scroll x/y/maxX/maxY; use their ref for nested panes. viewport.scrollY is page-only. Coordinates are relative to this preview viewport.",
     };
   }
@@ -334,55 +456,136 @@ class PreviewFrameComputerController {
         results.push({ index, type: action.type, ok: true, ...detail });
       }
       this.setStatus(`Complete · ${actions.length} action${actions.length === 1 ? "" : "s"}`, false);
+      const failedChecks = results.filter((result) => result.type === "check" && result.passed === false);
+      if (failedChecks.length > 0) this.setStatus(`Checks failed · ${failedChecks.length}`, false);
       return {
-        ok: true,
+        ok: failedChecks.length === 0,
+        passed: failedChecks.length === 0,
         scope: "active-preview-tab-only",
         completed: actions.length,
+        failedChecks: failedChecks.length,
         results,
         cursor: { x: Math.round(this.cursorPoint.x), y: Math.round(this.cursorPoint.y) },
       };
     } finally {
       if (this.abortController === abortController) this.abortController = null;
-      if (this.cursor) this.cursor.dataset.state = "idle";
+      this.scheduleSettle();
     }
   }
 
   private ensureOverlay(): void {
-    if (this.cursor?.isConnected) return;
+    if (this.cursor?.isConnected && this.targetFrame?.isConnected) return;
     const style = this.document.createElement("style");
     style.dataset.hormaComputerUse = "true";
     style.textContent = `
-      #__horma-ai-cursor{position:fixed;z-index:2147483646;left:0;top:0;width:48px;height:48px;pointer-events:none;transform:translate3d(32px,32px,0);will-change:transform,opacity;contain:layout style paint;isolation:isolate;transition:opacity .14s ease;}
-      #__horma-ai-cursor::before{content:"";position:absolute;inset:2px 14px 14px 2px;border-radius:6px 55% 55% 55%;background:linear-gradient(145deg,#fff 0%,#69e9ff 38%,#775cff 100%);clip-path:polygon(0 0,100% 68%,55% 73%,38% 100%);box-shadow:0 0 0 2px rgba(0,9,20,.86),0 0 18px 4px rgba(79,224,255,.78),0 0 34px rgba(126,92,255,.58);}
-      #__horma-ai-cursor::after{content:"";position:absolute;left:-11px;top:-11px;width:58px;height:58px;border:2px solid rgba(105,234,255,.56);border-radius:50%;box-shadow:inset 0 0 14px rgba(111,227,255,.18),0 0 22px rgba(103,100,255,.3);opacity:.72;transform:scale(.88);}
-      #__horma-ai-cursor[data-state="active"]::after{animation:__horma-pulse 1s cubic-bezier(.2,.8,.2,1) infinite alternate;}
-      #__horma-ai-cursor-core{position:absolute;left:7px;top:7px;width:8px;height:8px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px rgba(83,224,255,.55),0 0 14px #fff;}
-      #__horma-ai-cursor-label{position:absolute;left:30px;top:30px;padding:3px 6px;border:1px solid rgba(123,230,255,.72);border-radius:999px;background:rgba(4,12,24,.94);color:#effdff;font:800 10px/1 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;box-shadow:0 4px 14px rgba(0,0,0,.42),0 0 12px rgba(91,220,255,.34);}
-      #__horma-ai-status{position:fixed;z-index:2147483647;left:18px;bottom:18px;max-width:min(360px,calc(100vw - 36px));pointer-events:none;padding:9px 13px;border:1px solid rgba(102,218,255,.44);border-radius:999px;background:rgba(5,13,22,.94);color:#e9fcff;font:700 12px/1.25 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.05em;box-shadow:0 10px 28px rgba(0,0,0,.32),inset 0 0 20px rgba(82,192,255,.08);opacity:.9;transition:opacity .16s ease,border-color .16s ease;}
-      #__horma-ai-status[data-active="true"]{opacity:1;border-color:rgba(126,104,255,.82);}
-      .__horma-ai-ripple{position:fixed;z-index:2147483645;width:18px;height:18px;margin:-9px 0 0 -9px;border:3px solid #79efff;border-radius:50%;pointer-events:none;will-change:transform,opacity;box-shadow:0 0 18px rgba(105,103,255,.7);animation:__horma-ripple .54s cubic-bezier(.2,.8,.2,1) forwards;}
-      .__horma-ai-trail{position:fixed;z-index:2147483644;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;pointer-events:none;will-change:transform,opacity;background:#8bf0ff;box-shadow:0 0 15px #6d8cff;animation:__horma-trail .46s ease-out forwards;}
-      @keyframes __horma-pulse{from{opacity:.42;transform:scale(.78)}to{opacity:.95;transform:scale(1.08)}}
-      @keyframes __horma-ripple{from{opacity:.95;transform:scale(.2)}to{opacity:0;transform:scale(4.2)}}
-      @keyframes __horma-trail{from{opacity:.9;transform:scale(1)}to{opacity:0;transform:scale(.08)}}
-      @media(prefers-reduced-motion:reduce){#__horma-ai-cursor[data-state="active"]::after{animation:none}.__horma-ai-ripple,.__horma-ai-trail{animation-duration:.01ms!important}}
+      #__horma-ai-cursor,#__horma-ai-target,#__horma-ai-status,.__horma-ai-fx{box-sizing:border-box!important;pointer-events:none!important;user-select:none!important;font-family:ui-monospace,SFMono-Regular,Consolas,monospace!important}
+      #__horma-ai-cursor{position:fixed!important;z-index:2147483646!important;left:0!important;top:0!important;width:52px!important;height:52px!important;opacity:0;transform:translate3d(32px,32px,0);will-change:transform,opacity;contain:layout style paint;isolation:isolate;transition:opacity .16s ease}
+      #__horma-ai-cursor[data-visible="true"]{opacity:1}
+      #__horma-ai-cursor::before{content:"";position:absolute;inset:1px 17px 15px 1px;border-radius:7px 58% 58% 58%;background:linear-gradient(145deg,#f7feff 0%,#68e7ff 42%,#7b61ff 100%);clip-path:polygon(0 0,100% 69%,57% 74%,39% 100%);box-shadow:0 0 0 2px #03101ee6,0 0 12px rgba(87,221,255,.82);transform-origin:7px 7px;transition:transform .12s cubic-bezier(.16,1,.3,1),opacity .12s ease}
+      #__horma-ai-cursor::after{content:"";position:absolute;left:-12px;top:-12px;width:48px;height:48px;border:1px solid rgba(108,234,255,.7);border-radius:50%;opacity:.2;transform:scale(.72);transition:transform .16s cubic-bezier(.16,1,.3,1),opacity .16s ease}
+      #__horma-ai-cursor[data-gesture="approach"]::after{opacity:.82;transform:scale(1)}
+      #__horma-ai-cursor[data-gesture="hover"]::before{transform:scale(1.06) rotate(-2deg)}
+      #__horma-ai-cursor[data-gesture="press"]::before{transform:scale(.86) rotate(-3deg)}
+      #__horma-ai-cursor[data-gesture="click"]::before{animation:__horma-click-pop .22s cubic-bezier(.16,1,.3,1)}
+      #__horma-ai-cursor[data-gesture="type"]::after,#__horma-ai-cursor[data-gesture="key"]::after{border-color:#a693ff;opacity:.85;transform:scale(.92)}
+      #__horma-ai-cursor[data-gesture="scroll"]::after,#__horma-ai-cursor[data-gesture="drag"]::after{border-color:#6ceaff;opacity:.9;transform:scale(1)}
+      #__horma-ai-cursor-core{position:absolute;left:5px;top:5px;width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px rgba(83,224,255,.5),0 0 12px #fff}
+      #__horma-ai-cursor-label{position:absolute;left:28px;top:30px;white-space:nowrap;padding:4px 7px;border:1px solid rgba(123,230,255,.76);border-radius:999px;background:#07121ef2;color:#effdff;font:800 9px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:.08em;box-shadow:0 4px 12px rgba(0,0,0,.38);opacity:0;transform:translate3d(0,4px,0);transition:transform .14s cubic-bezier(.16,1,.3,1),opacity .14s ease}
+      #__horma-ai-cursor[data-label-x="left"] #__horma-ai-cursor-label{left:auto;right:32px}
+      #__horma-ai-cursor[data-label-y="up"] #__horma-ai-cursor-label{top:auto;bottom:32px}
+      #__horma-ai-cursor[data-busy="true"] #__horma-ai-cursor-label{opacity:1;transform:translate3d(0,0,0)}
+      #__horma-ai-target{position:fixed!important;z-index:2147483644!important;left:0!important;top:0!important;opacity:0;border:1px solid rgba(108,234,255,.94);border-radius:12px;background:linear-gradient(135deg,rgba(108,234,255,.06),rgba(123,97,255,.045));box-shadow:0 0 0 1px rgba(3,10,20,.82),0 0 0 4px rgba(108,234,255,.11),0 0 18px rgba(92,133,255,.22);transform:translate3d(0,0,0) scale(.97);transform-origin:center;will-change:transform,opacity;contain:layout style paint;transition:opacity .14s ease,transform .16s cubic-bezier(.16,1,.3,1)}
+      #__horma-ai-target::before{content:"";position:absolute;inset:-3px;border-radius:inherit;background:linear-gradient(#6ceaff,#6ceaff) left top/14px 2px no-repeat,linear-gradient(#6ceaff,#6ceaff) left top/2px 14px no-repeat,linear-gradient(#8d73ff,#8d73ff) right top/14px 2px no-repeat,linear-gradient(#8d73ff,#8d73ff) right top/2px 14px no-repeat,linear-gradient(#8d73ff,#8d73ff) left bottom/14px 2px no-repeat,linear-gradient(#8d73ff,#8d73ff) left bottom/2px 14px no-repeat,linear-gradient(#6ceaff,#6ceaff) right bottom/14px 2px no-repeat,linear-gradient(#6ceaff,#6ceaff) right bottom/2px 14px no-repeat}
+      #__horma-ai-target[data-visible="true"]{opacity:.9;transform:translate3d(var(--horma-target-x),var(--horma-target-y),0) scale(1)}
+      #__horma-ai-target[data-gesture="press"]{opacity:1;transform:translate3d(var(--horma-target-x),var(--horma-target-y),0) scale(.985)}
+      #__horma-ai-target[data-gesture="click"]{border-color:#a58bff;box-shadow:0 0 0 1px rgba(3,10,20,.82),0 0 0 5px rgba(141,115,255,.18),0 0 22px rgba(108,234,255,.28)}
+      #__horma-ai-target[data-gesture="boundary"]{border-color:#ffbf69;box-shadow:0 0 0 1px rgba(3,10,20,.82),0 0 0 4px rgba(255,191,105,.18)}
+      #__horma-ai-target-label{position:absolute;right:8px;top:-11px;padding:3px 7px;border-radius:999px;background:#07121ef2;color:#dffcff;border:1px solid rgba(108,234,255,.65);font:800 9px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:.08em}
+      #__horma-ai-status{position:fixed!important;z-index:2147483647!important;left:18px!important;bottom:18px!important;max-width:min(360px,calc(100vw - 36px));padding:9px 13px;border:1px solid rgba(102,218,255,.44);border-radius:999px;background:#05101cf2;color:#e9fcff;font:700 12px/1.25 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:.05em;box-shadow:0 10px 28px rgba(0,0,0,.32);opacity:.88;transition:opacity .16s ease,border-color .16s ease}
+      #__horma-ai-status[data-active="true"]{opacity:1;border-color:rgba(126,104,255,.82)}
+      .__horma-ai-trail{position:fixed!important;z-index:2147483643!important;left:0!important;top:0!important;width:7px!important;height:7px!important;border-radius:50%;background:#8bf0ff;box-shadow:0 0 8px #6d8cff;will-change:transform,opacity;contain:strict}
+      .__horma-ai-shockwave{position:fixed!important;z-index:2147483645!important;left:0!important;top:0!important;width:20px!important;height:20px!important;margin:-10px 0 0 -10px;border:2px solid #79efff;border-radius:50%;box-shadow:0 0 0 2px rgba(126,92,255,.42),0 0 16px rgba(105,103,255,.55);will-change:transform,opacity;contain:strict}
+      .__horma-ai-scroll-cue{position:fixed!important;z-index:2147483645!important;left:0!important;top:0!important;color:#effdff;background:#07121ee8;border:1px solid #6ceaff;border-radius:999px;padding:5px 8px;font:900 13px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;will-change:transform,opacity;contain:layout style paint}
+      @keyframes __horma-click-pop{0%{transform:scale(.86)}55%{transform:scale(1.08)}100%{transform:scale(1)}}
+      @media(prefers-reduced-motion:reduce){#__horma-ai-cursor::before,#__horma-ai-cursor::after,#__horma-ai-target,#__horma-ai-cursor-label{animation:none!important;transition-duration:.01ms!important}.__horma-ai-trail,.__horma-ai-shockwave{display:none!important}}
     `;
     this.document.head?.appendChild(style);
+    this.overlayStyle = style;
     this.cursor = this.document.createElement("div");
     this.cursor.id = "__horma-ai-cursor";
     this.cursor.setAttribute("aria-hidden", "true");
     this.cursorCore = this.document.createElement("span");
     this.cursorCore.id = "__horma-ai-cursor-core";
-    const cursorLabel = this.document.createElement("span");
-    cursorLabel.id = "__horma-ai-cursor-label";
-    cursorLabel.textContent = "AI";
-    this.cursor.append(this.cursorCore, cursorLabel);
+    this.cursorLabel = this.document.createElement("span");
+    this.cursorLabel.id = "__horma-ai-cursor-label";
+    this.cursorLabel.textContent = "AI";
+    this.cursor.append(this.cursorCore, this.cursorLabel);
+    this.targetFrame = this.document.createElement("div");
+    this.targetFrame.id = "__horma-ai-target";
+    this.targetFrame.setAttribute("aria-hidden", "true");
+    this.targetPlate = this.document.createElement("span");
+    this.targetPlate.id = "__horma-ai-target-label";
+    this.targetPlate.textContent = "TARGET";
+    this.targetFrame.append(this.targetPlate);
     this.status = this.document.createElement("div");
     this.status.id = "__horma-ai-status";
     this.status.setAttribute("aria-hidden", "true");
     this.status.textContent = "AI cursor · Preview only";
-    (this.document.body || this.document.documentElement).append(this.cursor, this.status);
+    (this.document.body || this.document.documentElement).append(
+      this.targetFrame, this.cursor, this.status,
+    );
     this.placeCursor(this.cursorPoint);
+    this.installHumanTakeover();
+  }
+
+  private installHumanTakeover(): void {
+    if (this.humanTakeoverHandler) return;
+    this.humanTakeoverHandler = (event: Event) => {
+      if ("isTrusted" in event && !(event as Event & { isTrusted: boolean }).isTrusted) return;
+      this.hideVisuals();
+    };
+    if (typeof this.document.addEventListener === "function") {
+      for (const type of ["pointermove", "pointerdown", "wheel", "keydown"]) {
+        this.document.addEventListener(type, this.humanTakeoverHandler, true);
+      }
+    }
+  }
+
+  private destroyOverlay(): void {
+    if (this.settleTimer != null) this.view.clearTimeout(this.settleTimer);
+    this.settleTimer = null;
+    if (this.humanTakeoverHandler && typeof this.document.removeEventListener === "function") {
+      for (const type of ["pointermove", "pointerdown", "wheel", "keydown"]) {
+        this.document.removeEventListener(type, this.humanTakeoverHandler, true);
+      }
+    }
+    this.humanTakeoverHandler = null;
+    for (const effect of this.transientFx.splice(0)) effect.remove();
+    this.targetFrame?.remove();
+    this.cursor?.remove();
+    this.status?.remove();
+    this.overlayStyle?.remove();
+    this.targetFrame = null;
+    this.targetPlate = null;
+    this.cursor = null;
+    this.cursorCore = null;
+    this.cursorLabel = null;
+    this.status = null;
+    this.overlayStyle = null;
+  }
+
+  private reducedMotion(): boolean {
+    return Boolean(this.view.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  private setGesture(gesture: string, label = gesture.toUpperCase()): void {
+    this.ensureOverlay();
+    if (this.cursor) {
+      this.cursor.dataset.visible = "true";
+      this.cursor.dataset.gesture = gesture;
+      this.cursor.dataset.busy = String(gesture !== "idle");
+    }
+    if (this.cursorLabel) this.cursorLabel.textContent = `AI · ${label}`;
   }
 
   private setStatus(text: string, active: boolean): void {
@@ -391,7 +594,128 @@ class PreviewFrameComputerController {
       this.status.textContent = `AI cursor · ${text}`;
       this.status.dataset.active = String(active);
     }
-    if (this.cursor) this.cursor.dataset.state = active ? "active" : "idle";
+    if (this.cursor) this.cursor.dataset.busy = String(active || this.cursor.dataset.gesture !== "idle");
+  }
+
+  private hideVisuals(): void {
+    if (this.cursor) {
+      this.cursor.dataset.visible = "false";
+      this.cursor.dataset.busy = "false";
+      this.cursor.dataset.gesture = "idle";
+    }
+    if (this.targetFrame) this.targetFrame.dataset.visible = "false";
+  }
+
+  private scheduleSettle(): void {
+    if (this.settleTimer != null) this.view.clearTimeout(this.settleTimer);
+    this.settleTimer = this.view.setTimeout(() => {
+      this.settleTimer = null;
+      this.hideVisuals();
+    }, CURSOR_SETTLE_MS);
+  }
+
+  private registerTransient(element: HTMLElement, ttl: number): void {
+    element.dataset.hormaAiFx = "transient";
+    this.transientFx.push(element);
+    while (this.transientFx.length > MAX_CURSOR_TRANSIENTS) this.transientFx.shift()?.remove();
+    this.view.setTimeout(() => {
+      element.remove();
+      this.transientFx = this.transientFx.filter((candidate) => candidate !== element);
+    }, ttl);
+  }
+
+  private visualTarget(element: Element | null): Element | null {
+    let node = element;
+    for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+      if (node === this.document.body || node === this.document.documentElement) break;
+      try {
+        if (node.matches(FEATURE_SELECTOR)) return node;
+      } catch { /* ignore an exotic page selector implementation */ }
+    }
+    return element && element !== this.document.body && element !== this.document.documentElement
+      ? element
+      : null;
+  }
+
+  private showTarget(element: Element | null, gesture: string): void {
+    const target = this.visualTarget(element);
+    if (!target || !this.targetFrame) {
+      if (this.targetFrame) this.targetFrame.dataset.visible = "false";
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return;
+    const padding = 6;
+    const x = clamp(rect.left - padding, 2, Math.max(2, this.view.innerWidth - 6));
+    const y = clamp(rect.top - padding, 2, Math.max(2, this.view.innerHeight - 6));
+    const width = clamp(rect.width + padding * 2, 8, Math.max(8, this.view.innerWidth - x - 2));
+    const height = clamp(rect.height + padding * 2, 8, Math.max(8, this.view.innerHeight - y - 2));
+    const targetStyle = this.targetFrame.style as CSSStyleDeclaration & Record<string, string>;
+    if (typeof targetStyle.setProperty === "function") {
+      targetStyle.setProperty("--horma-target-x", `${x}px`);
+      targetStyle.setProperty("--horma-target-y", `${y}px`);
+    } else {
+      targetStyle["--horma-target-x"] = `${x}px`;
+      targetStyle["--horma-target-y"] = `${y}px`;
+    }
+    this.targetFrame.style.width = `${width}px`;
+    this.targetFrame.style.height = `${height}px`;
+    this.targetFrame.dataset.gesture = gesture;
+    this.targetFrame.dataset.visible = "true";
+    if (this.targetPlate) this.targetPlate.textContent = gesture.toUpperCase();
+  }
+
+  private async flashPress(signal: AbortSignal): Promise<void> {
+    this.setGesture("press", "CLICK");
+    if (!this.reducedMotion()) await delay(58, signal);
+  }
+
+  private emitTrail(start: Point, target: Point): void {
+    if (this.reducedMotion()) return;
+    const distance = Math.hypot(target.x - start.x, target.y - start.y);
+    if (distance < 52) return;
+    const count = Math.min(MAX_CURSOR_TRAIL_SPARKS, Math.max(2, Math.round(distance / 180) + 1));
+    for (let index = 1; index <= count; index += 1) {
+      const ratio = index / (count + 1);
+      const x = start.x + (target.x - start.x) * ratio;
+      const y = start.y + (target.y - start.y) * ratio;
+      const trail = this.document.createElement("i");
+      trail.className = "__horma-ai-trail";
+      (this.document.body || this.document.documentElement).appendChild(trail);
+      this.registerTransient(trail, 340);
+      trail.animate?.([
+        { opacity: .72, transform: `translate3d(${x}px,${y}px,0) scale(1)` },
+        { opacity: 0, transform: `translate3d(${x - 4}px,${y - 4}px,0) scale(.12)` },
+      ], { duration: 300, easing: "cubic-bezier(.16,1,.3,1)", fill: "forwards" });
+    }
+  }
+
+  private shockwave(point: Point): void {
+    if (this.reducedMotion()) return;
+    const wave = this.document.createElement("i");
+    wave.className = "__horma-ai-shockwave";
+    (this.document.body || this.document.documentElement).appendChild(wave);
+    this.registerTransient(wave, 520);
+    wave.animate?.([
+      { opacity: .9, transform: `translate3d(${point.x}px,${point.y}px,0) scale(.35)` },
+      { opacity: 0, transform: `translate3d(${point.x}px,${point.y}px,0) scale(3.5)` },
+    ], { duration: 460, easing: "cubic-bezier(.16,1,.3,1)", fill: "forwards" });
+  }
+
+  private scrollCue(point: Point, x: number, y: number, boundary: boolean): void {
+    const cue = this.document.createElement("i");
+    cue.className = "__horma-ai-scroll-cue";
+    const horizontal = Math.abs(x) > Math.abs(y);
+    const label = horizontal ? (x >= 0 ? "→" : "←") : (y >= 0 ? "↓" : "↑");
+    cue.textContent = boundary ? `!${label}` : label;
+    (this.document.body || this.document.documentElement).appendChild(cue);
+    this.registerTransient(cue, 380);
+    const tx = horizontal ? Math.sign(x || 1) * 11 : 0;
+    const ty = horizontal ? 0 : Math.sign(y || 1) * 11;
+    cue.animate?.([
+      { opacity: .92, transform: `translate3d(${point.x + 18}px,${point.y + 18}px,0)` },
+      { opacity: 0, transform: `translate3d(${point.x + 18 + tx}px,${point.y + 18 + ty}px,0)` },
+    ], { duration: this.reducedMotion() ? 1 : 340, easing: "cubic-bezier(.16,1,.3,1)", fill: "forwards" });
   }
 
   private placeCursor(point: Point): void {
@@ -399,10 +723,14 @@ class PreviewFrameComputerController {
       x: clamp(point.x, 0, Math.max(0, this.view.innerWidth - 1)),
       y: clamp(point.y, 0, Math.max(0, this.view.innerHeight - 1)),
     };
-    if (this.cursor) this.cursor.style.transform = `translate3d(${this.cursorPoint.x}px,${this.cursorPoint.y}px,0)`;
+    if (this.cursor) {
+      this.cursor.style.transform = `translate3d(${this.cursorPoint.x}px,${this.cursorPoint.y}px,0)`;
+      this.cursor.dataset.labelX = this.cursorPoint.x > this.view.innerWidth - 150 ? "left" : "right";
+      this.cursor.dataset.labelY = this.cursorPoint.y > this.view.innerHeight - 56 ? "up" : "down";
+    }
   }
 
-  private async animateTo(point: Point, signal: AbortSignal, duration = 180): Promise<void> {
+  private async animateTo(point: Point, signal: AbortSignal, duration?: number): Promise<void> {
     this.ensureOverlay();
     if (signal.aborted) throw abortError();
     const target = {
@@ -410,19 +738,20 @@ class PreviewFrameComputerController {
       y: clamp(point.y, 0, Math.max(0, this.view.innerHeight - 1)),
     };
     const start = this.cursorPoint;
-    const reduced = this.view.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    const actualDuration = reduced ? 0 : clamp(duration, 0, 900);
+    const distance = Math.hypot(target.x - start.x, target.y - start.y);
+    const requested = duration == null ? 45 + distance * .22 : duration;
+    const actualDuration = this.reducedMotion() || distance < 2
+      ? 0
+      : (requested === 0 ? 0 : clamp(requested, 45, 120));
+    this.setGesture("approach", "TARGET");
+    this.emitTrail(start, target);
     if (this.cursor && actualDuration > 0 && typeof this.cursor.animate === "function") {
-      const trail = this.document.createElement("i");
-      trail.className = "__horma-ai-trail";
-      trail.style.left = `${start.x}px`;
-      trail.style.top = `${start.y}px`;
-      (this.document.body || this.document.documentElement).appendChild(trail);
-      this.view.setTimeout(() => trail.remove(), 500);
+      const lean = clamp((target.x - start.x) / Math.max(1, distance) * 4, -4, 4);
       const animation = this.cursor.animate([
-        { transform: `translate3d(${start.x}px,${start.y}px,0)` },
-        { transform: `translate3d(${target.x}px,${target.y}px,0)` },
-      ], { duration: actualDuration, easing: "cubic-bezier(.2,.8,.2,1)", fill: "forwards" });
+        { transform: `translate3d(${start.x}px,${start.y}px,0) rotate(0deg)` },
+        { transform: `translate3d(${(start.x + target.x) / 2}px,${Math.min(start.y, target.y) - Math.min(18, distance * .06)}px,0) rotate(${lean}deg)` },
+        { transform: `translate3d(${target.x}px,${target.y}px,0) rotate(0deg)` },
+      ], { duration: actualDuration, easing: "cubic-bezier(.16,1,.3,1)", fill: "forwards" });
       const onAbort = () => animation.cancel();
       signal.addEventListener("abort", onAbort, { once: true });
       try { await animation.finished; } catch { if (signal.aborted) throw abortError(); }
@@ -434,16 +763,29 @@ class PreviewFrameComputerController {
   private resolve(action: PreviewComputerAction, end = false): ResolvedTarget {
     const ref = end ? action.end_ref : action.ref;
     const selector = end ? action.end_selector : action.selector;
+    const hadExplicitTarget = Boolean(ref || selector);
     const x = end ? action.end_x : action.x;
     const y = end ? action.end_y : action.y;
     let element: Element | null = null;
-    if (ref) element = this.refs.get(ref) || null;
+    if (ref) {
+      element = this.refs.get(ref) || null;
+      if (element && !element.isConnected) {
+        this.refs.delete(ref);
+        element = null;
+      }
+      if (!element && !selector) {
+        throw new Error(`Stale Preview ref "${ref}". Call computer_observe again before continuing.`);
+      }
+    }
     if (!element && selector) {
       try { element = this.document.querySelector(selector); }
       catch { throw new Error(`Invalid preview selector: ${selector}`); }
     }
     if (!element && Number.isFinite(x) && Number.isFinite(y)) {
       element = this.document.elementFromPoint(Number(x), Number(y));
+    }
+    if (!element && hadExplicitTarget) {
+      throw new Error("The requested Preview target is no longer available. Call computer_observe again.");
     }
     if (!element && !end) element = this.document.activeElement;
     if (element) {
@@ -500,10 +842,114 @@ class PreviewFrameComputerController {
     catch { element.dispatchEvent(new MouseEvent(type.replace("pointer", "mouse"), options)); }
   }
 
+  private hoverEvents(element: Element, point: Point, button = 0): void {
+    for (const type of ["pointerover", "pointerenter", "pointermove"]) {
+      this.pointerEvent(element, type, point, button);
+    }
+    const options: MouseEventInit = {
+      bubbles: true, cancelable: true, composed: true,
+      clientX: point.x, clientY: point.y, button,
+    };
+    for (const type of ["mouseover", "mouseenter", "mousemove"]) {
+      element.dispatchEvent(new MouseEvent(type, options));
+    }
+  }
+
+  private setControlValue(element: Element, value: string): Record<string, unknown> {
+    const tag = element.tagName.toLowerCase();
+    const html = element as HTMLElement;
+    html.focus?.({ preventScroll: true });
+    if (tag === "select") {
+      const select = element as HTMLSelectElement;
+      const desired = String(value);
+      const option = Array.from(select.options).find((candidate) =>
+        candidate.value === desired
+        || compact(candidate.label || candidate.textContent) === compact(desired)
+      );
+      if (!option) throw new Error(`Select option "${desired}" was not found in the active Preview field.`);
+      select.value = option.value;
+    } else if (isInputElement(element) || isTextAreaElement(element)) {
+      const input = element as HTMLInputElement | HTMLTextAreaElement;
+      const constructor = Object.getPrototypeOf(input)?.constructor as { prototype?: object } | undefined;
+      const descriptor = constructor?.prototype
+        ? Object.getOwnPropertyDescriptor(constructor.prototype, "value")
+        : undefined;
+      descriptor?.set?.call(input, String(value));
+      if (input.value !== String(value)) input.value = String(value);
+    } else if (html.isContentEditable) {
+      html.textContent = String(value);
+    } else {
+      throw new Error("set_value requires an input, textarea, select, or contenteditable target.");
+    }
+    element.dispatchEvent(new InputEvent("input", {
+      bubbles: true, composed: true, inputType: "insertReplacementText", data: String(value),
+    }));
+    element.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    const control = element as HTMLInputElement;
+    const actualValue = "value" in control ? String(control.value) : compact(html.textContent, 240);
+    const valid = typeof control.checkValidity === "function" ? control.checkValidity() : true;
+    return {
+      value: actualValue,
+      inputType: isInputElement(element) ? control.type : tag,
+      valid,
+      validationMessage: valid ? "" : compact(control.validationMessage, 240),
+    };
+  }
+
+  private checkExpectation(action: PreviewComputerAction, target: ResolvedTarget): Record<string, unknown> {
+    const expected = action.expect || {};
+    const element = target.element as HTMLElement | null;
+    const actual = {
+      visible: Boolean(element && isEffectivelyVisible(element, this.view)),
+      enabled: Boolean(element && !((element as HTMLInputElement).disabled)),
+      checked: Boolean(element && "checked" in (element as HTMLInputElement)
+        ? (element as HTMLInputElement).checked
+        : false),
+      text: compact(element?.innerText || element?.textContent, 500),
+      value: element && "value" in (element as HTMLInputElement)
+        ? String((element as HTMLInputElement).value)
+        : "",
+      url: this.document.location.href,
+      title: this.document.title,
+    };
+    const match = action.match === "equals"
+      ? (actualValue: unknown, expectedValue: unknown) => String(actualValue) === String(expectedValue)
+      : (actualValue: unknown, expectedValue: unknown) =>
+        String(actualValue).toLocaleLowerCase().includes(String(expectedValue).toLocaleLowerCase());
+    const failures: string[] = [];
+    for (const key of ["visible", "enabled", "checked"] as const) {
+      if (typeof expected[key] === "boolean" && actual[key] !== expected[key]) failures.push(key);
+    }
+    for (const key of ["text", "value", "url", "title"] as const) {
+      if (expected[key] != null && !match(actual[key], expected[key])) failures.push(key);
+    }
+    return { passed: failures.length === 0, failures, expected, actual };
+  }
+
+  private async settleScroll(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) throw abortError();
+    if (typeof this.view.requestAnimationFrame !== "function") return;
+    await new Promise<void>((resolve, reject) => {
+      let frame = 0;
+      const onAbort = () => reject(abortError());
+      signal.addEventListener("abort", onAbort, { once: true });
+      const tick = () => {
+        frame += 1;
+        if (frame >= 2) {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        } else {
+          this.view.requestAnimationFrame(tick);
+        }
+      };
+      this.view.requestAnimationFrame(tick);
+    });
+  }
+
   private async runAction(action: PreviewComputerAction, signal: AbortSignal): Promise<Record<string, unknown>> {
-    const duration = clamp(Number(action.duration_ms ?? 180), 0, 900);
+    const explicitDuration = action.duration_ms == null ? undefined : clamp(Number(action.duration_ms), 0, 900);
     if (action.type === "wait") {
-      await delay(clamp(Number(action.duration_ms ?? 250), 0, 10_000), signal);
+      await delay(clamp(Number(action.duration_ms ?? 180), 0, 10_000), signal);
       return {};
     }
     if (action.type === "scroll") {
@@ -518,18 +964,29 @@ class PreviewFrameComputerController {
           point: this.cursorPoint,
         };
       }
-      await this.animateTo(target.point, signal, duration);
+      this.showTarget(target.element, "scroll");
+      this.setGesture("scroll", "SCROLL");
+      await this.animateTo(target.point, signal, explicitDuration);
       const deltaX = clamp(Number(action.delta_x ?? 0), -4_000, 4_000);
       const deltaY = clamp(Number(action.delta_y ?? 520), -4_000, 4_000);
       const candidate = choosePreviewScrollCandidate(this.scrollCandidates(target.element), deltaX, deltaY, explicitTarget);
       if (!candidate) throw new Error("No scrollable region is available in the active Preview tab.");
+      const visualScroller = candidate.target === this.view ? target.element : candidate.target as Element;
+      this.showTarget(visualScroller, "scroll");
       const before = this.scrollPosition(candidate.target);
       const wheelTarget = target.element || this.document.elementFromPoint(target.point.x, target.point.y);
-      wheelTarget?.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, deltaX, deltaY }));
+      wheelTarget?.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, deltaX, deltaY,
+      }));
       candidate.target.scrollBy({ left: deltaX, top: deltaY, behavior: "auto" });
-      await delay(90, signal);
-      const after = this.scrollPosition(candidate.target);
+      let after = this.scrollPosition(candidate.target);
+      if (!previewScrollMoved(before, after)) {
+        await this.settleScroll(signal);
+        after = this.scrollPosition(candidate.target);
+      }
       const moved = previewScrollMoved(before, after);
+      this.showTarget(visualScroller, moved ? "scroll" : "boundary");
+      this.scrollCue(target.point, after.x - before.x || deltaX, after.y - before.y || deltaY, !moved);
       return {
         target: candidate.target === this.view ? "page" : "nested",
         selector: candidate.target === this.view ? null : selectorFor(candidate.target as Element, this.document),
@@ -542,11 +999,14 @@ class PreviewFrameComputerController {
       const start = this.resolve(action);
       const end = this.resolve(action, true);
       if (!start.element) throw new Error("Drag start target was not found in the active Preview tab.");
-      await this.animateTo(start.point, signal, duration);
+      this.showTarget(start.element, "drag");
+      this.setGesture("drag", "DRAG");
+      await this.animateTo(start.point, signal, explicitDuration);
       this.pointerEvent(start.element, "pointerdown", start.point, 0);
       start.element.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true }));
-      await this.animateTo(end.point, signal, Math.max(220, duration));
+      await this.animateTo(end.point, signal, explicitDuration ?? 220);
       const endElement = end.element || this.document.elementFromPoint(end.point.x, end.point.y) || start.element;
+      this.showTarget(endElement, "drag");
       this.pointerEvent(endElement, "pointermove", end.point, 0);
       endElement.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, clientX: end.point.x, clientY: end.point.y }));
       endElement.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, clientX: end.point.x, clientY: end.point.y }));
@@ -556,43 +1016,75 @@ class PreviewFrameComputerController {
     }
 
     const target = this.resolve(action);
-    await this.animateTo(target.point, signal, duration);
+    this.showTarget(target.element, action.type);
+    const keyboardLike = action.type === "type" || action.type === "key" || action.type === "set_value";
+    await this.animateTo(target.point, signal, keyboardLike && explicitDuration == null ? 0 : explicitDuration);
     if (!target.element) return {};
     if (action.type === "move" || action.type === "hover") {
-      for (const type of ["pointerover", "pointerenter", "pointermove"]) this.pointerEvent(target.element, type, target.point);
+      this.setGesture("hover", "HOVER");
+      this.showTarget(target.element, "hover");
+      this.hoverEvents(target.element, target.point);
       return {};
     }
     if (action.type === "click") {
       const buttonName = action.button || "left";
       const button = buttonName === "right" ? 2 : buttonName === "middle" ? 1 : 0;
       const html = target.element as HTMLElement;
-      this.pointerEvent(target.element, "pointerover", target.point, button);
+      this.setGesture("hover", "CLICK");
+      this.showTarget(target.element, "hover");
+      this.hoverEvents(target.element, target.point, button);
+      await this.flashPress(signal);
+      this.showTarget(target.element, "press");
       this.pointerEvent(target.element, "pointerdown", target.point, button);
       html.focus?.({ preventScroll: true });
       this.pointerEvent(target.element, "pointerup", target.point, button);
       if (button === 0) {
         const clicks = action.clicks === 2 ? 2 : 1;
         for (let index = 0; index < clicks; index += 1) html.click();
-        if (clicks === 2) target.element.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y }));
+        if (clicks === 2) target.element.dispatchEvent(new MouseEvent("dblclick", {
+          bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y,
+        }));
       } else if (button === 2) {
-        target.element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, button: 2 }));
+        target.element.dispatchEvent(new MouseEvent("contextmenu", {
+          bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, button: 2,
+        }));
       } else {
-        target.element.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, button: 1 }));
+        target.element.dispatchEvent(new MouseEvent("auxclick", {
+          bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, button: 1,
+        }));
       }
-      this.ripple(target.point);
+      this.setGesture("click", "DONE");
+      this.showTarget(target.element, "click");
+      this.shockwave(target.point);
+      if (action.clicks === 2) this.view.setTimeout(() => this.shockwave(target.point), 110);
       return {};
+    }
+    if (action.type === "set_value") {
+      this.setGesture("type", "SET");
+      this.showTarget(target.element, "type");
+      return this.setControlValue(target.element, String(action.value ?? action.text ?? ""));
     }
     if (action.type === "type") {
       const active = isEditable(target.element) ? target.element : this.document.activeElement;
       if (!isEditable(active)) throw new Error("Type action target is not an editable field in the active Preview tab.");
+      this.setGesture("type", "TYPE");
+      this.showTarget(active, "type");
       active.focus({ preventScroll: true });
       this.insertText(active, String(action.text ?? ""), Boolean(action.clear));
-      return {};
+      return { value: isInputElement(active) || isTextAreaElement(active) ? active.value : compact(active.textContent, 240) };
     }
     if (action.type === "key") {
       const element = target.element as HTMLElement;
+      this.setGesture("key", "KEY");
+      this.showTarget(element, "key");
       element.focus?.({ preventScroll: true });
       this.pressKey(element, String(action.keys || ""));
+      return {};
+    }
+    if (action.type === "check") {
+      this.setGesture("hover", "CHECK");
+      this.showTarget(target.element, "hover");
+      return this.checkExpectation(action, target);
     }
     return {};
   }
@@ -656,9 +1148,17 @@ class PreviewFrameComputerController {
       focusable[(index + (init.shiftKey ? -1 : 1) + focusable.length) % focusable.length]?.focus();
       return;
     }
-    if (key === "Enter") {
+    if (key === "Enter" || key === "Space") {
       if (isButtonElement(element) || isAnchorElement(element)) element.click();
-      else if (isEditable(element)) element.closest("form")?.requestSubmit();
+      else if (key === "Enter" && isEditable(element)) element.closest("form")?.requestSubmit();
+      return;
+    }
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(key)
+      && isInputElement(element) && ["number", "range", "date", "time", "datetime-local"].includes(element.type)) {
+      if (key === "ArrowUp") element.stepUp?.();
+      if (key === "ArrowDown") element.stepDown?.();
+      element.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertReplacementText" }));
+      element.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
       return;
     }
     if ((key === "Backspace" || key === "Delete") && (isInputElement(element) || isTextAreaElement(element))) {
@@ -671,14 +1171,6 @@ class PreviewFrameComputerController {
     }
   }
 
-  private ripple(point: Point): void {
-    const ripple = this.document.createElement("i");
-    ripple.className = "__horma-ai-ripple";
-    ripple.style.left = `${point.x}px`;
-    ripple.style.top = `${point.y}px`;
-    (this.document.body || this.document.documentElement).appendChild(ripple);
-    this.view.setTimeout(() => ripple.remove(), 520);
-  }
 }
 
 function controllerFor(frame: HTMLIFrameElement): PreviewFrameComputerController {

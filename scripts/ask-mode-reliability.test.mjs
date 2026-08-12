@@ -47,7 +47,30 @@ test("Preview Computer Use exposes Off Auto On and prompt-intent activation", as
 
   assert.match(main, /resolvePreviewComputerUsePromptIntent/);
   assert.match(main, /playwright\|browser automation/);
+  assert.match(main, /\(browserTask\.test\(prompt\) && previewTarget\.test\(prompt\)\)/);
+  assert.match(main, /informationalOnly/);
   assert.match(main, /computer_use_enabled: computerUseForRun/);
+
+  const start = main.indexOf("export type PreviewComputerUsePromptIntent");
+  const end = main.indexOf("async function sendPrompt", start);
+  assert.ok(start >= 0 && end > start);
+  const executable = main.slice(start, end)
+    .replace(/export type PreviewComputerUsePromptIntent[\s\S]*?;\s*/, "")
+    .replace("export function", "function")
+    .replace("value: string", "value")
+    .replace(/\): PreviewComputerUsePromptIntent/, ")");
+  const resolveIntent = new Function(`${executable}; return resolvePreviewComputerUsePromptIntent;`)();
+  for (const prompt of [
+    "can you playwright my website",
+    "QA every feature in this preview",
+    "audit the dashboard UI",
+    "use the keyboard to play the browser game",
+    "reproduce this UI bug on the web app",
+  ]) {
+    assert.equal(resolveIntent(prompt), "auto", prompt);
+  }
+  assert.equal(resolveIntent("what is Playwright?"), null);
+  assert.equal(resolveIntent("do not use computer use to test my website"), "disable");
   assert.match(preview, /PreviewComputerUseMode = "off" \| "auto" \| "on"/);
   assert.match(preview, /site-preview-computer-mode/);
   assert.match(preview, /ACTIVE PREVIEW TAB ONLY/);

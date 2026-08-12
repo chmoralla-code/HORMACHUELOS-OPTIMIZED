@@ -1553,7 +1553,7 @@ fn computer_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "computer_actions",
-                "description": "Run one fast, bounded, auto-approved action batch inside Preview. Page actions support move, hover, click, type, key, scroll, drag, and wait. Scroll selects the nearest movable page or nested pane at the supplied ref/selector/x-y; with no target it scrolls under the visible AI cursor. Positive delta_y scrolls down and negative scrolls up. Results report measured before/after/applied positions, moved, and boundary; viewport.scrollY is page-only. Preview-native open_tab, navigate, and activate_tab never launch the system browser; each must be the only action in its batch and must be followed by computer_observe. Prefer observed refs. The visible AI cursor never leaves Preview.",
+                "description": "Run one fast, bounded, auto-approved action batch inside Preview. Page actions support move, hover, click, type, set_value, key, scroll, drag, check, and wait. set_value reliably fills native date/time/datetime/number/range/color/select controls and reports validity. check compares visible/enabled/checked/text/value/URL/title state and returns expected versus actual evidence. Scroll selects the nearest movable page or nested pane at the supplied ref/selector/x-y; with no target it scrolls under the visible AI cursor. Positive delta_y scrolls down and negative scrolls up. Results report measured before/after/applied positions, moved, and boundary; viewport.scrollY is page-only. Preview-native open_tab, navigate, and activate_tab never launch the system browser; each must be the only action in its batch and must be followed by computer_observe. Prefer observed refs. The visible AI cursor never leaves Preview.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1564,7 +1564,7 @@ fn computer_tool_schemas() -> Vec<Value> {
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "type": { "type": "string", "enum": ["move", "hover", "click", "type", "key", "scroll", "drag", "wait", "open_tab", "navigate", "activate_tab"] },
+                                    "type": { "type": "string", "enum": ["move", "hover", "click", "type", "set_value", "key", "scroll", "drag", "check", "wait", "open_tab", "navigate", "activate_tab"] },
                                     "ref": { "type": "string", "description": "Interactive or scrollable element ref returned by computer_observe. For nested scrolling, use the pane ref or any descendant ref." },
                                     "selector": { "type": "string", "description": "CSS selector fallback within the active Preview page." },
                                     "x": { "type": "number", "description": "Viewport X coordinate fallback." },
@@ -1574,13 +1574,29 @@ fn computer_tool_schemas() -> Vec<Value> {
                                     "end_x": { "type": "number" },
                                     "end_y": { "type": "number" },
                                     "text": { "type": "string", "maxLength": 16384 },
+                                    "value": { "type": "string", "maxLength": 16384, "description": "Exact standards-format value for set_value. Dates use YYYY-MM-DD; time uses HH:MM; datetime-local uses YYYY-MM-DDTHH:MM." },
                                     "clear": { "type": "boolean", "description": "Replace current editable content before typing." },
                                     "keys": { "type": "string", "description": "Key/chord such as Enter, Tab, Escape, Ctrl+A. Win/Meta is blocked." },
                                     "button": { "type": "string", "enum": ["left", "right", "middle"] },
                                     "clicks": { "type": "integer", "enum": [1, 2] },
                                     "delta_x": { "type": "number", "minimum": -4000, "maximum": 4000 },
                                     "delta_y": { "type": "number", "minimum": -4000, "maximum": 4000, "description": "Positive scrolls down; negative scrolls up. Read moved/boundary and before/after in the action result." },
-                                    "duration_ms": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "Animation/wait duration, or maximum page-ready wait for a Preview tab action." },
+                                    "duration_ms": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "Optional movement/wait duration. Omit for fast distance-adaptive cursor motion." },
+                                    "match": { "type": "string", "enum": ["contains", "equals"], "description": "Comparison mode for check; defaults to case-insensitive contains for strings." },
+                                    "expect": {
+                                      "type": "object",
+                                      "description": "One or more expected states for check.",
+                                      "properties": {
+                                        "visible": { "type": "boolean" },
+                                        "enabled": { "type": "boolean" },
+                                        "checked": { "type": "boolean" },
+                                        "text": { "type": "string", "maxLength": 500 },
+                                        "value": { "type": "string", "maxLength": 500 },
+                                        "url": { "type": "string", "maxLength": 2048 },
+                                        "title": { "type": "string", "maxLength": 500 }
+                                      },
+                                      "additionalProperties": false
+                                    },
                                     "url": { "type": "string", "maxLength": 4096, "description": "Required safe http(s) URL for open_tab or navigate. Opens inside Preview, never the system browser." },
                                     "tab_id": { "type": "string", "maxLength": 128, "description": "Required exact tab id from computer_observe for activate_tab." }
                                 },
@@ -3559,7 +3575,7 @@ pub fn execute(
         )),
         "computer_observe" | "computer_actions" => {
             let result = crate::computer_use::execute_tool(name, args, ctx.cancel.as_ref())?;
-            Ok(serde_json::to_string_pretty(&result)?)
+            Ok(serde_json::to_string(&result)?)
         }
             other => Err(anyhow::anyhow!(
                 "Unknown tool: {other}. Call exactly one registered snake_case tool name per request."
