@@ -69,12 +69,22 @@ class FakeElement {
       return false;
     });
   }
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (typeof node.matches === "function" && node.matches(selector)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
   getBoundingClientRect() { return { ...this.rect }; }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   hasAttribute(name) { return this.attributes.has(name); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   removeAttribute(name) { this.attributes.delete(name); }
   dispatchEvent(event) { this.lastEvent = event; return true; }
+  addEventListener() {}
+  removeEventListener() {}
 
   append(...nodes) {
     for (const node of nodes) {
@@ -159,6 +169,8 @@ function makeScene() {
       return [];
     },
     createElement: (tag) => new FakeElement(tag),
+    addEventListener() {},
+    removeEventListener() {},
   };
 
   return { page, head, body, pane, cell, deadline, password, document };
@@ -296,10 +308,17 @@ async function loadSameOriginController() {
   const policyUrl = `data:text/javascript;base64,${Buffer.from(
     compileTypeScript(read("src/components/preview-scroll-policy.ts")),
   ).toString("base64")}`;
+  const qaUrl = `data:text/javascript;base64,${Buffer.from(
+    compileTypeScript(read("src/components/preview-computer-qa.ts")),
+  ).toString("base64")}`;
   const controller = compileTypeScript(read("src/components/preview-computer-use.ts"))
     .replace(
       /from\s+["']\.\/preview-scroll-policy["']/,
       `from ${JSON.stringify(policyUrl)}`,
+    )
+    .replace(
+      /from\s+["']\.\/preview-computer-qa["']/,
+      `from ${JSON.stringify(qaUrl)}`,
     );
   const controllerUrl = `data:text/javascript;base64,${Buffer.from(controller).toString("base64")}`;
   return import(controllerUrl);
@@ -333,6 +352,8 @@ test("same-origin controller scrolls nested panes and chains at their boundary",
     devicePixelRatio: 1,
     getComputedStyle: (element) => element.computedStyle,
     matchMedia: () => ({ matches: true }),
+    addEventListener() {},
+    removeEventListener() {},
     setTimeout,
     clearTimeout,
     scrollBy: ({ left = 0, top = 0 }) => scene.page.scrollBy({ left, top }),
@@ -387,6 +408,8 @@ test("native Preview Browser script scrolls nested panes and chains at their bou
     CSS: { escape: (value) => String(value) },
     getComputedStyle: (element) => element.computedStyle,
     matchMedia: () => ({ matches: true }),
+    addEventListener() {},
+    removeEventListener() {},
     setTimeout,
     clearTimeout,
     console,
