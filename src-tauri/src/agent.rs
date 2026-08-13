@@ -1825,9 +1825,9 @@ pub async fn run_loop(
     // auto-generated image descriptions are context, never execution intent.
     let requires_project_completion = task_requires_project_completion(&user_request, task_profile);
     let permission_mode = normalized_permission_mode(&settings.permission_mode);
-    if task_profile.is_design_edit()
-        || (permission_mode == "plan" && prompt_unlocks_plan_implementation(&prompt))
-    {
+    // Plan, Ask, and Research are strict non-mutating modes. Explicit Apply or
+    // build requests are routed to Multi-Agent before reaching this loop.
+    if permission_mode != "plan" && task_profile.is_design_edit() {
         run.set_plan_implementation_unlocked(true);
     }
 
@@ -3274,23 +3274,14 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     Err(_) => "Question timed out after 10 minutes.".to_string(),
                 };
                 if mode == "plan" && !task_profile.is_design_edit() {
-                    if ask_user_confirms_plan_implementation(&response, &question) {
-                        run.set_plan_implementation_unlocked(true);
-                        response.push_str(
-                            "\n\n[System] The user confirmed Apply. You may now write, edit, and run commands to implement the agreed plan. Mutating tools are unlocked.",
-                        );
-                    } else if !run.plan_implementation_unlocked() {
-                        response.push_str(
-                            "\n\n[System] The user has not confirmed Apply. Keep planning. Do not write, edit, or modify files.",
-                        );
-                    }
+                    response.push_str(
+                        "\n\n[System] Plan mode remains read-only. If the user chose Apply, the frontend will start a separate Multi-Agent implementation run; do not mutate from this run.",
+                    );
                 }
                 (true, response)
             } else {
                 let mode = normalized_permission_mode(&settings.permission_mode);
                 if mode == "plan"
-                    && !task_profile.is_design_edit()
-                    && !run.plan_implementation_unlocked()
                     && tools::is_plan_locked_tool(&tc.name)
                 {
                     let denied = tools::PLAN_LOCK_MESSAGE.to_string();

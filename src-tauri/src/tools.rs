@@ -312,29 +312,52 @@ pub fn is_plan_locked_tool(name: &str) -> bool {
 
 pub const PLAN_LOCK_MESSAGE: &str = "Plan mode is still planning. Do not write, edit, or modify files. Present the plan, ask any needed questions with ask_user, and wait until the user confirms they want to apply and implement the plan.";
 
-/// Hide mutating tools while Plan mode is locked so the model cannot call them.
+/// Strict non-mutation policy for Plan, Ask, and legacy Research.
 pub fn tool_allowed_for_permission_phase(
     name: &str,
     mode: &str,
-    plan_unlocked: bool,
-    computer_use_authorized: bool,
+    _plan_unlocked: bool,
+    preview_computer_use_authorized: bool,
 ) -> bool {
     let mode = mode.trim().to_ascii_lowercase();
-    if mode == "plan" && !plan_unlocked {
-        return !is_plan_locked_tool(name);
+    if !matches!(mode.as_str(), "plan" | "ask" | "research") {
+        return true;
     }
-    if matches!(mode.as_str(), "ask" | "research") {
-        if is_computer_action_tool(name) {
-            return computer_use_authorized;
-        }
-        if is_computer_tool(name) {
-            return is_computer_readonly_tool(name);
-        }
-        return is_readonly_tool(name);
-    }
-    true
-}
 
+    let name = canonical_tool_name(name).unwrap_or(name);
+    // Preview observation is read-only. Preview actions are the sole narrow
+    // exception, and only when this exact run carries Preview authorization.
+    if name == "computer_observe" {
+        return true;
+    }
+    if name == "computer_actions" {
+        return preview_computer_use_authorized;
+    }
+    // Desktop Computer Use is never available from non-mutating modes.
+    if is_computer_tool(name) {
+        return false;
+    }
+
+    matches!(
+        name,
+        "read_file"
+            | "list_dir"
+            | "glob"
+            | "grep"
+            | "git_status"
+            | "list_drives"
+            | "sys_info"
+            | "env_vars"
+            | "list_processes"
+            | "file_info"
+            | "view_image"
+            | "view_video"
+            | "ask_user"
+            | "integration_status"
+            | "web_search"
+            | "browse_page"
+    )
+}
 /// Canonical schema policy shared by native and Cursor providers. Ask never
 /// advertises workspace mutations, and Preview Computer Use actions are present
 /// only when the current run carries explicit authorization.
@@ -631,7 +654,7 @@ mod permission_mode_tests {
         assert!(unlocked
             .iter()
             .any(|schema| schema["function"]["name"] == "write_file"));
-        assert!(PLAN_LOCK_MESSAGE.contains("ask_user"));
+        assert!(PLAN_LOCK_MESSAGE.contains("ask_user"));`n        assert!(!unlocked.iter().any(|schema| schema["function"]["name"] == "write_file"));
     }
 
     #[test]
@@ -642,7 +665,7 @@ mod permission_mode_tests {
             .filter_map(|schema| schema["function"]["name"].as_str())
             .collect::<BTreeSet<_>>();
         assert!(ordinary_names.contains("read_file"));
-        assert!(ordinary_names.contains("computer_observe"));
+        assert!(ordinary_names.contains("computer_observe"));`n        assert!(!ordinary_names.contains("done"));`n        assert!(!ordinary_names.contains("todo_write"));`n        assert!(!ordinary_names.contains("connect_account"));`n        assert!(!ordinary_names.contains("computer_click"));
         assert!(!ordinary_names.contains("computer_actions"));
         assert!(!ordinary_names.contains("write_file"));
         assert!(!tool_allowed_for_permission_phase("write_file", "ask", false, false));
