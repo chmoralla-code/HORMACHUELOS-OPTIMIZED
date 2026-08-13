@@ -338,6 +338,7 @@ async fn execute_cursor_host_tool(
     raw_name: &str,
     raw_arguments: Value,
     known_secrets: &[String],
+    computer_use_authorized: bool,
 ) -> (bool, String) {
     let mut name = crate::tools::normalize_tool_name(raw_name);
     if !cursor_host_tool_is_available(&name, permission_mode, computer_use_authorized) {
@@ -1394,6 +1395,7 @@ async fn run_cursor_attempt(
                             &raw_name,
                             raw_arguments.clone(),
                             &known_integration_secrets,
+                            computer_use_active,
                         )
                         .await;
                         flavour.record_tool_result(
@@ -1732,16 +1734,20 @@ mod tests {
             .iter()
             .any(|schema| schema["name"] == "computer_observe_window"));
 
-        let ask = cursor_host_tool_schemas("ask", true, true);
+        let ask = cursor_host_tool_schemas("ask", false, true);
         assert!(ask.iter().all(|schema| {
             let name = schema["name"].as_str().expect("ask tool name");
             crate::tools::is_readonly_tool(name)
         }));
         assert!(ask.iter().any(|schema| schema["name"] == "grep"));
-        assert!(ask
+        assert!(!ask
             .iter()
             .any(|schema| schema["name"] == "computer_actions"));
         assert!(!ask.iter().any(|schema| schema["name"] == "write_file"));
+        let ask_authorized = cursor_host_tool_schemas("ask", true, false);
+        assert!(ask_authorized
+            .iter()
+            .any(|schema| schema["name"] == "computer_actions"));
     }
 
     #[test]
