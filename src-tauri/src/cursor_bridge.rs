@@ -126,19 +126,20 @@ impl CursorPassActivity {
     }
 }
 
-fn cursor_host_tool_is_available(name: &str, permission_mode: &str) -> bool {
+fn cursor_host_tool_is_available(
+    name: &str,
+    permission_mode: &str,
+    computer_use_authorized: bool,
+) -> bool {
     let name = crate::tools::normalize_tool_name(name);
-    if matches!(name.as_str(), "done" | "todo_write") {
-        return false;
-    }
-    if crate::tools::is_computer_tool(&name) {
-        return true;
-    }
-    if !crate::tools::is_supported_tool_name(&name) {
-        return false;
-    }
-    let mode = permission_mode.trim().to_ascii_lowercase();
-    !matches!(mode.as_str(), "ask" | "research") || crate::tools::is_readonly_tool(&name)
+    !matches!(name.as_str(), "done" | "todo_write")
+        && crate::tools::is_supported_tool_name(&name)
+        && crate::tools::tool_allowed_for_permission_phase(
+            &name,
+            permission_mode,
+            false,
+            computer_use_authorized,
+        )
 }
 
 /// Convert the desktop's canonical OpenAI function schemas to Cursor custom
@@ -155,7 +156,7 @@ fn cursor_host_tool_schemas(
         .filter_map(|schema| {
             let function = schema.get("function")?;
             let name = function.get("name")?.as_str()?;
-            if !cursor_host_tool_is_available(name, permission_mode) {
+            if !cursor_host_tool_is_available(name, permission_mode, computer_use_enabled) {
                 return None;
             }
             Some(json!({
@@ -339,7 +340,7 @@ async fn execute_cursor_host_tool(
     known_secrets: &[String],
 ) -> (bool, String) {
     let mut name = crate::tools::normalize_tool_name(raw_name);
-    if !cursor_host_tool_is_available(&name, permission_mode) {
+    if !cursor_host_tool_is_available(&name, permission_mode, computer_use_authorized) {
         return (
             false,
             format!(
@@ -1734,7 +1735,7 @@ mod tests {
         let ask = cursor_host_tool_schemas("ask", true, true);
         assert!(ask.iter().all(|schema| {
             let name = schema["name"].as_str().expect("ask tool name");
-            crate::tools::is_readonly_tool(name) || crate::tools::is_computer_tool(name)
+            crate::tools::is_readonly_tool(name)
         }));
         assert!(ask.iter().any(|schema| schema["name"] == "grep"));
         assert!(ask

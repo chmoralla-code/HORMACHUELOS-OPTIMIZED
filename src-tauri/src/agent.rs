@@ -1821,7 +1821,9 @@ pub async fn run_loop(
         note.push_str(&prompt);
         prompt = note;
     }
-    // Classify only the immutable, raw request. Persistent mission briefs and`n    // auto-generated image descriptions are context, never execution intent.`n    let requires_project_completion = task_requires_project_completion(&user_request, task_profile);
+    // Classify only the immutable, raw request. Persistent mission briefs and
+    // auto-generated image descriptions are context, never execution intent.
+    let requires_project_completion = task_requires_project_completion(&user_request, task_profile);
     let permission_mode = normalized_permission_mode(&settings.permission_mode);
     if task_profile.is_design_edit()
         || (permission_mode == "plan" && prompt_unlocks_plan_implementation(&prompt))
@@ -2627,6 +2629,7 @@ The tool entries are historical summaries; use fresh tools for the current works
                 tool_schemas.clone(),
                 &mode,
                 run.plan_implementation_unlocked() || task_profile.is_design_edit(),
+                settings.computer_use_enabled,
             );
             let response = loop {
                 let result = tokio::select! {
@@ -3301,6 +3304,29 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     messages.push(ChatMessage::tool(&tc.id, &tc.name, &denied));
                     continue;
                 }
+                // Enforce the same policy at dispatch time. A malformed or
+                // provider-injected tool call must not bypass schema omission.
+                if !tools::tool_allowed_for_permission_phase(
+                    &tc.name,
+                    &mode,
+                    run.plan_implementation_unlocked() || task_profile.is_design_edit(),
+                    settings.computer_use_enabled,
+                ) {
+                    let denied = format!(
+                        "Tool '{}' is unavailable in {} mode for this request.",
+                        tc.name, mode
+                    );
+                    flavour.record_tool_result(&tc.id, &tc.name, &tc.arguments, false, &denied);
+                    emit(
+                        &app,
+                        &session_id,
+                        "tool_result",
+                        json!({ "id": tc.id, "name": tc.name, "ok": false, "content": denied }),
+                    );
+                    messages.push(ChatMessage::tool(&tc.id, &tc.name, &denied));
+                    continue;
+                }
+
                 // Confirm tools based on permission mode (plan / ask / auto / full)
                 if tools::needs_tool_confirm(&tc.name, &tc.arguments, root, &mode) {
                     let approved = await_tool_confirm(
