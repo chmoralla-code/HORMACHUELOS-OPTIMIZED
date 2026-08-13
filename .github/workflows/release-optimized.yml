@@ -83,8 +83,8 @@ jobs:
             Beta of the independent FPS-focused Windows edition.
 
             Desktop mode:
-            - Settings → Agent → Desktop mode is a separate opt-in from Preview Computer Use
-            - can drive ordinary Windows apps, including Settings brightness, with the native cursor
+            - Preview sandwich (hamburger) → Desktop mode is a separate opt-in from Preview Computer Use
+            - can drive ordinary Windows apps, including Windows Settings brightness, with the native cursor
             - uses an allowed-apps list, or all ordinary windows when the list is empty
             - blocks password managers, Windows Security, terminals, Run, ChatGPT, Codex, and Hormachuelos
             - shares Ctrl+Alt+Esc with Preview Computer Use as the emergency stop

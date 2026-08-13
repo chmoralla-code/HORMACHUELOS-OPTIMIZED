@@ -78,3 +78,21 @@ test("Preview Computer Use exposes Off Auto On and prompt-intent activation", as
   assert.match(config, /default_computer_use_prompt_activation/);
   assert.match(css, /\.site-preview-computer-modes/);
 });
+
+test("Preview sandwich exposes Desktop mode next to Computer Use", async () => {
+  const [preview, css, main] = await Promise.all([
+    read("src/components/site-preview.ts"),
+    read("src/theme/workspace.css"),
+    read("src/main.ts"),
+  ]);
+  assert.match(preview, /site-preview-desktop-use/);
+  assert.match(preview, /\["Desktop mode"\]/);
+  assert.match(preview, /desktop_computer_use_enabled/);
+  assert.match(preview, /desktop_computer_use_allowed_apps/);
+  assert.match(preview, /WINDOWS APPS OUTSIDE PREVIEW/);
+  assert.match(preview, /horma:desktop-computer-use-changed/);
+  assert.match(css, /\.site-preview-desktop-use/);
+  assert.match(css, /\.site-preview-desktop-modes/);
+  assert.match(main, /horma:desktop-computer-use-changed/);
+  assert.match(main, /desktop_computer_use_enabled = event\.detail\?\.enabled === true/);
+});

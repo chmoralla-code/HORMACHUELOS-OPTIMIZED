@@ -653,7 +653,7 @@ export function getProviderMeta(id: string) {
     (isHostedProviderAlias(normalized) ? fallbackHostedProvider(normalized) : undefined);
 }
 
-function normalizeAllowedApps(value: unknown): string[] {
+export function normalizeAllowedApps(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const cleaned: string[] = [];
   for (const item of value) {

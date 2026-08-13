@@ -3,6 +3,7 @@ import {
   api,
   type AgentTaskProfile,
   type ComputerUseStatus,
+  type DesktopComputerUseStatus,
   type DesignDomContext,
   type DesignSourceLocation,
   type DesignTargetProbe,
@@ -26,6 +27,7 @@ import {
   isExternalPreviewUrl,
   previewTabKindForEntry,
 } from "./preview-url-policy";
+import { normalizeAllowedApps } from "./settings";
 
 export { isExternalPreviewUrl } from "./preview-url-policy";
 
@@ -843,6 +845,12 @@ export class SitePreview {
   private computerUseStatus: ComputerUseStatus | null = null;
   private computerUseBusy = false;
   private computerUseMessage = "";
+  private desktopComputerUseControl: HTMLElement;
+  private desktopComputerUseEnabled = false;
+  private desktopComputerUseAllowedApps: string[] = [];
+  private desktopComputerUseStatus: DesktopComputerUseStatus | null = null;
+  private desktopComputerUseBusy = false;
+  private desktopComputerUseMessage = "";
   private buildMenuToggle: HTMLButtonElement;
   private buildMenu: HTMLElement;
   private buildMenuCleanup: (() => void) | null = null;
@@ -1109,7 +1117,12 @@ export class SitePreview {
       class: "site-preview-computer-use",
       "aria-label": "Preview Computer Use",
     });
+    this.desktopComputerUseControl = el("section", {
+      class: "site-preview-computer-use site-preview-desktop-use",
+      "aria-label": "Desktop mode",
+    });
     this.renderComputerUseControl();
+    this.renderDesktopComputerUseControl();
     void this.refreshComputerUseControl();
 
     const actions = el("div", { class: "site-preview-actions" });
@@ -1133,6 +1146,7 @@ export class SitePreview {
     });
     this.previewActionsMenu.append(
       this.computerUseControl,
+      this.desktopComputerUseControl,
       buildLauncher,
       this.makePublicBtn,
       this.androidBtn,
@@ -1449,9 +1463,10 @@ export class SitePreview {
 
   public async refreshComputerUseControl(): Promise<void> {
     try {
-      const [settings, status] = await Promise.all([
+      const [settings, status, desktopStatus] = await Promise.all([
         api.getSettings(),
         api.getComputerUseStatus(),
+        api.getDesktopComputerUseStatus().catch(() => null),
       ]);
       this.computerUseMode = settings.computer_use_enabled
         ? "on"
@@ -1460,10 +1475,17 @@ export class SitePreview {
           : "off";
       this.computerUseStatus = status;
       this.computerUseMessage = "";
+      this.desktopComputerUseEnabled = !!settings.desktop_computer_use_enabled;
+      this.desktopComputerUseAllowedApps = normalizeAllowedApps(
+        settings.desktop_computer_use_allowed_apps,
+      );
+      this.desktopComputerUseStatus = desktopStatus;
+      this.desktopComputerUseMessage = "";
     } catch (error) {
       this.computerUseMessage = "Computer Use settings unavailable: " + String(error);
     }
     this.renderComputerUseControl();
+    this.renderDesktopComputerUseControl();
   }
 
   private renderComputerUseControl() {
@@ -1603,6 +1625,250 @@ export class SitePreview {
       this.renderComputerUseControl();
     }
   }
+
+  private renderDesktopComputerUseControl() {
+    clear(this.desktopComputerUseControl);
+    const status = this.desktopComputerUseStatus;
+    const supported = status?.supported === true;
+    const paused = status?.paused === true;
+    const enabled = this.desktopComputerUseEnabled;
+
+    const head = el("div", { class: "site-preview-computer-head" });
+    const titleWrap = el("div", { class: "site-preview-computer-title-wrap" });
+    titleWrap.append(
+      el("span", { class: "site-preview-computer-pulse", "aria-hidden": "true" }),
+      el("span", { class: "site-preview-computer-title" }, ["Desktop mode"]),
+    );
+    const badgeText = paused
+      ? "Paused"
+      : !status
+        ? "Loading"
+        : !supported
+          ? "Unavailable"
+          : enabled
+            ? "On"
+            : "Off";
+    const badge = el("span", {
+      class: "site-preview-computer-badge is-" + (paused ? "paused" : enabled ? "on" : "off"),
+      role: "status",
+      "aria-live": "polite",
+    }, [badgeText]);
+    head.append(titleWrap, badge);
+
+    const copy = el("div", { class: "site-preview-computer-copy" }, [
+      "Control ordinary Windows apps outside Preview, including Settings brightness.",
+    ]);
+    const modes = el("div", {
+      class: "site-preview-computer-modes site-preview-desktop-modes",
+      role: "radiogroup",
+      "aria-label": "Desktop mode",
+    });
+    for (const definition of [
+      { id: false, label: "Off", title: "Block Desktop mode until you turn it on here." },
+      { id: true, label: "On", title: "Let the agent click, type, scroll, and drag ordinary Windows apps." },
+    ] as const) {
+      const selected = definition.id === enabled;
+      const button = el("button", {
+        class: "site-preview-computer-mode" + (selected ? " is-selected" : ""),
+        type: "button",
+        role: "radio",
+        "aria-checked": String(selected),
+        title: definition.title,
+        disabled: String(this.desktopComputerUseBusy || !supported),
+      }, [definition.label]) as HTMLButtonElement;
+      button.disabled = this.desktopComputerUseBusy || !supported;
+      button.addEventListener("click", () => {
+        void this.setDesktopComputerUseEnabled(definition.id);
+      });
+      modes.appendChild(button);
+    }
+
+    const foot = el("div", { class: "site-preview-computer-foot" });
+    foot.appendChild(el("span", {}, [
+      enabled
+        ? "Password managers, terminals, and Hormachuelos stay blocked."
+        : "Off by default. Preview Computer Use above is unchanged.",
+    ]));
+    if (paused && supported) {
+      const resume = el("button", {
+        class: "site-preview-computer-resume",
+        type: "button",
+      }, ["Resume"]) as HTMLButtonElement;
+      resume.addEventListener("click", async () => {
+        resume.disabled = true;
+        try {
+          await api.setComputerUsePaused(false);
+          this.desktopComputerUseStatus = await api.getDesktopComputerUseStatus()
+            .catch(() => this.desktopComputerUseStatus);
+          this.computerUseStatus = await api.getComputerUseStatus()
+            .catch(() => this.computerUseStatus);
+          this.desktopComputerUseMessage = "Desktop mode resumed.";
+        } catch (error) {
+          this.desktopComputerUseMessage = "Could not resume: " + String(error);
+        }
+        this.renderComputerUseControl();
+        this.renderDesktopComputerUseControl();
+      });
+      foot.appendChild(resume);
+    }
+
+    this.desktopComputerUseControl.append(head, copy, modes, foot);
+
+    const apps = el("div", { class: "site-preview-desktop-apps" });
+    apps.appendChild(el("div", { class: "site-preview-desktop-apps-label" }, ["Allowed apps"]));
+    const chips = el("div", { class: "site-preview-desktop-chips" });
+    const names = this.desktopComputerUseAllowedApps;
+    if (!names.length) {
+      chips.appendChild(
+        el("span", { class: "site-preview-desktop-empty" }, [
+          "Empty = all ordinary apps except the safety blocklist",
+        ]),
+      );
+    } else {
+      for (const name of names) {
+        const chip = el("span", { class: "site-preview-desktop-chip" }, [name]);
+        const remove = el("button", {
+          class: "site-preview-desktop-chip-remove",
+          type: "button",
+          "aria-label": "Remove " + name,
+        }, ["×"]) as HTMLButtonElement;
+        remove.disabled = this.desktopComputerUseBusy;
+        remove.addEventListener("click", () => {
+          void this.setDesktopComputerUseAllowedApps(
+            this.desktopComputerUseAllowedApps.filter((item) => item !== name),
+          );
+        });
+        chip.appendChild(remove);
+        chips.appendChild(chip);
+      }
+    }
+    apps.appendChild(chips);
+
+    const addRow = el("div", { class: "site-preview-desktop-add" });
+    const addInput = el("input", {
+      class: "site-preview-desktop-add-input",
+      type: "text",
+      placeholder: "notepad.exe",
+      "aria-label": "Process name to allow",
+    }) as HTMLInputElement;
+    const addButton = el("button", {
+      class: "site-preview-desktop-add-btn",
+      type: "button",
+    }, ["Add"]) as HTMLButtonElement;
+    const pinButton = el("button", {
+      class: "site-preview-desktop-add-btn",
+      type: "button",
+      title: "Pin a currently open window",
+    }, ["Pin"]) as HTMLButtonElement;
+    const addName = (raw: string) => {
+      void this.setDesktopComputerUseAllowedApps(normalizeAllowedApps([
+        ...this.desktopComputerUseAllowedApps,
+        raw,
+      ]));
+    };
+    addButton.disabled = this.desktopComputerUseBusy;
+    pinButton.disabled = this.desktopComputerUseBusy;
+    addButton.addEventListener("click", () => {
+      addName(addInput.value);
+      addInput.value = "";
+    });
+    addInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      addName(addInput.value);
+      addInput.value = "";
+    });
+    pinButton.addEventListener("click", async () => {
+      pinButton.disabled = true;
+      try {
+        const listed = await api.listComputerUseTargets();
+        const windows = listed.windows || [];
+        if (!windows.length) {
+          this.desktopComputerUseMessage = "No ordinary windows are currently targetable.";
+          this.renderDesktopComputerUseControl();
+          return;
+        }
+        const choice = windows
+          .map((window) => `${window.processName} — ${window.title}`)
+          .join("\n");
+        const picked = prompt("Type the process name to pin, for example notepad.exe:\n\n" + choice);
+        if (picked) addName(picked);
+      } catch (error) {
+        this.desktopComputerUseMessage = "Could not list windows: " + String(error);
+        this.renderDesktopComputerUseControl();
+      } finally {
+        pinButton.disabled = false;
+      }
+    });
+    addRow.append(addInput, addButton, pinButton);
+    apps.appendChild(addRow);
+    this.desktopComputerUseControl.appendChild(apps);
+
+    if (this.desktopComputerUseMessage) {
+      this.desktopComputerUseControl.appendChild(
+        el("div", { class: "site-preview-computer-message", role: "status" }, [
+          this.desktopComputerUseMessage,
+        ]),
+      );
+    }
+    this.desktopComputerUseControl.appendChild(
+      el("div", { class: "site-preview-computer-scope" }, [
+        "WINDOWS APPS OUTSIDE PREVIEW · EMERGENCY STOP CTRL+ALT+ESC",
+      ]),
+    );
+  }
+
+  private async setDesktopComputerUseEnabled(enabled: boolean): Promise<void> {
+    if (this.desktopComputerUseBusy || enabled === this.desktopComputerUseEnabled) return;
+    await this.persistDesktopComputerUse({ enabled });
+  }
+
+  private async setDesktopComputerUseAllowedApps(allowedApps: string[]): Promise<void> {
+    if (this.desktopComputerUseBusy) return;
+    await this.persistDesktopComputerUse({ allowedApps });
+  }
+
+  private async persistDesktopComputerUse(partial: {
+    enabled?: boolean;
+    allowedApps?: string[];
+  }): Promise<void> {
+    const previousEnabled = this.desktopComputerUseEnabled;
+    const previousApps = this.desktopComputerUseAllowedApps.slice();
+    if (partial.enabled !== undefined) this.desktopComputerUseEnabled = partial.enabled;
+    if (partial.allowedApps) this.desktopComputerUseAllowedApps = partial.allowedApps;
+    this.desktopComputerUseBusy = true;
+    this.desktopComputerUseMessage = partial.enabled !== undefined
+      ? (partial.enabled ? "Turning Desktop mode on…" : "Turning Desktop mode off…")
+      : "Saving allowed apps…";
+    this.renderDesktopComputerUseControl();
+    try {
+      const settings = await api.getSettings();
+      settings.desktop_computer_use_enabled = this.desktopComputerUseEnabled;
+      settings.desktop_computer_use_allowed_apps = this.desktopComputerUseAllowedApps;
+      await api.saveSettings(settings);
+      this.desktopComputerUseStatus = await api.getDesktopComputerUseStatus()
+        .catch(() => this.desktopComputerUseStatus);
+      this.desktopComputerUseMessage = this.desktopComputerUseEnabled
+        ? (this.desktopComputerUseAllowedApps.length
+          ? "Desktop mode is on for pinned apps."
+          : "Desktop mode is on for ordinary Windows apps.")
+        : "Desktop mode is off until you turn it on here.";
+      window.dispatchEvent(new CustomEvent("horma:desktop-computer-use-changed", {
+        detail: {
+          enabled: this.desktopComputerUseEnabled,
+          allowedApps: this.desktopComputerUseAllowedApps,
+        },
+      }));
+    } catch (error) {
+      this.desktopComputerUseEnabled = previousEnabled;
+      this.desktopComputerUseAllowedApps = previousApps;
+      this.desktopComputerUseMessage = "Could not save Desktop mode: " + String(error);
+    } finally {
+      this.desktopComputerUseBusy = false;
+      this.renderDesktopComputerUseControl();
+    }
+  }
+
   private togglePreviewActionsMenu() {
     if (this.previewActionsMenu.hidden) this.openPreviewActionsMenu();
     else this.closePreviewActionsMenu(true);

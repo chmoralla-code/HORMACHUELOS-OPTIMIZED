@@ -2459,6 +2459,16 @@ async function init() {
     modelBar.settings.computer_use_prompt_activation =
       event.detail?.promptActivation !== false;
   }) as EventListener);
+  window.addEventListener("horma:desktop-computer-use-changed", ((event: CustomEvent<{
+    enabled?: boolean;
+    allowedApps?: string[];
+  }>) => {
+    if (!modelBar.settings) return;
+    modelBar.settings.desktop_computer_use_enabled = event.detail?.enabled === true;
+    if (Array.isArray(event.detail?.allowedApps)) {
+      modelBar.settings.desktop_computer_use_allowed_apps = event.detail.allowedApps;
+    }
+  }) as EventListener);
   await refreshProviderReadiness().catch(() => false);
   // Prefer website plan usage; fall back to local license.json if website had none.
   if (!planActive) {

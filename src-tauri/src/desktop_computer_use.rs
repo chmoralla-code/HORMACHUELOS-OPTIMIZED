@@ -296,7 +296,7 @@ fn clear_pause_sentinel() -> Result<()> {
 fn ensure_not_paused() -> Result<()> {
     ensure!(
         !is_paused(),
-        "Computer Use is paused. Resume it in Settings before continuing."
+        "Computer Use is paused. Resume it from the Preview sandwich menu before continuing."
     );
     Ok(())
 }

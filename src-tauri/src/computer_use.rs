@@ -296,7 +296,7 @@ pub fn execute_tool(
 ) -> Result<Value> {
     ensure!(
         !is_paused(),
-        "Preview Computer Use is paused. Resume it in Settings before continuing."
+        "Preview Computer Use is paused. Resume it from the Preview sandwich menu before continuing."
     );
     let operation = validate_tool_request(name, args)?;
     let app = APP

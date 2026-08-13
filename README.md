@@ -59,13 +59,13 @@ Located in `src-tauri/target/release/` (exe) and `src-tauri/target/release/bundl
 
 ## Computer use
 
-Preview Computer Use stays Preview-only: **Settings → Agent → Computer use** Off / Auto / On.
+Preview Computer Use stays Preview-only: open the Preview sandwich (hamburger) menu and set **Computer Use** to Off / Auto / On.
 
-Desktop mode is a separate opt-in: **Settings → Agent → Desktop mode**. When enabled, the agent can control ordinary Windows apps outside Hormachuelos — including Settings (brightness, display) — with the cursor.
+Desktop mode is a separate opt-in on that same sandwich: **Desktop mode**. When enabled, the agent can control ordinary Windows apps outside Hormachuelos — including Windows Settings (brightness, display) — with the cursor.
 
 - Preview tools (`computer_observe`, `computer_actions`) never leave the active Preview tab.
 - Desktop tools (`computer_list_windows`, `computer_observe_window`, click/type/scroll/drag) target native windows.
-- Pin allowed apps in Settings, or leave the list empty to allow all ordinary windows except the safety blocklist.
+- Pin allowed apps in the sandwich menu, or leave the list empty to allow all ordinary windows except the safety blocklist.
 - Terminal, Run, authentication, password-manager, Windows Security/privacy, ChatGPT, Codex, and Hormachuelos windows are blocked.
 - Press **Ctrl+Alt+Esc** at any time to pause Preview and Desktop actions and stop active runs.
 
