@@ -716,8 +716,24 @@ fn task_likely_requires_project_completion(prompt: &str) -> bool {
         || (has_execution_action && has_execution_target)
 }
 
-fn task_requires_project_completion(prompt: &str, profile: AgentTaskProfile) -> bool {
-    profile.is_design_edit() || task_likely_requires_project_completion(prompt)
+fn user_request_without_attachment_markers(request: &str) -> String {
+    let image_marker = regex::Regex::new(r"(?im)^\s*\[Attached image:\s*.+?\]\s*$").ok();
+    let video_marker = regex::Regex::new(r"(?im)^\s*\[Attached video:\s*.+?\]\s*$").ok();
+    let without_images = image_marker
+        .as_ref()
+        .map(|pattern| pattern.replace_all(request, "").into_owned())
+        .unwrap_or_else(|| request.to_string());
+    video_marker
+        .as_ref()
+        .map(|pattern| pattern.replace_all(&without_images, "").trim().to_string())
+        .unwrap_or_else(|| without_images.trim().to_string())
+}
+
+fn task_requires_project_completion(user_request: &str, profile: AgentTaskProfile) -> bool {
+    profile.is_design_edit()
+        || task_likely_requires_project_completion(&user_request_without_attachment_markers(
+            user_request,
+        ))
 }
 
 /// Prior session turn for agent memory (from the frontend transcript).
@@ -1805,7 +1821,7 @@ pub async fn run_loop(
         note.push_str(&prompt);
         prompt = note;
     }
-    let requires_project_completion = task_requires_project_completion(&prompt, task_profile);
+    // Classify only the immutable, raw request. Persistent mission briefs and`n    // auto-generated image descriptions are context, never execution intent.`n    let requires_project_completion = task_requires_project_completion(&user_request, task_profile);
     let permission_mode = normalized_permission_mode(&settings.permission_mode);
     if task_profile.is_design_edit()
         || (permission_mode == "plan" && prompt_unlocks_plan_implementation(&prompt))

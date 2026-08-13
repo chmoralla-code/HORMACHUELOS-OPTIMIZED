@@ -313,15 +313,37 @@ pub fn is_plan_locked_tool(name: &str) -> bool {
 pub const PLAN_LOCK_MESSAGE: &str = "Plan mode is still planning. Do not write, edit, or modify files. Present the plan, ask any needed questions with ask_user, and wait until the user confirms they want to apply and implement the plan.";
 
 /// Hide mutating tools while Plan mode is locked so the model cannot call them.
+pub fn tool_allowed_for_permission_phase(
+    name: &str,
+    mode: &str,
+    plan_unlocked: bool,
+    computer_use_authorized: bool,
+) -> bool {
+    let mode = mode.trim().to_ascii_lowercase();
+    if mode == "plan" && !plan_unlocked {
+        return !is_plan_locked_tool(name);
+    }
+    if matches!(mode.as_str(), "ask" | "research") {
+        if is_computer_action_tool(name) {
+            return computer_use_authorized;
+        }
+        if is_computer_tool(name) {
+            return is_computer_readonly_tool(name);
+        }
+        return is_readonly_tool(name);
+    }
+    true
+}
+
+/// Canonical schema policy shared by native and Cursor providers. Ask never
+/// advertises workspace mutations, and Preview Computer Use actions are present
+/// only when the current run carries explicit authorization.
 pub fn schemas_for_permission_phase(
     all: Vec<Value>,
     mode: &str,
     plan_unlocked: bool,
+    computer_use_authorized: bool,
 ) -> Vec<Value> {
-    let mode = mode.trim().to_ascii_lowercase();
-    if mode != "plan" || plan_unlocked {
-        return all;
-    }
     all.into_iter()
         .filter(|schema| {
             let name = schema
@@ -329,7 +351,12 @@ pub fn schemas_for_permission_phase(
                 .and_then(|function| function.get("name"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            !is_plan_locked_tool(name)
+            tool_allowed_for_permission_phase(
+                name,
+                mode,
+                plan_unlocked,
+                computer_use_authorized,
+            )
         })
         .collect()
 }
@@ -479,7 +506,7 @@ mod permission_mode_tests {
     use super::{
         execute, is_parallel_safe_readonly_tool, is_plan_locked_tool, is_supported_tool_name,
         needs_tool_confirm, normalize_tool_arguments, normalize_tool_name, schemas,
-        schemas_for_permission_phase, schemas_with, ToolRunContext, PLAN_LOCK_MESSAGE,
+        schemas_for_permission_phase, schemas_with, tool_allowed_for_permission_phase, ToolRunContext, PLAN_LOCK_MESSAGE,
     };
     use serde_json::json;
     use std::collections::BTreeSet;
@@ -590,7 +617,7 @@ mod permission_mode_tests {
             root,
             "plan"
         ));
-        let planning = schemas_for_permission_phase(schemas(true), "plan", false);
+        let planning = schemas_for_permission_phase(schemas(true), "plan", false, false);
         let names: Vec<String> = planning
             .iter()
             .map(|schema| schema["function"]["name"].as_str().unwrap().to_string())
@@ -600,13 +627,37 @@ mod permission_mode_tests {
         assert!(!names.contains(&"write_file".into()));
         assert!(!names.contains(&"edit_file".into()));
         assert!(!names.contains(&"run_command".into()));
-        let unlocked = schemas_for_permission_phase(schemas(true), "plan", true);
+        let unlocked = schemas_for_permission_phase(schemas(true), "plan", true, false);
         assert!(unlocked
             .iter()
             .any(|schema| schema["function"]["name"] == "write_file"));
         assert!(PLAN_LOCK_MESSAGE.contains("ask_user"));
     }
 
+    #[test]
+    fn ask_schema_and_dispatch_policy_are_read_only_with_explicit_computer_actions() {
+        let ordinary = schemas_for_permission_phase(schemas_with(true, true), "ask", false, false);
+        let ordinary_names = ordinary
+            .iter()
+            .filter_map(|schema| schema["function"]["name"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(ordinary_names.contains("read_file"));
+        assert!(ordinary_names.contains("computer_observe"));
+        assert!(!ordinary_names.contains("computer_actions"));
+        assert!(!ordinary_names.contains("write_file"));
+        assert!(!tool_allowed_for_permission_phase("write_file", "ask", false, false));
+
+        let authorized = schemas_for_permission_phase(schemas_with(true, false), "ask", false, true);
+        assert!(authorized
+            .iter()
+            .any(|schema| schema["function"]["name"] == "computer_actions"));
+        assert!(tool_allowed_for_permission_phase(
+            "computer_actions",
+            "ask",
+            false,
+            true
+        ));
+    }
     #[test]
     fn registered_schemas_always_have_a_supported_dispatch_name() {
         for preview in [false, true] {
