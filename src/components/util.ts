@@ -398,6 +398,52 @@ function normalizePlainAssistantMarkdown(src: string): string {
   return normalizeCompletionBlock(lines).join("\n");
 }
 
+function isProcessSentence(sentence: string): boolean {
+  const lower = sentence.trim().replace(/^["'`*]+/, "").toLowerCase();
+  if (!lower) return false;
+  if (
+    lower.includes("auto-view timed out") ||
+    lower.includes("autoview timed out") ||
+    lower.includes("let me call view_image") ||
+    lower.includes("call view_image on") ||
+    lower.includes("pure description request") ||
+    lower.includes("no tools needed")
+  ) {
+    return true;
+  }
+  return [
+    "the user wants",
+    "the user just wants",
+    "the user asked",
+    "the user is asking",
+    "this is a pure",
+    "let me describe",
+    "i'll describe",
+    "i will describe",
+    "let me call",
+    "let me look",
+    "okay, the user",
+    "ok, the user",
+  ].some((prefix) => lower.startsWith(prefix));
+}
+
+/** Drop leading thought/tool narration so the bubble starts on the real answer. */
+export function stripProcessPreamble(text: string): string {
+  let remaining = String(text || "");
+  while (remaining) {
+    const match = remaining.match(/^[\s\S]*?(?:[.!?…]|\n|$)/);
+    const sentence = match?.[0] || remaining;
+    if (!sentence) break;
+    if (!sentence.trim()) {
+      remaining = remaining.slice(sentence.length);
+      continue;
+    }
+    if (!isProcessSentence(sentence)) return remaining.trimStart();
+    remaining = remaining.slice(sentence.length);
+  }
+  return remaining.trim();
+}
+
 /**
  * Make an assistant response pleasant to scan without changing meaningful
  * Markdown. This deliberately skips fenced code blocks, where exact content
@@ -405,7 +451,8 @@ function normalizePlainAssistantMarkdown(src: string): string {
  */
 export function normalizeAssistantMarkdown(src: string): string {
   if (!src) return "";
-  const normalized = src.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+  const stripped = stripProcessPreamble(src);
+  const normalized = stripped.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
   return normalized
     .split(/(```[\s\S]*?```)/g)
     .map((segment, index) => (index % 2 === 1 ? segment : normalizePlainAssistantMarkdown(segment)))

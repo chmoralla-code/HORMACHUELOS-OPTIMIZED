@@ -37,6 +37,43 @@ export type SessionMultiAgentTool = {
 };
 
 /**
+ * True when the latest assistant prose is still mid-sentence / mid-list so a
+ * later chunk (after a thought or tool row) must stitch into the same bubble.
+ */
+export function assistantReplyLooksOpen(text: string): boolean {
+  const trimmed = String(text || "").replace(/\s+$/u, "");
+  if (!trimmed) return true;
+  const fenceCount = (trimmed.match(/```/g) || []).length;
+  if (fenceCount % 2 === 1) return true;
+  const lastLine = trimmed.split("\n").pop() || "";
+  if (/^\s*(?:[-*]|[\d]+[.)])\s+\S/.test(lastLine) && !/[.!?…]["'”’)\]}]*$/.test(lastLine.trim())) {
+    return true;
+  }
+  const visible = trimmed.replace(/[*_`]+$/g, "").trimEnd();
+  if (/[:：—–]$/.test(visible)) return true;
+  if (/[.!?…]["'”’)\]}]*$/.test(visible)) return false;
+  return true;
+}
+
+function latestAssistantIndexInRun(messages: SessionMessage[], fromIndex: number): number {
+  for (let index = fromIndex; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.type === "assistant") return index;
+    if (
+      message.type === "user" ||
+      message.type === "run_start" ||
+      message.type === "question" ||
+      message.type === "done" ||
+      message.type === "end" ||
+      message.type === "cancelled"
+    ) {
+      break;
+    }
+  }
+  return -1;
+}
+
+/**
  * Store one streamed assistant chunk while preserving intentional transcript
  * boundaries. Provider recovery can insert thinking/status events between a
  * cut-off prefix and its resumed suffix; `resumePrevious` reconnects only that
@@ -55,23 +92,12 @@ export function appendAssistantTranscriptChunk(
   const lastIndex = messages.length - 1;
   if (lastIndex >= 0 && messages[lastIndex].type === "assistant") {
     assistantIndex = lastIndex;
-  } else if (resumePrevious) {
-    for (let index = lastIndex; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.type === "assistant") {
-        assistantIndex = index;
-        break;
-      }
-      // Never let a recovery marker reach into a prior run or user turn.
-      if (
-        message.type === "user" ||
-        message.type === "run_start" ||
-        message.type === "question" ||
-        message.type === "done" ||
-        message.type === "end" ||
-        message.type === "cancelled"
-      ) {
-        break;
+  } else {
+    const found = latestAssistantIndexInRun(messages, lastIndex);
+    if (found >= 0) {
+      const previous = messages[found] as Extract<SessionMessage, { type: "assistant" }>;
+      if (resumePrevious || assistantReplyLooksOpen(previous.text)) {
+        assistantIndex = found;
       }
     }
   }

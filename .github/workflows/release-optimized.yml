@@ -82,6 +82,11 @@ jobs:
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
+            This release (1.2.8-1):
+            - Computer Use opens Preview and a Browser tab from the prompt instead of asking the user to open Preview
+            - Attached images are described in one Grok vision pass (Gemini 2.0 fallback), without leaking HTTP or provider errors
+            - Ask mode answers image questions in short visible replies and does not start Smart Agent or call done
+
             Plan mode:
             - File writes, edits, commands, and other mutations stay locked until the user confirms Apply
             - The model must present a plan and ask questions first, including Apply vs keep planning

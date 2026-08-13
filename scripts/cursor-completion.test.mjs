@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createCompletionMarkerFilter } from "./cursor-bridge.mjs";
+import { createCompletionMarkerFilter, conclusionFromReasoning } from "./cursor-bridge.mjs";
 
 const MARKER = "[[HORMACHUELOS_TASK_COMPLETE]]";
 
@@ -26,4 +26,31 @@ test("missing completion marker remains eligible for automatic follow-up", () =>
 
   assert.equal(visible.join(""), "Still running verification.");
   assert.equal(filter.completed, false);
+});
+
+test("conclusionFromReasoning promotes a finished thought and skips meta narration", () => {
+  assert.match(
+    conclusionFromReasoning(
+      "This screenshot is an employee onboarding form with name, email, and start date fields.",
+    ),
+    /onboarding form/,
+  );
+  assert.equal(
+    conclusionFromReasoning(
+      "The user just wants a description of the images. Let me describe them.",
+    ),
+    "",
+  );
+  assert.match(
+    conclusionFromReasoning(
+      "The user wants me to describe the attached images. The auto-view timed out. Here's what I see in the three images: a COMMAND logo.",
+    ),
+    /COMMAND logo/,
+  );
+  assert.doesNotMatch(
+    conclusionFromReasoning(
+      "The user wants me to describe the attached images. The auto-view timed out. Here's what I see in the three images: a COMMAND logo.",
+    ),
+    /auto-view timed out/i,
+  );
 });

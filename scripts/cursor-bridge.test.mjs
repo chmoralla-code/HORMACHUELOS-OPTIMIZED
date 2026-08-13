@@ -67,14 +67,18 @@ test("sandbox is disabled because the bundled runtime lacks sandbox helpers", ()
   assert.deepEqual(resolveSandboxOptions(), { enabled: false });
 });
 
-test("ask/research stay read-only; plan blocks Cursor builtins but keeps host tools", () => {
+test("ask/research stay file-write locked; plan blocks Cursor builtins but keeps host tools", () => {
   const ask = resolveExecutionPolicy("ask");
   assert.equal(isToolAllowed(ask, "read"), true);
   assert.equal(isToolAllowed(ask, "grep"), true);
   assert.equal(isToolAllowed(ask, "TodoWrite"), true);
   assert.equal(isToolAllowed(ask, "todo_write"), true);
   assert.equal(isToolAllowed(ask, "update_todos"), true);
+  assert.equal(isToolAllowed(ask, "computer_actions"), true);
+  assert.equal(isToolAllowed(ask, "open_path"), true);
   assert.equal(isToolAllowed(ask, "write"), false);
+  assert.equal(isToolAllowed(ask, "write_file"), false);
+  assert.equal(isToolAllowed(ask, "run_command"), false);
   assert.equal(isToolAllowed(ask, "shell"), false);
   assert.equal(isToolAllowed(ask, "third_party_tool"), false);
   assert.equal(isToolAllowed(resolveExecutionPolicy("research"), "shell"), false);

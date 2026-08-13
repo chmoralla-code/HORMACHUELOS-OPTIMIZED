@@ -138,7 +138,10 @@ fn cursor_host_tool_is_available(name: &str, permission_mode: &str) -> bool {
         return false;
     }
     let mode = permission_mode.trim().to_ascii_lowercase();
-    !matches!(mode.as_str(), "ask" | "research") || crate::tools::is_readonly_tool(&name)
+    if matches!(mode.as_str(), "ask" | "research") {
+        return !crate::tools::is_file_mutating_tool(&name);
+    }
+    true
 }
 
 /// Convert the desktop's canonical OpenAI function schemas to Cursor custom
@@ -313,7 +316,7 @@ async fn await_cursor_question(
         if crate::agent::ask_user_confirms_plan_implementation(&response.1, &question) {
             run.set_plan_implementation_unlocked(true);
             response.1.push_str(
-                "\n\n[System] The user confirmed Apply. You may now write, edit, and run commands to implement the agreed plan. Mutating tools are unlocked.",
+                "\n\n[System] The user confirmed Apply. Switched to implementing. You may now write, edit, and run commands to implement the agreed plan.",
             );
         } else if !run.plan_implementation_unlocked() {
             response.1.push_str(
@@ -355,9 +358,8 @@ async fn execute_cursor_host_tool(
     };
     crate::tools::normalize_tool_arguments(&name, &mut arguments);
 
-    if permission_mode.eq_ignore_ascii_case("plan")
-        && !run.plan_implementation_unlocked()
-        && crate::tools::is_plan_locked_tool(&name)
+    if crate::tools::file_writes_blocked(permission_mode, run.plan_implementation_unlocked())
+        && crate::tools::is_file_mutating_tool(&name)
     {
         return (false, crate::tools::PLAN_LOCK_MESSAGE.to_string());
     }
@@ -1734,13 +1736,15 @@ mod tests {
         let ask = cursor_host_tool_schemas("ask", true, true);
         assert!(ask.iter().all(|schema| {
             let name = schema["name"].as_str().expect("ask tool name");
-            crate::tools::is_readonly_tool(name) || crate::tools::is_computer_tool(name)
+            !crate::tools::is_file_mutating_tool(name)
         }));
         assert!(ask.iter().any(|schema| schema["name"] == "grep"));
+        assert!(ask.iter().any(|schema| schema["name"] == "open_path"));
         assert!(ask
             .iter()
             .any(|schema| schema["name"] == "computer_actions"));
         assert!(!ask.iter().any(|schema| schema["name"] == "write_file"));
+        assert!(!ask.iter().any(|schema| schema["name"] == "run_command"));
     }
 
     #[test]

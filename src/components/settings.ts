@@ -1391,9 +1391,9 @@ export class SettingsModal {
     body.appendChild(this.field("Permission mode", () => {
       const sel = el("select", { class: "field" }) as HTMLSelectElement;
       for (const [value, label] of [
-        ["plan", "Plan — refine request, suggest options, numbered plan; wait for Apply before file changes"],
+        ["plan", "Plan — refine request, suggest options, numbered plan; file writes locked until Apply (then Multi-Agent)"],
         ["auto", "Auto — build with defaults; confirm delete/kill/outside project"],
-        ["ask", "Ask — investigate code with evidence; reads free, writes need Approve"],
+        ["ask", "Ask — answer with evidence; all tools except file create/write/edit"],
         ["full", "Full — maximum autonomy, zero desktop prompts"],
         ["multi_agent", "Multi-Agent — Ship permission; independent workspace checks run together"],
       ] as const) {
@@ -1409,7 +1409,7 @@ export class SettingsModal {
       return sel;
     }));
     body.appendChild(el("div", { class: "set-hint", style: "margin-top:-6px;margin-bottom:12px" }, [
-      "Plan: improve brief, options, and questions first. File changes stay locked until you confirm Apply. Ask: explore & answer with evidence (reads free). Auto: implement in-project quickly. Full: no tool prompts. Multi-Agent: Ship-level access with safe independent workspace checks started together. Same switch sits next to the chat box.",
+      "Plan: improve brief, options, and questions first. File writes stay locked until you confirm Apply, which switches to Multi-Agent. Ask: answer with evidence using any tool except file create/write/edit. Auto: implement in-project quickly. Full: no tool prompts. Multi-Agent: Ship-level access with safe independent workspace checks started together. Hormachuelos also auto-switches Ask / Plan / Multi-Agent from the request. Same switch sits next to the chat box.",
     ]));
 
     body.appendChild(this.renderComputerUsePanel());

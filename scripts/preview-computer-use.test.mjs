@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import {
+  extractPreviewBrowserUrlFromPrompt,
   isExternalPreviewUrl,
   previewTabKindForEntry,
 } from "../src/components/preview-url-policy.ts";
@@ -15,6 +16,7 @@ const preview = read("src/components/site-preview.ts");
 const frameController = read("src/components/preview-computer-use.ts");
 const browserController = read("src-tauri/src/preview_browser.rs");
 const agent = read("src-tauri/src/agent.rs");
+const main = read("src/main.ts");
 const cursorNodeBridge = read("scripts/cursor-bridge.mjs");
 const packagedCursorNodeBridge = read("src-tauri/runtime/scripts/cursor-bridge.mjs");
 
@@ -85,7 +87,31 @@ test("all model runtimes receive the same Preview-only tool contract", () => {
   assert.match(agent, /drive the live Preview first/);
   assert.match(agent, /computer_observe \/ computer_actions: Preview-only control/);
   assert.match(agent, /Never use open_url/);
+  assert.match(agent, /opens the Preview window/);
+  assert.match(agent, /Never ask the user to open Preview/);
   assert.match(agent, /Hidden-tab page content remains unreadable/);
+});
+
+test("Computer Use opens Preview and a Browser tab from a prompt", () => {
+  assert.equal(
+    extractPreviewBrowserUrlFromPrompt("can you use computer use and search for youtube.com"),
+    "https://youtube.com/",
+  );
+  assert.equal(
+    extractPreviewBrowserUrlFromPrompt("open https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  );
+  assert.equal(extractPreviewBrowserUrlFromPrompt("describe this screenshot"), null);
+  assert.match(preview, /async openForComputerUse/);
+  assert.match(preview, /ensureOpenForComputerUse/);
+  assert.match(preview, /this\.showShell\("Preview"\)/);
+  assert.match(preview, /this\.openBrowserTab\(url/);
+  assert.match(preview, /this\.openBrowserTab\(BROWSER_HOME/);
+  assert.doesNotMatch(preview, /Open the Preview window before using the AI cursor/);
+  assert.match(main, /openForComputerUse/);
+  assert.match(main, /extractPreviewBrowserUrlFromPrompt\(visiblePrompt\)/);
+  assert.match(main, /computerUseIntent === "enable" \|\| computerUseIntent === "auto"/);
+  assert.match(tools, /If Preview is closed, the host opens the Preview window/);
 });
 
 test("frontend always selects the active Preview tab and stops on tab changes", () => {

@@ -38,7 +38,10 @@ import {
 } from "./preview-url-policy";
 import { normalizeAllowedApps } from "./settings";
 
-export { isExternalPreviewUrl } from "./preview-url-policy";
+export {
+  extractPreviewBrowserUrlFromPrompt,
+  isExternalPreviewUrl,
+} from "./preview-url-policy";
 
 export type PreviewComputerUseMode = "off" | "auto" | "on";
 
@@ -2620,10 +2623,57 @@ export class SitePreview {
     };
   }
 
+  /**
+   * Open the Preview window (and a Browser tab when needed) so Computer Use
+   * can start from a prompt without asking the user to click Preview first.
+   */
+  async openForComputerUse(opts: { projectRoot: string; url?: string | null }): Promise<void> {
+    const root = String(opts.projectRoot || "").trim();
+    if (!root) {
+      throw new Error("Open a project first. Computer Use can then open Preview and a Browser tab automatically.");
+    }
+    if (!this.projectRoot) this.projectRoot = root;
+    await this.ensureOpenForComputerUse({ url: opts.url || null });
+  }
+
+  private computerUseRequestedUrl(request: PreviewComputerRequest): string | null {
+    if (request.operation !== "actions") return null;
+    const actions = Array.isArray(request.args?.actions)
+      ? request.args.actions as PreviewComputerAction[]
+      : [];
+    const nav = actions.find((action) => action.type === "open_tab" || action.type === "navigate");
+    if (!nav) return null;
+    return normalizeBrowserUrl(String(nav.url || ""));
+  }
+
+  private async ensureOpenForComputerUse(opts?: { url?: string | null }): Promise<void> {
+    if (!this.projectRoot) {
+      throw new Error("Open a project first. Computer Use can then open Preview and a Browser tab automatically.");
+    }
+    if (!this.isOpen) {
+      this.showShell("Preview");
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    }
+    const url = normalizeBrowserUrl(opts?.url || "") || "";
+    if (url) {
+      const tab = await this.openBrowserTab(url, {
+        activate: true,
+        title: browserTitleFromUrl(url),
+      });
+      if (!tab) throw new Error("Preview could not open a Browser tab for Computer Use.");
+      return;
+    }
+    if (this.activeTab) return;
+    const tab = await this.openBrowserTab(BROWSER_HOME, { activate: true });
+    if (!tab) throw new Error("Preview could not open a Browser tab for Computer Use.");
+  }
+
   /** Handle one backend request against the tab that is active right now. */
   async handleComputerUseRequest(request: PreviewComputerRequest): Promise<Record<string, unknown>> {
-    if (!this.isOpen) throw new Error("Open the Preview window before using the AI cursor.");
-    if (!this.activeTab) throw new Error("No active Preview tab is available for Computer Use.");
+    await this.ensureOpenForComputerUse({ url: this.computerUseRequestedUrl(request) });
+    if (!this.isOpen || !this.activeTab) {
+      throw new Error("Preview could not open a Browser tab for Computer Use.");
+    }
     this.setComputerUseActive(true);
     this.statusEl.textContent = request.operation === "observe"
       ? "AI cursor is observing this Preview tab…"

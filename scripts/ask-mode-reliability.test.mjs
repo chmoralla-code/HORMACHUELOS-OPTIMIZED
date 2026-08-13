@@ -6,19 +6,35 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
 
 test("Ask mode defaults to Answer Max and requires a visible response", async () => {
-  const [agent, config, modelbar, settings] = await Promise.all([
+  const [agent, config, modelbar, settings, tools] = await Promise.all([
     read("src-tauri/src/agent.rs"),
     read("src-tauri/src/config.rs"),
     read("src/components/modelbar.ts"),
     read("src/components/settings.ts"),
+    read("src-tauri/src/tools.rs"),
   ]);
 
   assert.match(agent, /AutomaticContinuationReason::EmptyAnswer/);
   assert.match(agent, /response_has_visible_answer/);
   assert.match(agent, /maximum answer reliability/i);
   assert.match(agent, /Every turn must end with a substantive visible answer/i);
+  assert.match(agent, /Never end on thinking only/);
+  assert.match(agent, /VISIBLE_REPLY_CONTRACT/);
+  assert.match(agent, /last_resort_visible_reply/);
+  assert.match(agent, /tokio::task::spawn_blocking/);
+  assert.match(agent, /Viewing attached image/);
+  assert.match(agent, /auto_view_attached_images/);
+  assert.match(tools, /xai\/grok-4\.5/);
+  assert.match(tools, /google\/gemini-2\.0-flash-001/);
+  assert.match(tools, /Describe every attached image/);
+  assert.match(tools, /commandcode\/grok/);
+  assert.match(agent, /Keep image answers short/);
+  assert.match(agent, /Do not call done for a description-only/);
+  assert.doesNotMatch(agent, /You may retry with view_image/);
+  assert.match(agent, /fn infer_permission_mode/);
   assert.match(config, /"ask" \| "research" => "answer_max"/);
   assert.match(modelbar, /id: "answer_max"/);
+  assert.match(modelbar, /applyIntentMode/);
   assert.match(settings, /ask: \["answer_max", "investigate", "brief"\]/);
 });
 
@@ -31,6 +47,7 @@ test("Cursor bridge reports and recovers blank assistant completions", async () 
 
   assert.equal(runtimeBridge, sourceBridge, "packaged Cursor bridge must match source");
   assert.match(sourceBridge, /answered: sawText/);
+  assert.match(sourceBridge, /conclusionFromReasoning/);
   assert.match(rustBridge, /CURSOR_EMPTY_REPLY_PROMPT/);
   assert.match(rustBridge, /answer_text_seen/);
   assert.match(rustBridge, /Cursor returned no visible answer/);
@@ -47,12 +64,17 @@ test("Preview Computer Use exposes Off Auto On and prompt-intent activation", as
 
   assert.match(main, /resolvePreviewComputerUsePromptIntent/);
   assert.match(main, /playwright\|browser automation/);
-  assert.match(main, /\(browserTask\.test\(prompt\) && previewTarget\.test\(prompt\)\)/);
+  assert.match(main, /\(browserTask\.test\(prompt\) && \(previewTarget\.test\(prompt\) \|\| webAddress\.test\(prompt\)\)\)/);
   assert.match(main, /informationalOnly/);
   assert.match(main, /computer_use_enabled: computerUseForRun/);
+  assert.match(main, /openForComputerUse/);
+  assert.match(main, /extractPreviewBrowserUrlFromPrompt/);
+  assert.match(preview, /async openForComputerUse/);
+  assert.match(preview, /ensureOpenForComputerUse/);
+  assert.doesNotMatch(preview, /Open the Preview window before using the AI cursor/);
 
   const start = main.indexOf("export type PreviewComputerUsePromptIntent");
-  const end = main.indexOf("async function sendPrompt", start);
+  const end = main.indexOf("export type InferredPermissionMode", start);
   assert.ok(start >= 0 && end > start);
   const executable = main.slice(start, end)
     .replace(/export type PreviewComputerUsePromptIntent[\s\S]*?;\s*/, "")
@@ -66,9 +88,11 @@ test("Preview Computer Use exposes Off Auto On and prompt-intent activation", as
     "audit the dashboard UI",
     "use the keyboard to play the browser game",
     "reproduce this UI bug on the web app",
+    "search for youtube.com",
   ]) {
     assert.equal(resolveIntent(prompt), "auto", prompt);
   }
+  assert.equal(resolveIntent("can you use computer use and search for youtube.com"), "enable");
   assert.equal(resolveIntent("what is Playwright?"), null);
   assert.equal(resolveIntent("do not use computer use to test my website"), "disable");
   assert.match(preview, /PreviewComputerUseMode = "off" \| "auto" \| "on"/);
@@ -95,4 +119,56 @@ test("Preview sandwich exposes Desktop mode next to Computer Use", async () => {
   assert.match(css, /\.site-preview-desktop-modes/);
   assert.match(main, /horma:desktop-computer-use-changed/);
   assert.match(main, /desktop_computer_use_enabled = event\.detail\?\.enabled === true/);
+});
+
+test("client intent auto-switches Ask, Plan, and Multi-Agent", async () => {
+  const main = await read("src/main.ts");
+  assert.match(main, /export function inferPermissionMode/);
+  assert.match(main, /applyIntentMode\(inferredMode\)/);
+  const start = main.indexOf("export type InferredPermissionMode");
+  const end = main.indexOf("async function sendPrompt", start);
+  assert.ok(start >= 0 && end > start);
+  const executable = main.slice(start, end)
+    .replace(/export type InferredPermissionMode[\s\S]*?;\s*/, "")
+    .replace("export function", "function")
+    .replace("value: string", "value")
+    .replace(/\): InferredPermissionMode \| null/, ")");
+  const infer = new Function(`${executable}; return inferPermissionMode;`)();
+  assert.equal(infer("what does this form do?"), "ask");
+  assert.equal(infer("can you explain this screenshot"), "ask");
+  assert.equal(infer("make a plan for the HR module"), "plan");
+  assert.equal(
+    infer("can you add this form after the final interview if employee passed the interview"),
+    "multi_agent",
+  );
+  assert.equal(infer("add a login page to this app"), "multi_agent");
+  assert.equal(infer("implement the plan"), "multi_agent");
+  assert.equal(infer("yes"), null);
+  assert.equal(infer("React + Vite"), null);
+  assert.equal(infer("how do I add a form?"), "ask");
+  assert.equal(infer("can you describe what this images are"), "ask");
+  assert.equal(
+    infer("[Attached image: a.png]\ncan you describe what this images are"),
+    "ask",
+  );
+});
+
+test("all modes share a visible-reply contract and chat last-resort", async () => {
+  const [agent, chat, bridge] = await Promise.all([
+    read("src-tauri/src/agent.rs"),
+    read("src/components/chat.ts"),
+    read("scripts/cursor-bridge.mjs"),
+  ]);
+  assert.match(agent, /VISIBLE REPLY \(all modes\)/);
+  assert.match(agent, /\[Ask mode active\]/);
+  assert.match(agent, /\[Plan mode active\]/);
+  assert.match(agent, /\[Auto mode active\]/);
+  assert.match(agent, /\[Full mode active\]/);
+  assert.match(agent, /\[Multi-Agent mode active\]/);
+  assert.match(agent, /never thinking only/i);
+  assert.match(chat, /latestSealedThoughtAfterLastUser/);
+  assert.match(chat, /ensureVisibleReplyAfterEnd/);
+  assert.match(chat, /question-card/);
+  assert.doesNotMatch(chat, /thinking-done\[data-thought\]:last-of-type/);
+  assert.match(bridge, /conclusionFromReasoning\(thinkingSeen\)/);
 });

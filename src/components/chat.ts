@@ -2,6 +2,7 @@ import { api, type AgentEvent, type AgentTaskProfile } from "../ipc";
 import { icon } from "./icons";
 import {
   appendAssistantTranscriptChunk,
+  assistantReplyLooksOpen,
   normalizeSessionPermissionMode,
   redactToolArguments,
   snapshotMultiAgentTools,
@@ -9,7 +10,7 @@ import {
   type SessionMultiAgentTool,
 } from "./session";
 import { ToolArgsStreamDecoder, type ToolArgField } from "./tool-args-stream";
-import { clear, div, el, escapeHtml, formatChatTime, normalizeAssistantMarkdown, renderMarkdown, setShimmerText } from "./util";
+import { clear, div, el, escapeHtml, formatChatTime, normalizeAssistantMarkdown, renderMarkdown, setShimmerText, stripProcessPreamble } from "./util";
 
 type ToolCardEl = { head: HTMLElement; body: HTMLElement; card: HTMLElement };
 type PendingTool = { id: string; name: string; arguments: any };
@@ -3570,8 +3571,6 @@ export class Chat {
     }
 
     this.finalizeThinking();
-    this.pendingAssistant = null;
-    this.pendingAssistantMsg = null;
     this.thinkingText = "";
     this.thinkingTarget = "";
     this.thinkingRevealed = 0;
@@ -3603,7 +3602,11 @@ export class Chat {
     wrap.appendChild(toggle);
     wrap.appendChild(panel);
     this.decorateThinkingWrap(wrap);
-    this.node.appendChild(wrap);
+    if (this.pendingAssistantMsg?.isConnected) {
+      this.node.insertBefore(wrap, this.pendingAssistantMsg);
+    } else {
+      this.node.appendChild(wrap);
+    }
     this.bindThinkingToggle(wrap);
     this.setThinkingBodyOpen(liveOpen, wrap);
     wrap.classList.add("thinking-enter");
@@ -3675,12 +3678,28 @@ export class Chat {
     const pending = String((this.pendingAssistant as { __raw?: string } | null)?.__raw || "").trim();
     if (pending) return;
     if (this.hasVisibleAssistantReplyAfterLastUser()) return;
-    const sealed = this.node.querySelector(
-      ".thinking-wrap.thinking-done[data-thought]:last-of-type",
-    ) as HTMLElement | null;
-    const thought = (sealed?.getAttribute("data-thought") || "").trim();
-    if (thought.length < 40) return;
+    const thought = this.latestSealedThoughtAfterLastUser();
+    if (thought.length < 12) return;
     this.appendAssistantText(thought);
+  }
+
+  private latestSealedThoughtAfterLastUser(): string {
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    let thought = "";
+    while (node) {
+      if (
+        node instanceof HTMLElement &&
+        node.classList.contains("thinking-wrap") &&
+        node.classList.contains("thinking-done")
+      ) {
+        const next = (node.getAttribute("data-thought") || "").trim();
+        if (next.length >= 12) thought = next;
+      }
+      node = node.nextElementSibling;
+    }
+    return thought;
   }
 
   private hasVisibleAssistantReplyAfterLastUser(): boolean {
@@ -3688,15 +3707,35 @@ export class Chat {
     const lastUser = users[users.length - 1] || null;
     let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
     while (node) {
+      if (node instanceof HTMLElement && (node.classList.contains("question-card") || node.classList.contains("done-card"))) {
+        return true;
+      }
       if (node instanceof HTMLElement && node.classList.contains("msg") && node.classList.contains("assistant")) {
         const raw = String((node.querySelector(".msg-body.md") as { __raw?: string } | null)?.__raw || "").trim();
         if (raw) return true;
-        const text = (node.textContent || "").replace(/Thought for[^\n]*/g, "").trim();
+        const clone = node.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll(".thinking-wrap, .msg-time, .msg-copy, .msg-meta").forEach((el) => el.remove());
+        const text = (clone.textContent || "").replace(/Thought for[^\n]*/g, "").trim();
         if (text) return true;
       }
       node = node.nextElementSibling;
     }
     return false;
+  }
+
+  /** After a run ends, never leave the user on thinking/status with no bubble. */
+  private ensureVisibleReplyAfterEnd(reason: string) {
+    if (this.replaying || this.userCancelled) return;
+    const normalized = String(reason || "").trim().toLowerCase();
+    if (normalized === "cancelled" || normalized === "canceled" || normalized === "error") return;
+    this.flushDeferredAssistant();
+    this.revealThoughtWhenReplyMissing();
+    if (this.hasVisibleAssistantReplyAfterLastUser()) return;
+    const pending = String((this.pendingAssistant as { __raw?: string } | null)?.__raw || "").trim();
+    if (pending) return;
+    this.appendAssistantText(
+      "I couldn't produce a visible answer for that request. Please try sending it again, or switch model.",
+    );
   }
 
   hideThinking() {
@@ -3726,8 +3765,23 @@ export class Chat {
     }
   }
 
+  /** Stitch mid-sentence fragments even when a thought/tool row landed between chunks. */
+  private shouldResumeOpenAssistant(): boolean {
+    if (this.pendingAssistant?.isConnected && this.pendingAssistantMsg?.isConnected) return false;
+    const replies = this.node.querySelectorAll<HTMLElement>(".msg.assistant");
+    for (let index = replies.length - 1; index >= 0; index -= 1) {
+      const message = replies[index];
+      const body = message.querySelector<HTMLElement>(".msg-body.md");
+      if (!body || typeof (body as any).__raw !== "string") continue;
+      return assistantReplyLooksOpen(String((body as any).__raw || ""));
+    }
+    return false;
+  }
+
   appendAssistantText(text: string, resumePrevious = false) {
-    if (resumePrevious) this.resumeLatestAssistantReply();
+    if (resumePrevious || this.shouldResumeOpenAssistant()) {
+      this.resumeLatestAssistantReply();
+    }
     // Cursor/Grok often dumps the full thought right before the reply — let it type out first
     if (this.shouldDeferAssistantForThought()) {
       this.deferredAssistantChunks.push(text);
@@ -3762,7 +3816,8 @@ export class Chat {
       (msg as any).__timeEl = meta.querySelector(".msg-time");
     }
     const raw = ((this.pendingAssistant as any).__raw || "") + text;
-    (this.pendingAssistant as any).__raw = raw;
+    const cleaned = stripProcessPreamble(raw);
+    (this.pendingAssistant as any).__raw = cleaned || raw;
     this.scheduleAssistantPaint(this.pendingAssistant);
     // After prose, the model may pause before tools / next thought — don't leave a blank gap
     if (this.running && !this.stopping && !this.userCancelled) {
@@ -4713,6 +4768,7 @@ export class Chat {
     this.normalizeLatestAssistantReply();
     this.flushAssistantPaints();
     this.finalizeThinking();
+    this.ensureVisibleReplyAfterEnd(reason);
     this.sealPendingTools(completed ? "done" : "interrupted");
     if (completed) this.clearRecoverableMultiAgentAttention();
     // Stamp the last AI chat once the agent is done replying
@@ -4765,6 +4821,27 @@ export class Chat {
     }
     // Always offer freeform so Plan mode never dead-ends
     const showOther = allowOther || opts.length < 2;
+    const answerAppliesPlan = (answer: string) => {
+      const lower = answer.trim().toLowerCase();
+      if (/\b(apply|implement|execute) (this|the) plan\b/.test(lower) || /\bgo ahead and (implement|apply)\b/.test(lower)) {
+        return true;
+      }
+      const q = (question || "").toLowerCase();
+      return (
+        ["yes", "apply", "implement", "go ahead", "do it", "build it"].includes(lower) &&
+        (q.includes("apply") || q.includes("implement") || q.includes("this plan"))
+      );
+    };
+    const submitAnswer = async (answer: string) => {
+      if (answerAppliesPlan(answer)) {
+        window.dispatchEvent(
+          new CustomEvent("horma:run-permission-mode", { detail: { mode: "multi_agent" } }),
+        );
+      }
+      const sid = this.getSessionId();
+      if (!sid) throw new Error("No active session");
+      await api.respondToQuestion(answer, sid);
+    };
 
     const choices = el("div", { class: "question-choices" });
     for (const opt of opts) {
@@ -4779,9 +4856,7 @@ export class Chat {
         btn.classList.add("selected");
         if (this.replaying) return;
         try {
-          const sid = this.getSessionId();
-          if (!sid) throw new Error("No active session");
-          await api.respondToQuestion(opt, sid);
+          await submitAnswer(opt);
         } catch (e) {
           console.error("Failed to send answer:", e);
         }
@@ -4810,9 +4885,7 @@ export class Chat {
         submitBtn.setAttribute("disabled", "disabled");
         if (this.replaying) return;
         try {
-          const sid = this.getSessionId();
-          if (!sid) throw new Error("No active session");
-          await api.respondToQuestion(val, sid);
+          await submitAnswer(val);
         } catch (e) {
           console.error("Failed to send answer:", e);
         }
@@ -4939,6 +5012,11 @@ export class Chat {
       case "start":
         this.runCompleted = false;
         this.setActivePermissionMode(e.payload.permission_mode);
+        window.dispatchEvent(
+          new CustomEvent("horma:run-permission-mode", {
+            detail: { mode: e.payload.permission_mode },
+          }),
+        );
         break;
       case "thinking": this.showThinking(e.payload.iteration); break;
       case "status": {

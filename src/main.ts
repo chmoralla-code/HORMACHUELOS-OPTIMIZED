@@ -17,6 +17,7 @@ import { SmartAgentPanel, applySmartAgentEvent } from "./components/smart-agent"
 import { ClientSuccessCenter, composeProjectMissionPrompt } from "./components/client-success-center";
 import {
   SitePreview,
+  extractPreviewBrowserUrlFromPrompt,
   isExternalPreviewUrl,
   isPreviewableBuild,
   mergePreviewSessionState,
@@ -1725,8 +1726,10 @@ export function resolvePreviewComputerUsePromptIntent(
 
   const previewTarget =
     /\b(?:website|site|web app|webpage|page|preview|browser tab|ui|interface|form|dashboard|modal|menu|table|game)\b/;
+  const webAddress =
+    /\bhttps?:\/\/|\b(?:www\.)?[a-z0-9-]+\.(?:com|org|net|io|dev|app|ai|tv|co|gg|me|info|edu|gov|uk|us|ph)\b/;
   const browserTask =
-    /\b(?:debug|test|qa|audit|inspect|check|browse|navigate|interact|click|type|fill|select|submit|scroll|hover|open|verify|reproduce|play|try|run through|walk through|exercise)\b/;
+    /\b(?:debug|test|qa|audit|inspect|check|browse|navigate|interact|click|type|fill|select|submit|scroll|hover|open|verify|reproduce|play|try|run through|walk through|exercise|search|visit|look up|go to)\b/;
   const playwrightRequest =
     /\b(?:playwright|browser automation|automate the browser)\b/.test(prompt);
   const informationalOnly =
@@ -1736,13 +1739,69 @@ export function resolvePreviewComputerUsePromptIntent(
   if (informationalOnly) return null;
 
   const previewAction =
-    (browserTask.test(prompt) && previewTarget.test(prompt)) ||
+    (browserTask.test(prompt) && (previewTarget.test(prompt) || webAddress.test(prompt))) ||
     /\b(?:test|qa|audit|check|verify|exercise)\b.{0,48}\b(?:every|all)\b.{0,32}\b(?:feature|flow|button|control|screen)\b/
       .test(prompt) ||
     /\b(?:keyboard|mouse|cursor)\b.{0,48}\b(?:test|use|play|type|control)\b.{0,48}\b(?:preview|browser|website|site|game)\b/
       .test(prompt);
   return playwrightRequest || previewAction ? "auto" : null;
 }
+
+export type InferredPermissionMode = "ask" | "plan" | "multi_agent";
+
+/**
+ * Switch the visible mode from the client's request before the run starts.
+ * Short follow-ups ("yes", "React + Vite") keep the current mode.
+ */
+export function inferPermissionMode(value: string): InferredPermissionMode | null {
+  const prompt = String(value || "")
+    .replace(/\[Attached (?:image|video):[^\]]*\]/gi, " ")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!prompt) return null;
+
+  const isPlan =
+    /\b(don't|do not) implement\b/.test(prompt) ||
+    /\b(don't|do not) change files\b/.test(prompt) ||
+    /\bkeep planning\b/.test(prompt) ||
+    /\bjust the plan\b/.test(prompt) ||
+    /\bplan only\b/.test(prompt) ||
+    /\bwithout changing files\b/.test(prompt) ||
+    /\b(make|draft|propose|write) a plan\b/.test(prompt) ||
+    /\bplanning first\b/.test(prompt) ||
+    (/\bplan\b/.test(prompt) && !/\b(implement|apply) (this|the) plan\b/.test(prompt));
+  if (isPlan) return "plan";
+
+  const isImplementPlan =
+    /\b(apply|implement|execute) (this|the) plan\b/.test(prompt) ||
+    /\bgo ahead and (implement|apply)\b/.test(prompt) ||
+    /\bstart implementing\b/.test(prompt);
+  const isPoliteBuild =
+    /\b(can|could) you (add|create|build|make|implement|fix|scaffold|generate)\b/.test(prompt) ||
+    /\bplease (add|create|build|make|implement|fix)\b/.test(prompt);
+  if (isImplementPlan || isPoliteBuild) return "multi_agent";
+
+  const isQuestion =
+    prompt.includes("?") ||
+    /^(what|why|who|where|which|how|is|are|does|do|explain|tell me)\b/.test(prompt) ||
+    /\b(can|could) you (see|read|tell|describe|explain|look)\b/.test(prompt) ||
+    /\b(please describe|describe this|describe these|describe the image|describe what)\b/.test(prompt) ||
+    /\b(what is this|what are these|what this image|what these image|what's in this|whats in this)\b/.test(prompt) ||
+    /\b(look at this|what does this)\b/.test(prompt);
+  if (isQuestion) return "ask";
+
+  if (
+    /\b(add|create|build|make|implement|scaffold|generate|fix|debug|repair|refactor|upgrade)\b/.test(
+      prompt,
+    )
+  ) {
+    return "multi_agent";
+  }
+  if (/\[attached (?:image|video):/i.test(String(value || ""))) return "ask";
+  return null;
+}
+
 async function sendPrompt(submission: ChatPromptSubmission) {
   let prompt = redactChatCredentials(submission.modelText);
   const visiblePrompt = redactChatCredentials(submission.visibleText || submission.modelText);
@@ -1767,6 +1826,15 @@ async function sendPrompt(submission: ChatPromptSubmission) {
   }
   const computerUseIntent = resolvePreviewComputerUsePromptIntent(visiblePrompt);
   let promptSettings = modelBar.settings;
+  const inferredMode = taskProfile === "default" ? inferPermissionMode(visiblePrompt) : null;
+  if (inferredMode) {
+    try {
+      await modelBar.applyIntentMode(inferredMode);
+      promptSettings = modelBar.settings;
+    } catch (error) {
+      console.warn("Could not auto-switch permission mode", error);
+    }
+  }
   if (promptSettings && (computerUseIntent === "enable" || computerUseIntent === "disable")) {
     const updatedSettings = {
       ...promptSettings,
@@ -1801,6 +1869,7 @@ async function sendPrompt(submission: ChatPromptSubmission) {
     model: runProfile.model,
     model_effort: runProfile.effort || promptSettings.model_effort,
     computer_use_enabled: computerUseForRun,
+    ...(inferredMode ? { permission_mode: inferredMode } : {}),
   } : undefined;
   if (isHostedCatalogRestricted()) {
     const allowed = visibleProviders();
@@ -1910,6 +1979,21 @@ async function sendPrompt(submission: ChatPromptSubmission) {
       throw new Error("Connect the selected provider before sending a request.");
     }
     if (isUsageExhausted()) throw new Error(usageBlockMessage());
+
+    if (
+      (computerUseIntent === "enable" || computerUseIntent === "auto")
+      && sameProjectPath(projectRoot, currentProjectPath)
+    ) {
+      try {
+        await sitePreview.openForComputerUse({
+          projectRoot,
+          url: extractPreviewBrowserUrlFromPrompt(visiblePrompt),
+        });
+        persistPreviewForSession(sessionId, sitePreview.captureSessionState());
+      } catch (error) {
+        console.warn("Could not open Preview for Computer Use", error);
+      }
+    }
 
     // Only touch workspace/console UI while this owning session is visible.
     if (sameProjectPath(projectRoot, currentProjectPath) && activeSessionId === sessionId) {
@@ -2490,6 +2574,12 @@ async function init() {
     chat.applyUltraChrome();
   });
   window.addEventListener("horma:new-session", () => void createNewSession());
+  window.addEventListener("horma:run-permission-mode", ((e: CustomEvent<{ mode?: string }>) => {
+    const mode = String(e.detail?.mode || "").trim().toLowerCase();
+    if (mode === "ask" || mode === "plan" || mode === "multi_agent") {
+      void modelBar.applyIntentMode(mode);
+    }
+  }) as EventListener);
   window.addEventListener("horma:composer-insert", ((e: CustomEvent<{ text?: string }>) => {
     const text = e.detail?.text;
     if (typeof text === "string" && text) chat.insertComposerText(text);

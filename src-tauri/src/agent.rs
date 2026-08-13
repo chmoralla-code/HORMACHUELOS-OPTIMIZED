@@ -129,6 +129,19 @@ fn emit_cancelled(app: &AppHandle, session_id: &str, iteration: u32) {
 // or software task never stops merely because it has been running for a while.
 const MAX_CONSECUTIVE_STALLED_RECOVERIES: u8 = 4;
 
+/// Shared across Ask / Plan / Research / Auto / Full / Multi-Agent so a
+/// reasoning model cannot end the turn on a collapsed "Thought for …" row.
+const VISIBLE_REPLY_CONTRACT: &str = "\
+VISIBLE REPLY (all modes): Every turn that does not call a tool MUST end with user-facing reply text. \
+Never finish with only thinking/reasoning, a status line, or an announced next step such as \"let me describe\". \
+If the user attached an image or asked a question, write the answer in visible text. \
+Keep image answers short: one or two sentences per image, or a few bullets total. \
+Never mention auto-view, view_image, timeouts, HTTP, providers, paste paths, or restating \"the user wants…\" — start with the answer. \
+Do not call done for a description-only or question-only turn.";
+
+const LAST_RESORT_VISIBLE_REPLY: &str =
+    "I couldn't produce a visible answer for that request. Please try sending it again, or switch model.";
+
 /// True when the provider streamed real reasoning ("thinking") tokens.
 fn has_streamed_reasoning(resp: &LlmResponse) -> bool {
     resp.reasoning_content
@@ -141,12 +154,78 @@ fn has_streamed_reasoning(resp: &LlmResponse) -> bool {
 /// answer in `reasoning_content` and finish with empty `content`. Treat a
 /// complete, non-tool-announcing thought as a user-visible answer instead of
 /// ending the run on a collapsed "Thought for …" row.
+fn is_process_sentence(sentence: &str) -> bool {
+    let lower = sentence
+        .trim()
+        .trim_start_matches(['"', '\'', '`', '*'])
+        .to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    if lower.contains("auto-view timed out")
+        || lower.contains("autoview timed out")
+        || lower.contains("let me call view_image")
+        || lower.contains("call view_image on")
+        || lower.contains("pure description request")
+        || lower.contains("no tools needed")
+    {
+        return true;
+    }
+    [
+        "the user wants",
+        "the user just wants",
+        "the user asked",
+        "the user is asking",
+        "this is a pure",
+        "let me describe",
+        "i'll describe",
+        "i will describe",
+        "let me call",
+        "let me look",
+        "okay, the user",
+        "ok, the user",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+}
+
+/// Drop leading tool/thought narration so the visible bubble starts on the answer.
+fn strip_process_preamble(text: &str) -> String {
+    let mut remaining = text.trim_start();
+    while !remaining.is_empty() {
+        let (sentence, rest) = next_leading_sentence(remaining);
+        if sentence.trim().is_empty() {
+            remaining = rest;
+            continue;
+        }
+        if !is_process_sentence(sentence) {
+            return remaining.trim().to_string();
+        }
+        remaining = rest.trim_start();
+    }
+    String::new()
+}
+
+fn next_leading_sentence(text: &str) -> (&str, &str) {
+    let mut end = 0usize;
+    for (index, ch) in text.char_indices() {
+        end = index + ch.len_utf8();
+        if matches!(ch, '.' | '!' | '?' | '…' | '\n') {
+            break;
+        }
+    }
+    if end == 0 {
+        return ("", "");
+    }
+    (&text[..end], &text[end..])
+}
+
 fn conclusion_from_reasoning(reasoning: &str) -> Option<String> {
-    let trimmed = reasoning.trim();
-    if trimmed.chars().count() < 40 {
+    let trimmed = strip_process_preamble(reasoning);
+    if trimmed.chars().count() < 24 {
         return None;
     }
-    if reply_announces_pending_action(trimmed) {
+    if reply_announces_pending_action(&trimmed) || reasoning_is_meta_narration(&trimmed) {
         return None;
     }
     let ends_cleanly = trimmed
@@ -155,15 +234,15 @@ fn conclusion_from_reasoning(reasoning: &str) -> Option<String> {
         .map(|c| matches!(c, '.' | '!' | '?' | '…' | ':' | ';' | ')' | ']' | '}' | '`'))
         .unwrap_or(false)
         || trimmed.ends_with("```");
-    if !ends_cleanly {
+    if !ends_cleanly && trimmed.chars().count() < 40 {
         return None;
     }
     const MAX_VISIBLE: usize = 4_000;
     if trimmed.len() <= MAX_VISIBLE {
-        return Some(trimmed.to_string());
+        return Some(trimmed);
     }
     let start = trimmed.len().saturating_sub(MAX_VISIBLE);
-    let sliced = trimmed.get(start..).unwrap_or(trimmed);
+    let sliced = trimmed.get(start..).unwrap_or(trimmed.as_str());
     let from_break = sliced
         .find("\n\n")
         .map(|index| sliced[index + 2..].trim())
@@ -182,11 +261,19 @@ fn promote_reasoning_to_visible_answer(resp: &mut LlmResponse) -> bool {
     if !text_empty {
         return false;
     }
-    let Some(visible) = resp
-        .reasoning_content
-        .as_deref()
-        .and_then(conclusion_from_reasoning)
-    else {
+    let reasoning = resp.reasoning_content.as_deref().unwrap_or("");
+    let visible = conclusion_from_reasoning(reasoning).or_else(|| {
+        let trimmed = strip_process_preamble(reasoning);
+        if trimmed.chars().count() < 24
+            || reply_announces_pending_action(&trimmed)
+            || reasoning_is_meta_narration(&trimmed)
+        {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let Some(visible) = visible else {
         return false;
     };
     resp.text = Some(visible);
@@ -203,6 +290,13 @@ fn response_has_visible_answer(resp: &LlmResponse, visible_text_streamed: bool) 
             .as_deref()
             .map(str::trim)
             .is_some_and(|text| !text.is_empty())
+}
+
+/// Last safety net before `end`: a finished thought if it is a real answer,
+/// otherwise a short fallback so the chat never seals on thinking/status only.
+fn last_resort_visible_reply(resp: &LlmResponse) -> String {
+    conclusion_from_reasoning(resp.reasoning_content.as_deref().unwrap_or(""))
+        .unwrap_or_else(|| LAST_RESORT_VISIBLE_REPLY.to_string())
 }
 
 /// An automatic recovery counts as forward progress when the model took a
@@ -344,6 +438,7 @@ Retry with corrected arguments, a narrower query, or a different registered insp
             Self::EmptyAnswer => {
                 "[System - Empty answer recovery]\n\
 The previous model turn ended without any visible answer or executable tool call. Answer the ORIGINAL user question now. \n\
+If they attached images or asked you to describe them, write the description in visible reply text — not only in thinking. \n\
 If evidence is needed, use the allowed read/search tools and then synthesize the result. If no inspection is needed, answer directly. \n\
 Always finish with a substantive user-visible answer; never end with only reasoning, a status update, or tool output. Do not apologize for or mention this automatic retry."
             }
@@ -537,6 +632,18 @@ fn reply_announces_pending_action(text: &str) -> bool {
     {
         return true;
     }
+    if [
+        "let me describe",
+        "i'll describe",
+        "i will describe",
+        "let me answer",
+        "i'll answer",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+    {
+        return true;
+    }
     // Trailing intent without a tool call, e.g. "…to sign in." after "Let me find…"
     let intent_tails = [
         " from the codebase",
@@ -554,6 +661,34 @@ fn reply_announces_pending_action(text: &str) -> bool {
         return true;
     }
     false
+}
+
+/// Thinking that only restates the user's ask or promises a later answer is
+/// not itself a user-facing reply. DeepSeek often stops after this.
+fn reasoning_is_meta_narration(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    let pending = [
+        "let me describe",
+        "i'll describe",
+        "i will describe",
+        "let me answer",
+        "no tools needed",
+        "pure description request",
+    ];
+    if pending.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    let meta = [
+        "the user wants",
+        "the user just wants",
+        "the user asked",
+        "the user is asking",
+        "this is a pure",
+    ];
+    meta.iter().any(|p| lower.contains(p)) && lower.chars().count() < 500
 }
 
 /// Providers use different spellings for an answer that ended because the
@@ -601,6 +736,9 @@ fn starts_as_explanatory_request(text: &str) -> bool {
         "explain",
         "tell me about",
         "can you explain",
+        "describe ",
+        "describe this",
+        "describe these",
     ]
     .iter()
     .any(|prefix| text.starts_with(prefix))
@@ -1565,6 +1703,149 @@ pub(crate) fn ensure_plan_apply_options(mut options: Vec<String>) -> Vec<String>
     options
 }
 
+fn classify_request_text(prompt: &str) -> String {
+    let mut text = String::new();
+    let mut rest = prompt;
+    while let Some(start) = rest.find("[Attached ") {
+        text.push_str(&rest[..start]);
+        match rest[start..].find(']') {
+            Some(end) => rest = &rest[start + end + 1..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    text.push_str(rest);
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn request_looks_like_question(text: &str) -> bool {
+    if text.contains('?') {
+        return true;
+    }
+    starts_as_explanatory_request(text)
+        || text.starts_with("why ")
+        || text.starts_with("who ")
+        || text.starts_with("where ")
+        || text.starts_with("which ")
+        || text.starts_with("is ")
+        || text.starts_with("are ")
+        || text.starts_with("does ")
+        || text.starts_with("do ")
+        || text.contains("can you see")
+        || text.contains("can you read")
+        || text.contains("can you tell")
+        || text.contains("can you describe")
+        || text.contains("can you explain")
+        || text.contains("can you look")
+        || text.contains("could you describe")
+        || text.contains("please describe")
+        || text.contains("describe this")
+        || text.contains("describe these")
+        || text.contains("describe the image")
+        || text.contains("describe what")
+        || text.contains("what is this")
+        || text.contains("what are these")
+        || text.contains("what this image")
+        || text.contains("what these image")
+        || text.contains("what's in this")
+        || text.contains("whats in this")
+        || text.contains("look at this")
+        || text.contains("what does this")
+}
+
+fn request_looks_like_plan(text: &str) -> bool {
+    if rejects_plan_implementation(text) {
+        return true;
+    }
+    text.contains("make a plan")
+        || text.contains("draft a plan")
+        || text.contains("propose a plan")
+        || text.contains("write a plan")
+        || text.contains("planning first")
+        || text.contains("without changing files")
+        || ((text.contains(" plan") || text.starts_with("plan ") || text == "plan")
+            && !matches_plan_apply_phrase(text, text.chars().count()))
+}
+
+fn request_looks_like_polite_build(text: &str) -> bool {
+    [
+        "can you add",
+        "could you add",
+        "please add",
+        "can you create",
+        "could you create",
+        "please create",
+        "can you build",
+        "could you build",
+        "please build",
+        "can you make",
+        "could you make",
+        "please make",
+        "can you implement",
+        "please implement",
+        "can you fix",
+        "please fix",
+        "can you scaffold",
+        "can you generate",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+fn request_looks_like_build_action(text: &str) -> bool {
+    [
+        "add",
+        "create",
+        "build",
+        "make",
+        "implement",
+        "scaffold",
+        "generate",
+        "fix",
+        "debug",
+        "repair",
+        "refactor",
+        "upgrade",
+    ]
+    .iter()
+    .any(|term| contains_task_term(text, term))
+        || text.contains("add this")
+        || text.contains("update the")
+}
+
+/// Map a client request onto Ask, Plan, or Multi-Agent. Follow-ups with no
+/// clear intent keep the current mode.
+pub(crate) fn infer_permission_mode(prompt: &str) -> Option<String> {
+    let attached = prompt.contains("[Attached image:") || prompt.contains("[Attached video:");
+    let text = classify_request_text(prompt);
+    if text.is_empty() {
+        return attached.then(|| "ask".into());
+    }
+    if request_looks_like_plan(&text) {
+        return Some("plan".into());
+    }
+    if matches_plan_apply_phrase(&text, text.chars().count())
+        || request_looks_like_polite_build(&text)
+    {
+        return Some("multi_agent".into());
+    }
+    if request_looks_like_question(&text) {
+        return Some("ask".into());
+    }
+    if request_looks_like_build_action(&text) {
+        return Some("multi_agent".into());
+    }
+    if attached {
+        return Some("ask".into());
+    }
+    None
+}
+
 pub(crate) fn tool_confirm_summary(name: &str, args: &Value) -> String {
     match name {
         "run_command" => format!(
@@ -1769,47 +2050,89 @@ pub async fn run_loop(
     // non-vision model — including Hormachuelos v4 (VISION).
     if prompt.contains("[Attached image:") {
         let paths = crate::tools::attached_image_paths(&prompt);
-        emit(
-            &app,
-            &session_id,
-            "status",
-            json!({ "message": "Viewing attached image…" }),
-        );
-        let mut blocks = Vec::new();
-        for path in &paths {
-            match crate::tools::view_image_file(root, path) {
-                Ok(description) => {
-                    emit(
-                        &app,
-                        &session_id,
-                        "status",
-                        json!({ "message": "Viewed attached image" }),
-                    );
-                    blocks.push(format!("[Image already viewed: {path}]\n{description}"));
-                }
-                Err(err) => {
-                    blocks.push(format!(
-                        "[Could not auto-view image at {path}: {err}. You may retry with view_image.]"
-                    ));
-                }
+        if !paths.is_empty() {
+            emit(
+                &app,
+                &session_id,
+                "status",
+                json!({ "message": if paths.len() > 1 {
+                    "Viewing attached images…"
+                } else {
+                    "Viewing attached image…"
+                } }),
+            );
+            let root_owned = root.to_path_buf();
+            let paths: Vec<String> = paths.into_iter().take(6).collect();
+            let cancel_flag = cancel.clone();
+            let viewed = tokio::select! {
+                biased;
+                _ = wait_until_cancelled(&cancel) => None,
+                joined = tokio::time::timeout(
+                    Duration::from_secs(22),
+                    tokio::task::spawn_blocking(move || {
+                        crate::tools::auto_view_attached_images(
+                            &root_owned,
+                            &paths,
+                            cancel_flag.as_ref(),
+                        )
+                    }),
+                ) => match joined {
+                    Ok(Ok(blocks)) => Some(blocks),
+                    Ok(Err(join_err)) => Some(vec![format!(
+                        "[Image descriptions failed: {join_err}. Do not call view_image. Answer the user's question without mentioning this note.]"
+                    )]),
+                    Err(_) => Some(vec![
+                        "[System] Pixel descriptions for the attached images were not ready in time. Do not call view_image. Do not mention auto-view, timeouts, or this note. Write the user-facing answer now from the question and any context you have.".into()
+                    ]),
+                },
+            };
+            if cancel.load(Ordering::SeqCst) {
+                emit_cancelled(&app, &session_id, 0);
+                return Ok(None);
             }
+            let blocks = viewed.unwrap_or_default();
+            let viewed_ok = blocks
+                .iter()
+                .any(|block| block.contains("[Image already viewed:"));
+            emit(
+                &app,
+                &session_id,
+                "status",
+                json!({
+                    "message": if viewed_ok {
+                        "Viewed attached image"
+                    } else {
+                        "Continuing without an image description…"
+                    }
+                }),
+            );
+            let mut note = String::from(if viewed_ok {
+                "\n\n[The user attached image(s). Descriptions below were generated automatically with vision — answer from them. Do not call view_image, file_info, or glob for these attachments.]\n\
+Describe each image briefly in the visible reply. Do not mention vision providers, HTTP, paste paths, ASK mode, or recommended next steps. Do not call done.\n"
+            } else {
+                "\n\n[The user attached image(s). Pixel descriptions were not available in time. Do not call view_image — it will stall the same way. Do not mention auto-view or timeouts. Answer the user's question now in a short visible reply. Do not call done.]\n"
+            });
+            if !blocks.is_empty() {
+                note.push('\n');
+                note.push_str(&blocks.join("\n\n"));
+            }
+            note.push_str("\n\n");
+            note.push_str(&prompt);
+            prompt = note;
         }
-        let mut note = String::from(
-            "\n\n[The user attached image(s). Descriptions below were generated automatically with vision — answer from them. Only call view_image again if you need a closer look.]",
-        );
-        if !blocks.is_empty() {
-            note.push('\n');
-            note.push_str(&blocks.join("\n\n"));
-        }
-        note.push_str("\n\n");
-        note.push_str(&prompt);
-        prompt = note;
     }
-    let requires_project_completion = task_requires_project_completion(&prompt, task_profile);
-    let permission_mode = normalized_permission_mode(&settings.permission_mode);
-    if task_profile.is_design_edit()
-        || (permission_mode == "plan" && prompt_unlocks_plan_implementation(&prompt))
-    {
+    let mut permission_mode = normalized_permission_mode(&settings.permission_mode);
+    if !task_profile.is_design_edit() {
+        if let Some(inferred) = infer_permission_mode(&user_request) {
+            permission_mode = inferred;
+        }
+    }
+    let requires_project_completion = if permission_mode == "ask" || permission_mode == "plan" {
+        false
+    } else {
+        task_requires_project_completion(&user_request, task_profile)
+    };
+    if task_profile.is_design_edit() {
         run.set_plan_implementation_unlocked(true);
     }
 
@@ -1905,7 +2228,7 @@ pub async fn run_loop(
                     )
                 );
                 let wrapped_prompt = format!(
-                    "{identity}\n\n{policy}{computer_policy}{completion_contract}{smart_agent_policy}{task_profile_policy}{execution_profile_policy}\n\n{project_context}{flavour_context}\n\n\
+                    "{identity}\n\n{policy}\n\n{visible_reply}{computer_policy}{completion_contract}{smart_agent_policy}{task_profile_policy}{execution_profile_policy}\n\n{project_context}{flavour_context}\n\n\
 IN-APP PREVIEW:\n\
 - Hormachuelos has a built-in Preview panel on the right. Do NOT open websites/games in Chrome or the system browser.\n\
 - After creating or updating HTML (index.html, game pages, etc.), call open_path on that HTML file so the in-app Preview opens.\n\
@@ -1913,6 +2236,7 @@ IN-APP PREVIEW:\n\
 Current user request:\n{prompt}",
                     identity = identity_instructions(&model_display, &provider_display),
                     policy = cursor_permission_instructions(&permission_mode),
+                    visible_reply = VISIBLE_REPLY_CONTRACT,
                     computer_policy = computer_policy,
                     completion_contract = completion_contract,
                     smart_agent_policy = smart_agent_policy,
@@ -2084,16 +2408,16 @@ Current user request:\n{prompt}",
         protect_command_changes: run.protect_command_changes(),
     };
 
-    let mode = normalized_permission_mode(&settings.permission_mode);
-    let mode_rules = match mode.as_str() {
+    let mut mode = permission_mode.clone();
+    let mode_specific = match mode.as_str() {
         "plan" => "\
 === ACTIVE MODE: PLAN (maximize planning quality) ===\n\
 You are a product + technical planner first, implementer second.\n\
-FILE CHANGES ARE LOCKED until the user confirms they want this plan applied.\n\
+FILE CREATE / WRITE / EDIT TOOLS ARE LOCKED. Other tools (read, search, browser, computer, ask_user) stay available.\n\
 \n\
 GOAL: Understand the user, improve the request, propose a plan, ask questions, and wait for an explicit Apply confirmation.\n\
-Mutating tools (write_file, edit_file, run_command, delete_file, git mutations, computer_actions, and similar) are unavailable until that confirmation.\n\
-Read-only tools (read_file, list_dir, glob, grep, git_status, web_search, ask_user, todo_write) are allowed so you can inspect and plan.\n\
+Unavailable: write_file, edit_file, delete_file, make_dir, copy_file, move_file, run_command, start_dev_server, git_init/add/commit, download_file, export_client_pack.\n\
+Allowed: read_file, list_dir, glob, grep, git_status, web_search, browse_page, view_image, computer_observe, computer_actions, ask_user, todo_write, open_path, and similar non-file-write tools.\n\
 \n\
 MANDATORY FIRST RESPONSE (no write/run/scaffold tools):\n\
 1. Restate the goal in one plain sentence.\n\
@@ -2111,12 +2435,12 @@ ANSWERS THAT ARE NOT APPLY:\n\
 - A new request such as \"build a website\" or \"add a dashboard\" is not confirmation. Plan again. Do not write files.\n\
 \n\
 ONLY AFTER the user confirms Apply (clicks Apply, or clearly says \"apply this plan\" / \"implement the plan\" / \"go ahead\"):\n\
-- Implement only the agreed plan. Mutating tools then unlock with full autonomy (no Approve prompts).\n\
+- The run switches to Multi-Agent and implements the agreed plan.\n\
 - Prefer read_file / list_dir / glob / grep first if you need project context.\n\
 - If the user rejects the plan or asks to change it, adapt and stay locked; do not write files yet.\n\
 \n\
 PLAN MODE RULES:\n\
-- Do NOT write, edit, scaffold, delete, or run mutating commands until Apply is confirmed.\n\
+- Do NOT write, edit, scaffold, delete, or run commands that create files until Apply is confirmed.\n\
 - Do NOT treat answering a clarifying question as permission to implement.\n\
 - Do NOT call done until real implementation is finished (or the user only wanted a plan and says stop).\n\
 - Pure questions still get direct answers with no tools.\n\
@@ -2124,20 +2448,22 @@ PLAN MODE RULES:\n\
         "ask" => "\
 === ACTIVE MODE: ASK (maximum answer reliability) ===\n\
 You are an evidence-first research analyst and code archaeologist. Your primary job is to ANSWER the user's question clearly and completely.\n\
+FILE CREATE / WRITE / EDIT TOOLS ARE LOCKED. You may use every other tool, including search, browser, computer, and agents.\n\
 \n\
 ANSWER CONTRACT:\n\
 - Every turn must end with a substantive visible answer. Never finish with only thinking, a status line, raw tool output, or an announced next step.\n\
+- If the user attached an image, describe each one in 1-2 short sentences or a tight bullet list. Never end on thinking only.\n\
 - Answer straightforward questions directly from reliable context; do not force tool use when it adds no value.\n\
-- For project-specific or uncertain questions, investigate with the smallest useful set of read-only tools: list_dir, glob, grep, read_file, file_info, git_status, web_search, or browse_page.\n\
-- After tools return, always synthesize the evidence into an answer. If a tool fails, use the evidence that remains, state the exact gap, and still give the best supported answer.\n\
-- For non-trivial questions, structure the response as: direct answer, key findings with paths, risks/unknowns, and recommended next step.\n\
+- For project-specific or uncertain questions, investigate with the smallest useful set of tools: list_dir, glob, grep, read_file, file_info, git_status, web_search, browse_page, computer_observe.\n\
+- After tools return, always synthesize the evidence into an answer. If a tool fails, continue with what you have. Never quote HTTP status, provider ids, or internal paths to the user.\n\
+- Keep answers short. Do not write Result, Recommended next step, or Why I'm stopping sections unless the user asked for a report.\n\
 - Cite concrete project-relative paths and concise findings; distinguish verified facts from inference.\n\
 - Use session history for follow-ups and resolve words such as 'it', 'that', and 'continue' from this chat.\n\
 - Use ask_user only when a missing choice would materially change the answer.\n\
 \n\
-READ-ONLY BY DEFAULT:\n\
-- Do not scaffold, edit, install, run mutating commands, or ship features unless the user explicitly asks to implement, fix, build, apply, release, or deploy.\n\
-- If implementation is explicitly requested while Ask is active, mutations still require UI approval and should use the smallest coherent change set.\n\
+FILE WRITES ARE PROHIBITED:\n\
+- Do not call write_file, edit_file, delete_file, make_dir, copy_file, move_file, run_command, start_dev_server, git commit/init, or download_file.\n\
+- If the user asks you to build or add something, say you need Multi-Agent / Apply to change files, then still answer any question part of the request.\n\
 - Pure Ask turns end with the answer, not a product-delivery done card.\n\
 \n\
 Keep language precise, organized, and human. No filler or marketing fluff.",        "auto" => "\
@@ -2179,13 +2505,19 @@ BEHAVIOR:\n\
 - Never invent unrelated features. Stay on the user goal.\n\
 - When finished, call done with a short plain summary.",
     };
+    let mode_rules = format!("{mode_specific}\n\n{VISIBLE_REPLY_CONTRACT}");
 
     let execution_style = match mode.as_str() {
-        "plan" => "7. In PLAN mode: present the plan and questions first. Do not write, edit, or modify files until the user confirms Apply. Clarifying answers are not Apply.\n",
-        "ask" => "7. In ASK mode: evidence first (paths + findings). Do not implement unless the user explicitly asks.\n",
+        "plan" => "7. In PLAN mode: present the plan and questions first. Do not create or write files until the user confirms Apply (then Multi-Agent implements). Clarifying answers are not Apply.\n",
+        "ask" => "7. In ASK mode: short evidence-first answers. Never create or write files. Never call done. For images, describe them and stop.\n",
         "auto" => "7. In AUTO mode: keep responses concise. Prefer doing work over long preambles.\n",
         "multi_agent" => "7. In MULTI-AGENT mode: start independent local inspection tools together, then keep dependent actions ordered.\n",
         _ => "7. In FULL mode: keep responses very short. Don't explain what you are about to do — do it.\n",
+    };
+    let completion_rule = if mode == "ask" || mode == "plan" {
+        "8. Do not call `done`. End with a short visible answer. No delivery card and no Recommended next step heading unless the user asked for a report.\n"
+    } else {
+        "8. When the task is COMPLETE, call `done` with a short plain delivery summary: a 2–6 word title, one result sentence in `summary`, and only distinct supporting details in `description` and `features`. Do not repeat the same action, verification, files, or wording across fields. Leave `description` empty when it adds nothing new. Use up to 5 concise features. No hype. Pure conversation can end without done.\n"
     };
 
     let has_history = history.iter().any(|t| !t.content.trim().is_empty());
@@ -2302,10 +2634,10 @@ CAPABILITIES:\n\
 - todo_write: structured task list for multi-step work. Prefer it over narrating progress. Never say a todo/task-list tool is unavailable or that you will \"track progress directly\".\n\
 - export_client_pack: zip the project for client handoff (excludes node_modules/.git/target/dist) and write CLIENT_HANDOFF.md.\n\
 - web_search / browse_page: research the public web when local files are not enough.\n\
-- view_image: view/describe an image file (PNG/JPG/WEBP/GIF/BMP). Attached images are usually auto-described already; call view_image only when you need a closer look or a path was not auto-viewed.\n\
+- view_image: view/describe an image file (PNG/JPG/WEBP/GIF/BMP). Attached images are auto-described in parallel before the run; do not call view_image for those paths unless a description is missing.\n\
 - view_video: view a local project video through six chronological visual samples. Attached videos are already sampled automatically; call view_video only for a project file that was not attached. Visual summary only, not an audio transcript.\n\
 - Attached videos arrive as a six-frame chronological contact sheet plus its auto-generated visual description. Treat that description as the video’s visual context for every model; never invent audio or unsampled moments.\n\
-- computer_observe / computer_actions: Preview-only control when Computer Use is enabled. They can list Preview tab identities, activate a selected Preview tab, navigate/open Preview Browser tabs, and interact only with the active page; they never control Windows or other apps. For \"playwright this website\" and equivalent live-browser requests, observe and interact with Preview before reading source or creating tests. Never use open_url for Preview navigation because it launches the external default browser.
+- computer_observe / computer_actions: Preview-only control when Computer Use is enabled. They can list Preview tab identities, activate a selected Preview tab, navigate/open Preview Browser tabs, and interact only with the active page; they never control Windows or other apps. For \"playwright this website\" and equivalent live-browser requests, observe and interact with Preview before reading source or creating tests. If Preview is closed, still call open_tab or navigate; the host opens the Preview window and a Preview Browser tab automatically. Never ask the user to open Preview. Never use open_url for Preview navigation because it launches the external default browser.
 
 BASE RULES (mode rules above win on conflict):\n\
 1. READ THE USER'S INTENT FIRST. Questions and chat get text answers. Build/create/modify requests may use tools per mode.\n\
@@ -2315,7 +2647,7 @@ BASE RULES (mode rules above win on conflict):\n\
 5. After scaffolding, read generated files before editing. Use edit_file for precise edits; write_file for new files.\n\
 6. Verify work with build/test commands when possible.\n\
 {execution_style}\
-8. When the task is COMPLETE, call `done` with a short plain delivery summary: a 2–6 word title, one result sentence in `summary`, and only distinct supporting details in `description` and `features`. Do not repeat the same action, verification, files, or wording across fields. Leave `description` empty when it adds nothing new. Use up to 5 concise features. No hype. Pure conversation can end without done.\n\
+{completion_rule}\
 9. If a command fails, read the error, fix the cause, and retry — don't give up immediately.\n\
 10. For an active build, fix, release, deployment, website, APK, app, or software task: keep taking concrete tool steps until all requested work is implemented and verified. Do NOT stop at a progress update, partial response, or an unfinished plan, and never ask the user to type \"continue\". If the provider reaches an output limit, the host will resume this same run automatically with its current workspace and tool history.\n\
 11. Only do what the user asked (or what they approved in Plan mode). No unrelated changes.\n\
@@ -2340,6 +2672,7 @@ TOOL REFERENCE: read_file, write_file, edit_file, list_dir, glob, grep, run_comm
         task_profile_policy = task_profile_policy,
         execution_profile_policy = execution_profile_policy,
         execution_style = execution_style,
+        completion_rule = completion_rule,
         tool_scheduling_rules = tool_scheduling_rules,
         memory_rules = memory_rules,
     );
@@ -2350,8 +2683,7 @@ TOOL REFERENCE: read_file, write_file, edit_file, list_dir, glob, grep, run_comm
     } else if mode == "ask" && !has_history {
         format!(
             "{prompt}\n\n\
-[Ask mode active] Always return a substantive visible answer. Answer directly when reliable context is enough; otherwise investigate with read/search tools, then synthesize evidence with concrete paths and findings. \
-Do not implement or scaffold unless I explicitly ask. Never end on reasoning, status, or raw tool output."
+[Ask mode active] Give a short visible answer. If I attached images, describe each in 1-2 sentences. Never create or write files. Do not call done. Never end on reasoning only."
         )
     } else if mode == "plan" && !has_history {
         format!(
@@ -2360,7 +2692,7 @@ Do not implement or scaffold unless I explicitly ask. Never end on reasoning, st
 (3) you MUST call the ask_user tool with options: string[] (2–6 choices) and allow_other=true, \
 including whether to Apply this plan and implement now vs keep planning without file changes. \
 Writing \"choose one\" in text alone does NOT show UI buttons — only the ask_user tool does. \
-Do not write, edit, or modify files until I confirm Apply. Stack/scope answers are not Apply."
+Do not write, edit, or create files until I confirm Apply (then Multi-Agent implements). Stack/scope answers are not Apply."
         )
     } else if mode == "plan" {
         format!(
@@ -2373,23 +2705,25 @@ do not only list options in text. Continue or adjust earlier plans instead of re
     } else if mode == "ask" {
         format!(
             "{prompt}\n\n\
-[Ask mode · continuing session] Use this session's history to resolve follow-ups. Always return a substantive visible answer; investigate only as needed, cite evidence, and synthesize after tools. \
-Do not implement unless I explicitly ask. Mutating tools still need approval."
+[Ask mode · continuing session] Use this session's history. Keep the visible answer short. Never create or write files. Do not call done."
         )
     } else if mode == "full" {
         format!(
             "{prompt}\n\n\
-[Full mode active] Implement with full autonomy. Use session history. Stay focused on this request."
+[Full mode active] Implement with full autonomy. Use session history. Stay focused on this request. \
+If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         )
     } else if mode == "multi_agent" {
         format!(
             "{prompt}\n\n\
-[Multi-Agent mode active] Implement with Ship-level autonomy. Start independent local inspection tools together, then keep all dependent actions ordered. Use session history and stay focused on this request."
+[Multi-Agent mode active] Implement with Ship-level autonomy. Start independent local inspection tools together, then keep all dependent actions ordered. Use session history and stay focused on this request. \
+If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         )
     } else {
         format!(
             "{prompt}\n\n\
-[Auto mode active] Build with sensible defaults. Use session history. High-risk / out-of-project actions may still need approval."
+[Auto mode active] Build with sensible defaults. Use session history. High-risk / out-of-project actions may still need approval. \
+If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         )
     };
 
@@ -2837,6 +3171,15 @@ The tool entries are historical summaries; use fresh tools for the current works
             return Ok(None);
         }
 
+        if let Some(text) = resp.text.take() {
+            let cleaned = strip_process_preamble(&text);
+            resp.text = if cleaned.is_empty() {
+                None
+            } else {
+                Some(cleaned)
+            };
+        }
+
         // Providers without streaming support still expose their supplied
         // reasoning after completion; animate that as a compatibility fallback.
         if !reasoning_streamed.load(Ordering::SeqCst) {
@@ -3007,6 +3350,22 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 ));
                 iteration = iteration.saturating_add(1);
                 continue;
+            }
+
+            if !visible_text_streamed.load(Ordering::SeqCst) {
+                let fallback = resp
+                    .text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| last_resort_visible_reply(&resp));
+                emit(
+                    &app,
+                    &session_id,
+                    "text",
+                    json!({ "text": fallback, "continuation": resume_assistant }),
+                );
             }
 
             emit(
@@ -3257,8 +3616,9 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 if mode == "plan" && !task_profile.is_design_edit() {
                     if ask_user_confirms_plan_implementation(&response, &question) {
                         run.set_plan_implementation_unlocked(true);
+                        mode = "multi_agent".into();
                         response.push_str(
-                            "\n\n[System] The user confirmed Apply. You may now write, edit, and run commands to implement the agreed plan. Mutating tools are unlocked.",
+                            "\n\n[System] The user confirmed Apply. Switched to Multi-Agent. You may now write, edit, and run commands to implement the agreed plan.",
                         );
                     } else if !run.plan_implementation_unlocked() {
                         response.push_str(
@@ -3268,11 +3628,10 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 }
                 (true, response)
             } else {
-                let mode = normalized_permission_mode(&settings.permission_mode);
-                if mode == "plan"
-                    && !task_profile.is_design_edit()
-                    && !run.plan_implementation_unlocked()
-                    && tools::is_plan_locked_tool(&tc.name)
+                if tools::file_writes_blocked(
+                    &mode,
+                    run.plan_implementation_unlocked() || task_profile.is_design_edit(),
+                ) && tools::is_file_mutating_tool(&tc.name)
                 {
                     let denied = tools::PLAN_LOCK_MESSAGE.to_string();
                     flavour.record_tool_result(&tc.id, &tc.name, &tc.arguments, false, &denied);
@@ -3713,22 +4072,22 @@ fn desktop_control_effort(configured: &str, prompt: &str, desktop_enabled: bool)
 fn cursor_permission_instructions(mode: &str) -> &'static str {
     match mode {
         "multi_agent" => {
-            "Execution mode: MULTI-AGENT. Use Ship-level autonomy. Start independent local discovery tools together; keep edits, commands, browser actions, and computer control ordered."
+            "Execution mode: MULTI-AGENT. Use Ship-level autonomy. Start independent local discovery tools together; keep edits, commands, browser actions, and computer control ordered. If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         }
         "full" => {
-            "Execution mode: FULL. The user permits project work inside the selected project directory."
+            "Execution mode: FULL. The user permits project work inside the selected project directory. If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         }
         "auto" => {
-            "Execution mode: AUTO. Work inside the selected project directory and rely on Cursor Auto-review. If an action cannot be reviewed safely, stop and explain the limitation."
+            "Execution mode: AUTO. Work inside the selected project directory and rely on Cursor Auto-review. If an action cannot be reviewed safely, stop and explain the limitation. If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         }
         "ask" => {
-            "Execution mode: ASK · ANSWER MAX. This is a read-only investigation turn: answer the user's actual question directly, accurately, and completely. Use available read-only tools when they materially improve confidence, then synthesize their results into one organized, self-contained response. Lead with the answer, use clear sections or steps when useful, distinguish facts from inference, and surface uncertainty honestly. Never end with blank text, status-only text, raw tool output, or an internal note. Do not edit files, run shell commands, or invoke mutating tools."
+            "Execution mode: ASK. Answer the user's question in a short visible reply. For attached images, describe each in 1-2 sentences. Do not write Result or Recommended next step sections. Do not call done. Do not mention vision providers, HTTP errors, or paste paths. You may use read, search, browser, computer, and question tools. Never create, edit, or write files, and do not run shell/scaffold commands. Never finish with only thinking/reasoning."
         }
         "plan" => {
-            "Execution mode: PLAN. Files are locked. Restate and improve the request, present a numbered plan, and call ask_user (include whether to Apply/implement now, or keep planning). Do not write, edit, or modify files until the user confirms Apply. Stack or scope answers are not Apply. After they confirm Apply, implement the agreed plan with full tool permissions and no further Approve prompts."
+            "Execution mode: PLAN. File create/write/edit tools are locked; other tools stay available. Restate and improve the request, present a numbered plan in visible reply text, and call ask_user (include whether to Apply/implement now, or keep planning). After they confirm Apply, the run switches to Multi-Agent to implement. Stack or scope answers are not Apply. Never finish with only thinking/reasoning."
         }
         _ => {
-            "Execution mode: PLAN. Files are locked. Restate and improve the request, present a numbered plan, and call ask_user (include whether to Apply/implement now, or keep planning). Do not write, edit, or modify files until the user confirms Apply. Stack or scope answers are not Apply. After they confirm Apply, implement the agreed plan with full tool permissions and no further Approve prompts."
+            "Execution mode: PLAN. File create/write/edit tools are locked; other tools stay available. Restate and improve the request, present a numbered plan in visible reply text, and call ask_user (include whether to Apply/implement now, or keep planning). After they confirm Apply, the run switches to Multi-Agent to implement. Stack or scope answers are not Apply. Never finish with only thinking/reasoning."
         }
     }
 }
@@ -3752,7 +4111,7 @@ fn cursor_computer_use_instructions(enabled: bool) -> &'static str {
 - set_viewport with viewport=mobile|tablet|desktop must be the only action in its batch, then observe again. save_spec writes tests/horma-preview.spec.ts from the last Preview run. record start/stop and replay drive Watch me from the sandwich.\n\
 - Password values are always [redacted] in observations and action/check results. Never try to reveal or verify the actual value of a credential field.\n\
 - For nested tables, lists, modals, and panes, scroll with the observed scrollable ref or a descendant ref. With no target, scroll happens under the visible AI cursor. Positive delta_y scrolls down; negative scrolls up. viewport.scrollY measures only the page. Read moved, boundary, before, after, and applied; if boundary is true, do not repeat the identical scroll blindly.\n\
-- To visit a URL inside Preview, use exactly one navigate action for the active tab or one open_tab action for another Preview Browser tab. To read another listed Preview tab, use exactly one activate_tab action with its tab_id. Never use open_url: it launches the external default browser and is outside Computer Use.\n\
+- To visit a URL inside Preview, use exactly one navigate action for the active tab or one open_tab action for another Preview Browser tab. To read another listed Preview tab, use exactly one activate_tab action with its tab_id. If Preview is closed, still send that open_tab or navigate action — the host opens the Preview window and a Preview Browser tab automatically. Never ask the user to open Preview. Never use open_url: it launches the external default browser and is outside Computer Use.\n\
 - After open_tab, navigate, activate_tab, link navigation, a stale-ref result, or a major layout replacement, call computer_observe again before reusing refs. Hidden-tab page content remains unreadable until that tab is activated. After an ordinary scroll, trust the measured scroll result and re-observe only when newly revealed controls/content must be discovered.\n\
 - For broad testing cover the happy path, one validation/error path, keyboard accessibility, modal/tab/navigation behavior, and relevant nested scrolling. Keep destructive submissions reversible or use disposable test data.\n\
 - When DOM evidence cannot prove canvas pixels, network behavior, or internal logic, combine live Preview evidence with bounded source inspection and project build/tests. Create or update a Playwright spec only when the user explicitly asks for a test/spec file.\n\
@@ -3897,20 +4256,22 @@ mod tests {
         cursor_permission_instructions, cursor_resume_id_for_task,
         desktop_computer_use_instructions, desktop_control_effort, display_model_name,
         display_provider_name, ensure_plan_apply_options, identity_instructions,
-        inspection_preview_watch_state, model_effort_for_task, next_stalled_recovery_count,
-        normalize_tool_calls, normalized_permission_mode, orphaned_tool_previews,
-        parallel_readonly_batch_len, promote_reasoning_to_visible_answer,
-        prompt_unlocks_plan_implementation, provider_tool_result_content, public_tool_arguments,
-        public_tool_preview_delta, reply_announces_pending_action, reply_was_cut_off,
-        resolve_tool_preview_name, response_has_visible_answer, response_made_concrete_progress,
-        starts_as_explanatory_request, stop_reason_requires_continuation,
+        infer_permission_mode, inspection_preview_watch_state, last_resort_visible_reply,
+        model_effort_for_task, next_stalled_recovery_count, normalize_tool_calls,
+        normalized_permission_mode, orphaned_tool_previews, parallel_readonly_batch_len,
+        promote_reasoning_to_visible_answer, prompt_unlocks_plan_implementation,
+        provider_tool_result_content, public_tool_arguments, public_tool_preview_delta,
+        reply_announces_pending_action, reply_was_cut_off, resolve_tool_preview_name,
+        response_has_visible_answer, response_made_concrete_progress,
+        starts_as_explanatory_request, stop_reason_requires_continuation, strip_process_preamble,
         task_likely_requires_project_completion, task_requires_project_completion,
         tool_confirm_summary, truncate_utf8, user_confirms_plan_implementation, uses_cursor_sdk,
         AgentTaskProfile, AutomaticContinuationReason, HistoryToolCall, HistoryTurn,
         InspectionPreviewWatchState, ACTIVE_RUN_CONTEXT_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_BYTES,
-        FAST_DESIGN_HISTORY_MAX_TURNS, MAX_CONSECUTIVE_STALLED_RECOVERIES,
-        NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS, PLAN_APPLY_OPTION, PLAN_REVISE_OPTION,
-        PROVIDER_TOOL_RESULT_MAX_BYTES, STREAMED_INSPECTION_TOOL_TIMEOUT,
+        FAST_DESIGN_HISTORY_MAX_TURNS, LAST_RESORT_VISIBLE_REPLY,
+        MAX_CONSECUTIVE_STALLED_RECOVERIES, NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS,
+        PLAN_APPLY_OPTION, PLAN_REVISE_OPTION, PROVIDER_TOOL_RESULT_MAX_BYTES,
+        STREAMED_INSPECTION_TOOL_TIMEOUT,
     };
     use crate::llm::{ChatMessage, LlmResponse, ToolCall};
     use anyhow::anyhow;
@@ -4309,12 +4670,15 @@ mod tests {
     #[test]
     fn unknown_permission_modes_fail_closed_to_plan() {
         assert_eq!(normalized_permission_mode("unexpected"), "plan");
-        assert!(cursor_permission_instructions("plan").contains("Files are locked"));
-        assert!(cursor_permission_instructions("plan").contains("Do not write"));
+        assert!(cursor_permission_instructions("plan")
+            .contains("File create/write/edit tools are locked"));
+        assert!(cursor_permission_instructions("plan").contains("Multi-Agent"));
         assert!(!cursor_permission_instructions("plan").contains("Ship-level"));
         assert_eq!(normalized_permission_mode("research"), "ask");
         assert_eq!(normalized_permission_mode("ask"), "ask");
-        assert!(cursor_permission_instructions("ask").contains("read-only"));
+        assert!(
+            cursor_permission_instructions("ask").contains("Never create, edit, or write files")
+        );
         assert_eq!(normalized_permission_mode("multi_agent"), "multi_agent");
         assert!(cursor_permission_instructions("multi_agent").contains("MULTI-AGENT"));
     }
@@ -4366,6 +4730,63 @@ mod tests {
     }
 
     #[test]
+    fn infer_permission_mode_maps_ask_plan_and_build_intent() {
+        assert_eq!(
+            infer_permission_mode("what does this form do?").as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode("can you explain this screenshot").as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode("make a plan for the HR module").as_deref(),
+            Some("plan")
+        );
+        assert_eq!(
+            infer_permission_mode("don't implement yet, just plan").as_deref(),
+            Some("plan")
+        );
+        assert_eq!(
+            infer_permission_mode(
+                "can you add this form after the final interview if employee passed the interview"
+            )
+            .as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("add a login page to this app").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("implement the plan").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("[Attached image: C:\\tmp\\form.png] can you add this form")
+                .as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(infer_permission_mode("yes"), None);
+        assert_eq!(infer_permission_mode("React + Vite"), None);
+        assert_eq!(
+            infer_permission_mode("how do I add a form?").as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode("can you describe what this images are").as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode(
+                "[Attached image: a.png]\n[Attached image: b.png]\n[Attached image: c.png]\ncan you describe what this images are"
+            )
+            .as_deref(),
+            Some("ask")
+        );
+    }
+
+    #[test]
     fn multi_agent_parallelizes_only_an_initial_independent_read_pack() {
         let calls = vec![
             ToolCall {
@@ -4405,6 +4826,8 @@ mod tests {
         assert!(policy.contains("navigate"));
         assert!(policy.contains("activate_tab"));
         assert!(policy.contains("Never use open_url"));
+        assert!(policy.contains("opens the Preview window"));
+        assert!(policy.contains("Never ask the user to open Preview"));
         assert!(policy.contains("Hidden-tab page content remains unreadable"));
         assert!(policy.contains("Use this evidence loop"));
         assert!(policy.contains("set_value"));
@@ -4628,6 +5051,50 @@ mod tests {
     }
 
     #[test]
+    fn last_resort_visible_reply_uses_finished_thought_or_fallback() {
+        let finished = LlmResponse {
+            text: None,
+            tool_calls: Vec::new(),
+            reasoning_content: Some(
+                "This screenshot is an employee onboarding form with name, email, and start date fields."
+                    .into(),
+            ),
+            stop_reason: "stop".into(),
+            usage_tokens: 12,
+        };
+        assert!(last_resort_visible_reply(&finished).contains("onboarding form"));
+
+        let meta_only = LlmResponse {
+            text: None,
+            tool_calls: Vec::new(),
+            reasoning_content: Some(
+                "The user just wants a description of the images. Let me describe them.".into(),
+            ),
+            stop_reason: "stop".into(),
+            usage_tokens: 8,
+        };
+        assert_eq!(
+            last_resort_visible_reply(&meta_only),
+            LAST_RESORT_VISIBLE_REPLY
+        );
+    }
+
+    #[test]
+    fn strip_process_preamble_drops_thought_leak_before_the_answer() {
+        let leaked = "The user wants me to describe the attached images. The auto-view timed out. \
+Let me call view_image on the three images to get a closer look. Here's what I see in the three images:\n\n\
+**Image 1** — COMMAND logo.";
+        assert_eq!(
+            strip_process_preamble(leaked),
+            "Here's what I see in the three images:\n\n**Image 1** — COMMAND logo."
+        );
+        assert!(strip_process_preamble(
+            "The user just wants a description of the images. Let me describe them."
+        )
+        .is_empty());
+    }
+
+    #[test]
     fn cut_off_replies_are_detected_and_resumed() {
         // The model produced reasoning but the visible answer was cut off at a
         // dangling word (the exact "suddenly stops at 'Let'" symptom).
@@ -4668,6 +5135,35 @@ mod tests {
         let mut promoted = finished_thought;
         assert!(promote_reasoning_to_visible_answer(&mut promoted));
         assert_eq!(promoted.text.as_deref(), Some(explained));
+
+        let unpunctuated = "The attached form is an incident report with employee name, date, and supervisor sign-off fields";
+        assert!(unpunctuated.chars().count() >= 24);
+        let mut thought_only_unpunctuated = LlmResponse {
+            text: None,
+            tool_calls: Vec::new(),
+            reasoning_content: Some(unpunctuated.into()),
+            stop_reason: "stop".into(),
+            usage_tokens: 10,
+        };
+        assert!(promote_reasoning_to_visible_answer(
+            &mut thought_only_unpunctuated
+        ));
+        assert_eq!(
+            thought_only_unpunctuated.text.as_deref(),
+            Some(unpunctuated)
+        );
+
+        let meta = "The user just wants a description of the three images. This is a pure description request. No tools needed beyond what's already provided. Let me describe them.";
+        assert!(conclusion_from_reasoning(meta).is_none());
+        let mut meta_only = LlmResponse {
+            text: None,
+            tool_calls: Vec::new(),
+            reasoning_content: Some(meta.into()),
+            stop_reason: "stop".into(),
+            usage_tokens: 10,
+        };
+        assert!(!promote_reasoning_to_visible_answer(&mut meta_only));
+        assert!(reply_was_cut_off(&meta_only));
 
         // A finished answer ends cleanly and must NOT be resumed.
         let complete = LlmResponse {
@@ -4806,5 +5302,16 @@ mod tests {
         assert!(!task_likely_requires_project_completion(
             "How do I run a benchmark with this bot?"
         ));
+        assert!(starts_as_explanatory_request("describe this images"));
+        assert!(!task_likely_requires_project_completion(
+            "describe this images"
+        ));
+        assert_eq!(
+            infer_permission_mode(
+                "[Attached image: a.png]\n[Attached image: b.png]\n[Attached image: c.png]\ndescribe this images"
+            )
+            .as_deref(),
+            Some("ask")
+        );
     }
 }

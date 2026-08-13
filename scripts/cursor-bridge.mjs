@@ -221,6 +221,37 @@ const READ_ONLY_TOOLS = new Set([
   "computer_actions",
 ]);
 
+const FILE_MUTATING_HOST_TOOLS = new Set([
+  "write_file",
+  "edit_file",
+  "delete_file",
+  "make_dir",
+  "copy_file",
+  "move_file",
+  "git_init",
+  "git_add_all",
+  "git_commit",
+  "download_file",
+  "run_command",
+  "start_dev_server",
+  "export_client_pack",
+]);
+
+const ASK_EXTRA_TOOLS = new Set([
+  "open_path",
+  "open_url",
+  "kill_process",
+  "computer_list_windows",
+  "computer_observe_window",
+  "computer_focus_window",
+  "computer_click",
+  "computer_type_text",
+  "computer_press_key",
+  "computer_scroll",
+  "computer_drag",
+  "computer_game_sequence",
+]);
+
 // Cursor can keep its async event stream open after a built-in inspection
 // tool has started but stopped producing events. General reasoning remains
 // unbounded; only a visible search/read card gets this absolute deadline.
@@ -364,10 +395,17 @@ const CURSOR_MUTATING_BUILTINS = new Set([
 
 function isToolAllowed(policy, name) {
   const tool = String(name || "").trim().toLowerCase();
+  if (CURSOR_MUTATING_BUILTINS.has(tool)) {
+    return !policy.readOnly;
+  }
   if (policy.requestedMode === "plan") {
-    // Block Cursor built-in writes/shell. Host tools (write_file, run_command, …)
-    // stay allowed so Rust can enforce the Apply lock without cancelling the run.
-    return !CURSOR_MUTATING_BUILTINS.has(tool);
+    // Block Cursor built-in writes/shell. Host mutating tools stay allowed so
+    // Rust can enforce the Apply lock without cancelling the run.
+    return true;
+  }
+  if (policy.requestedMode === "ask") {
+    if (FILE_MUTATING_HOST_TOOLS.has(tool)) return false;
+    return READ_ONLY_TOOLS.has(tool) || ASK_EXTRA_TOOLS.has(tool);
   }
   if (!policy.readOnly) return true;
   return READ_ONLY_TOOLS.has(tool);
@@ -1075,6 +1113,56 @@ function createTextCoalescer(onFlush) {
 }
 
 /**
+ * Reasoning models (and Cursor thinking events) sometimes put the entire
+ * answer in thinking and finish with empty assistant text. Promote a finished
+ * thought so Ask / Plan / Auto / Full / Multi-Agent still get a visible reply.
+ */
+function conclusionFromReasoning(reasoning) {
+  let remaining = String(reasoning || "").trim();
+  const isProcess = (sentence) => {
+    const lower = sentence.trim().replace(/^["'`*]+/, "").toLowerCase();
+    if (!lower) return false;
+    if (
+      lower.includes("auto-view timed out") ||
+      lower.includes("let me call view_image") ||
+      lower.includes("call view_image on") ||
+      lower.includes("pure description request") ||
+      lower.includes("no tools needed")
+    ) {
+      return true;
+    }
+    return [
+      "the user wants",
+      "the user just wants",
+      "the user asked",
+      "the user is asking",
+      "this is a pure",
+      "let me describe",
+      "i'll describe",
+      "i will describe",
+      "let me call",
+      "let me look",
+    ].some((prefix) => lower.startsWith(prefix));
+  };
+  while (remaining) {
+    const match = remaining.match(/^[\s\S]*?(?:[.!?…]|\n|$)/);
+    const sentence = match?.[0] || remaining;
+    if (!sentence.trim()) {
+      remaining = remaining.slice(sentence.length);
+      continue;
+    }
+    if (!isProcess(sentence)) break;
+    remaining = remaining.slice(sentence.length).trimStart();
+  }
+  const visible = remaining.trim();
+  if ([...visible].length < 24) return "";
+  const last = visible.slice(-1);
+  const endsCleanly = ".!?…:;)]}`".includes(last) || visible.endsWith("```");
+  if (!endsCleanly && [...visible].length < 40) return "";
+  return visible;
+}
+
+/**
  * Hide the host-only completion marker from the visible reply while accepting
  * streamed chunks where the marker can be split at arbitrary boundaries.
  * The Rust host uses the resulting completion flag to resume an unfinished
@@ -1660,6 +1748,14 @@ async function runMain(protocol) {
   flushHeldAssistant();
   completionFilter.flush();
   textOut.flush();
+  if (!sawText) {
+    const promoted = conclusionFromReasoning(thinkingSeen);
+    if (promoted) {
+      pushAssistantText(promoted);
+      completionFilter.flush();
+      textOut.flush();
+    }
+  }
 
   const status = result?.status || "finished";
   const errMsg =
@@ -1721,6 +1817,7 @@ export {
   buildAgentPrompt,
   computerApprovalSummary,
   createCompletionMarkerFilter,
+  conclusionFromReasoning,
   createComputerUseTools,
   createDuplexProtocol,
   createHostTools,

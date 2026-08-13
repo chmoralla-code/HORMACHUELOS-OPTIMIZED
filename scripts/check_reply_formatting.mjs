@@ -34,11 +34,12 @@ function loadReplyModules() {
 
   return {
     normalizeAssistantMarkdown: utilSandbox.module.exports.normalizeAssistantMarkdown,
+    stripProcessPreamble: utilSandbox.module.exports.stripProcessPreamble,
     appendAssistantTranscriptChunk: sessionSandbox.module.exports.appendAssistantTranscriptChunk,
   };
 }
 
-const { normalizeAssistantMarkdown, appendAssistantTranscriptChunk } = loadReplyModules();
+const { normalizeAssistantMarkdown, stripProcessPreamble, appendAssistantTranscriptChunk } = loadReplyModules();
 
 const malformedCompletion = [
   "done",
@@ -140,11 +141,44 @@ assert.equal(
   "A company-owned **HR / payroll portal** for staff.",
 );
 
+const thoughtSplitTranscript = [
+  { type: "user", text: "keep going" },
+  { type: "run_start", permissionMode: "multi_agent" },
+  { type: "assistant", text: "The" },
+  { type: "thinking", iteration: 2, text: "Need to check Preview." },
+];
+assert.equal(
+  appendAssistantTranscriptChunk(
+    thoughtSplitTranscript,
+    " Preview window isn't open yet. Let me check the server log and try observing.",
+    70,
+    false,
+  ),
+  true,
+);
+assert.equal(
+  thoughtSplitTranscript.filter((message) => message.type === "assistant").length,
+  1,
+);
+assert.equal(
+  thoughtSplitTranscript[2].text,
+  "The Preview window isn't open yet. Let me check the server log and try observing.",
+);
+
+assert.equal(
+  stripProcessPreamble(
+    "The user wants me to describe the attached images. The auto-view timed out. Let me call view_image on the three images to get a closer look. Here's what I see in the three images:",
+  ),
+  "Here's what I see in the three images:",
+);
+
 const chatSource = readFileSync(new URL("../src/components/chat.ts", import.meta.url), "utf8");
 for (const requiredReplyStitch of [
   "const mergedAssistantChunk = !this.replaying && this.recordEvent(e);",
   "private renderEvent(e: AgentEvent, mergedAssistantChunk = false)",
   "e.payload.continuation === true || mergedAssistantChunk",
+  "shouldResumeOpenAssistant",
+  "insertBefore(wrap, this.pendingAssistantMsg)",
   "scheduleStableMessageVirtualization",
   "--history-item-height",
 ]) {

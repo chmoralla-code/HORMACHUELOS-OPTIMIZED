@@ -18,7 +18,7 @@ const MODES: {
     chip: "plan",
     label: "Plan",
     title:
-      "Plan — refine request, suggest options, numbered plan; wait for Apply before any file changes.",
+      "Plan — refine request, suggest options, numbered plan; file writes stay locked until Apply (then Multi-Agent implements).",
     capability: "Thinking",
   },
   {
@@ -34,7 +34,7 @@ const MODES: {
     chip: "ask",
     label: "Ask",
     title:
-      "Ask — maximum answer reliability with evidence; reads free, writes need Approve.",
+      "Ask — maximum answer reliability with evidence; all tools except file create/write/edit.",
     capability: "Answer Max",
   },
   {
@@ -486,9 +486,9 @@ export class ModelBar {
       this.syncCapabilityDefault();
       this.renderProviderRail();
       const labels: Record<PermissionMode, string> = {
-        plan: "Plan — refine first; Apply to change files",
+        plan: "Plan — refine first; Apply switches to Multi-Agent to change files",
         auto: "Auto — build with defaults",
-        ask: "Ask — Answer Max reliability",
+        ask: "Ask — answer with evidence; no file writes",
         full: "Full — max autonomy",
         multi_agent: "Multi-Agent — parallel discovery",
       };
@@ -983,6 +983,21 @@ export class ModelBar {
     this.openChipMenu(btn, menu);
   }
 
+  async applyIntentMode(mode: PermissionMode) {
+    if (this.getMode() === mode) return;
+    const capability =
+      mode === "ask" ? "answer_max" : mode === "plan" ? "thinking" : mode === "multi_agent" ? "autonomous" : undefined;
+    const status =
+      mode === "ask"
+        ? "Ask · Answer Max"
+        : mode === "plan"
+          ? "Plan mode"
+          : mode === "multi_agent"
+            ? "Multi-Agent"
+            : mode;
+    await this.applyPlusMode(mode, capability, status);
+  }
+
   private async applyPlusMode(
     mode: PermissionMode,
     capability: string | undefined,
@@ -999,8 +1014,14 @@ export class ModelBar {
     this.renderProviderRail();
     try {
       await api.saveSettings(this.settings);
-      this.settings = await api.getSettings();
+      const saved = await api.getSettings();
+      saved.permission_mode = mode;
+      saved.auto_approve =
+        mode === "auto" || mode === "full" || mode === "multi_agent";
+      if (capability) saved.capability_mode = this.settings.capability_mode;
+      this.settings = saved;
       this.normalizeMode();
+      this.settings.permission_mode = mode;
       this.syncCapabilityDefault();
       this.renderProviderRail();
       this.setStatus(status);

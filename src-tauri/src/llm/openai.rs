@@ -261,19 +261,71 @@ fn is_cut_off_stream_body(body: &str) -> bool {
     true
 }
 
-/// Read a string from a delta/message field. Accepts a bare string or an
-/// object with `content` / `text` (Grok, DeepSeek, and some hosted proxies).
+/// Read a string from a delta/message field. Accepts a bare string, an
+/// object with `content` / `text` (Grok, DeepSeek, and some hosted proxies),
+/// or an OpenAI content-part array (`[{ "type": "text", "text": "…" }]`).
+fn join_text_parts(parts: &[Value]) -> String {
+    let mut out = String::new();
+    for part in parts {
+        if let Some(text) = part.as_str() {
+            out.push_str(text);
+            continue;
+        }
+        let kind = part.get("type").and_then(Value::as_str).unwrap_or("");
+        if matches!(
+            kind,
+            "reasoning" | "thinking" | "tool_use" | "tool_call" | "function_call" | "tool-call"
+        ) {
+            continue;
+        }
+        if let Some(text) = part
+            .get("text")
+            .or_else(|| part.get("content"))
+            .and_then(Value::as_str)
+        {
+            out.push_str(text);
+        }
+    }
+    out
+}
+
+fn join_reasoning_parts(parts: &[Value]) -> String {
+    let mut out = String::new();
+    for part in parts {
+        let kind = part.get("type").and_then(Value::as_str).unwrap_or("");
+        if !matches!(kind, "reasoning" | "thinking") {
+            continue;
+        }
+        if let Some(text) = part
+            .get("text")
+            .or_else(|| part.get("content"))
+            .and_then(Value::as_str)
+        {
+            out.push_str(text);
+        }
+    }
+    out
+}
+
 fn value_text(value: &Value) -> Option<String> {
     if let Some(text) = value.as_str().filter(|text| !text.is_empty()) {
         return Some(text.to_string());
     }
+    if let Some(joined) = value.as_array().map(|parts| join_text_parts(parts)) {
+        if !joined.is_empty() {
+            return Some(joined);
+        }
+    }
     for key in ["content", "text"] {
-        if let Some(text) = value
-            .get(key)
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-        {
-            return Some(text.to_string());
+        if let Some(field) = value.get(key) {
+            if let Some(text) = field.as_str().filter(|text| !text.is_empty()) {
+                return Some(text.to_string());
+            }
+            if let Some(joined) = field.as_array().map(|parts| join_text_parts(parts)) {
+                if !joined.is_empty() {
+                    return Some(joined);
+                }
+            }
         }
     }
     None
@@ -292,10 +344,7 @@ fn parse_response(text: &str) -> Result<LlmResponse> {
         .and_then(|choices| choices.get(0))
         .ok_or_else(|| anyhow!("invalid_response: The provider returned no choices."))?;
     let message = choice.get("message").cloned().unwrap_or(Value::Null);
-    let mut content = message
-        .get("content")
-        .and_then(|content| content.as_str())
-        .map(str::to_string);
+    let mut content = message.get("content").and_then(value_text);
 
     // Providers disagree on the field name for chain-of-thought.
     let mut reasoning_content = [
@@ -312,6 +361,14 @@ fn parse_response(text: &str) -> Result<LlmResponse> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     });
+    if reasoning_content.is_none() {
+        if let Some(parts) = message.get("content").and_then(Value::as_array) {
+            let nested = join_reasoning_parts(parts);
+            if !nested.trim().is_empty() {
+                reasoning_content = Some(nested);
+            }
+        }
+    }
 
     // Some free/open models embed thoughts as <think>…</think> inside content.
     if reasoning_content.is_none() {
@@ -547,6 +604,15 @@ impl StreamAccumulator {
                 self.text.push_str(&content);
                 if let Some(sink) = on_content {
                     sink(&content);
+                }
+            }
+        }
+        if let Some(parts) = delta.get("content").and_then(Value::as_array) {
+            let nested_reasoning = join_reasoning_parts(parts);
+            if !nested_reasoning.is_empty() {
+                self.reasoning.push_str(&nested_reasoning);
+                if let Some(sink) = on_reasoning {
+                    sink(&nested_reasoning);
                 }
             }
         }
@@ -1392,6 +1458,30 @@ mod tests {
         assert_eq!(response.tool_calls[0].name, "list_dir");
         assert_eq!(response.tool_calls[0].arguments, json!({ "path": "." }));
         assert_eq!(response.usage_tokens, 42);
+    }
+
+    #[test]
+    fn parses_openai_content_part_arrays_as_visible_text() {
+        let response = parse_response(
+            r#"{
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": [
+                        {"type": "thinking", "text": "Let me look."},
+                        {"type": "text", "text": "The form collects employee name and email."}
+                    ]
+                }
+            }]
+        }"#,
+        )
+        .expect("array content should parse");
+
+        assert_eq!(
+            response.text.as_deref(),
+            Some("The form collects employee name and email.")
+        );
+        assert_eq!(response.reasoning_content.as_deref(), Some("Let me look."));
     }
 
     #[test]
