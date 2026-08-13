@@ -261,6 +261,29 @@ fn is_cut_off_stream_body(body: &str) -> bool {
     true
 }
 
+/// Read a string from a delta/message field. Accepts a bare string or an
+/// object with `content` / `text` (Grok, DeepSeek, and some hosted proxies).
+fn value_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str().filter(|text| !text.is_empty()) {
+        return Some(text.to_string());
+    }
+    for key in ["content", "text"] {
+        if let Some(text) = value
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            return Some(text.to_string());
+        }
+    }
+    None
+}
+
+fn delta_string(delta: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| delta.get(*key).and_then(value_text))
+}
+
 fn parse_response(text: &str) -> Result<LlmResponse> {
     let value: Value = serde_json::from_str(text)
         .map_err(|_| anyhow!("invalid_response: The provider returned malformed JSON."))?;
@@ -285,7 +308,7 @@ fn parse_response(text: &str) -> Result<LlmResponse> {
     .find_map(|key| {
         message
             .get(*key)
-            .and_then(|value| value.as_str())
+            .and_then(value_text)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     });
@@ -519,27 +542,29 @@ impl StreamAccumulator {
             .or_else(|| choice.get("message"))
             .unwrap_or(&Value::Null);
 
-        if let Some(content) = delta.get("content").and_then(Value::as_str) {
+        if let Some(content) = delta_string(delta, &["content", "text"]) {
             if !content.is_empty() {
-                self.text.push_str(content);
+                self.text.push_str(&content);
                 if let Some(sink) = on_content {
-                    sink(content);
+                    sink(&content);
                 }
             }
         }
 
-        let reasoning_chunk = [
-            "reasoning_content",
-            "reasoning",
-            "thinking",
-            "reasoning_text",
-        ]
-        .iter()
-        .find_map(|key| delta.get(*key).and_then(Value::as_str));
-        if let Some(chunk) = reasoning_chunk.filter(|chunk| !chunk.is_empty()) {
-            self.reasoning.push_str(chunk);
-            if let Some(sink) = on_reasoning {
-                sink(chunk);
+        if let Some(chunk) = delta_string(
+            delta,
+            &[
+                "reasoning_content",
+                "reasoning",
+                "thinking",
+                "reasoning_text",
+            ],
+        ) {
+            if !chunk.is_empty() {
+                self.reasoning.push_str(&chunk);
+                if let Some(sink) = on_reasoning {
+                    sink(&chunk);
+                }
             }
         }
 
@@ -1400,6 +1425,31 @@ mod tests {
             response.text.as_deref(),
             Some("I am applying the change...")
         );
+    }
+
+    #[test]
+    fn reads_object_shaped_reasoning_deltas() {
+        let mut accumulator = StreamAccumulator::default();
+        accumulator.apply(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "reasoning": { "content": "The page lists three incident reports." },
+                        "content": "Three reports are visible."
+                    },
+                    "finish_reason": "stop"
+                }]
+            }),
+            None,
+            None,
+            None,
+        );
+        let response = accumulator.into_response().expect("parsed");
+        assert_eq!(
+            response.reasoning_content.as_deref(),
+            Some("The page lists three incident reports.")
+        );
+        assert_eq!(response.text.as_deref(), Some("Three reports are visible."));
     }
 
     #[test]

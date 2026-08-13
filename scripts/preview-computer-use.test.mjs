@@ -51,7 +51,7 @@ test("computer broker contains no native desktop input path", () => {
   assert.match(broker, /MAX_ACTIONS: usize = 48/);
   assert.match(broker, /tauri::Url::parse/);
   assert.match(broker, /credential-free http\(s\) URLs/);
-  assert.match(broker, /open_tab, navigate, and activate_tab must be the only action/);
+  assert.match(broker, /open_tab, navigate, activate_tab, set_viewport, save_spec, record, and replay must be the only action/);
 });
 
 test("model surface is reduced to observe plus bounded action batches", () => {
@@ -104,6 +104,9 @@ test("frontend always selects the active Preview tab and stops on tab changes", 
   assert.match(preview, /activeTabUrl: active\.entryPath/);
   assert.match(preview, /needsObservation: true/);
   assert.doesNotMatch(preview, /frame\.src\s*=\s*tab\.entryPath/);
+  assert.match(preview, /overlayChromeOpen\(\)/);
+  assert.match(preview, /!this\.newTabMenu\.hidden \|\| !this\.previewActionsMenu\.hidden/);
+  assert.match(preview, /browserSurfaceAllowed\(\)/);
 });
 
 test("project and Browser tabs select and verify nested scroll targets", () => {
@@ -182,8 +185,23 @@ test("Preview Computer Use can fill native controls and verify evidence", () => 
     assert.match(source, /(?:MouseEvent|mouseEvent)/);
     assert.match(source, /(?:visibleSemanticContent|const semantic=)/);
   }
-  assert.match(tools, /Exact standards-format value/);
-  assert.match(tools, /"set_value"[\s\S]*"check"/);
+  assert.match(tools, /wait_for/);
+  assert.match(tools, /tiny\.png/);
+  assert.match(tools, /set_viewport/);
+  assert.match(tools, /save_spec/);
+  assert.match(broker, /wait_for/);
+  assert.match(broker, /tiny\.png/);
+  assert.match(agent, /wait_for/);
+  assert.match(agent, /a11y/);
+  assert.match(preview, /Watch me/);
+  assert.match(preview, /Save as test/);
+  assert.match(preview, /data-device-frame|deviceFrame/);
+  assert.match(frameController, /wait_for/);
+  assert.match(frameController, /tiny\.png/);
+  assert.match(frameController, /scanPreviewA11y|a11y/);
+  assert.match(browserController, /wait_for/);
+  assert.match(browserController, /tiny\.png/);
+  assert.match(browserController, /a11y/);
   assert.match(broker, /accepts_native_form_values_and_evidence_checks/);
   assert.match(agent, /PREVIEW COMPUTER USE · MAX QA/);
   assert.match(agent, /set_value/);

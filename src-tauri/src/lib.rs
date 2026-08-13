@@ -1103,6 +1103,22 @@ fn delete_project_file(
 }
 
 #[tauri::command]
+fn write_preview_computer_spec(
+    relative_path: String,
+    contents: String,
+    state: tauri::State<'_, state::AppState>,
+) -> Result<String, String> {
+    let root = state
+        .project_root
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "Open a project to save a Preview Computer Use spec.".to_string())?;
+    workspace::write_preview_computer_spec(std::path::Path::new(&root), &relative_path, &contents)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn clear_project_files(state: tauri::State<'_, state::AppState>) -> Result<u64, String> {
     let root = state
         .project_root
@@ -1541,6 +1557,7 @@ pub fn run() {
             list_project_files,
             read_project_file,
             delete_project_file,
+            write_preview_computer_spec,
             clear_project_files,
             list_run_checkpoints,
             rollback_run_checkpoint,

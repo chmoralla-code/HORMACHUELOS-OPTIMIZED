@@ -30,6 +30,8 @@ pub struct SessionRun {
     checkpoint: Mutex<Option<Arc<crate::checkpoint::RunCheckpoint>>>,
     protect_command_changes: AtomicBool,
     project_root: Mutex<Option<String>>,
+    /// Plan mode stays read-only until the user confirms they want the plan applied.
+    plan_implementation_unlocked: AtomicBool,
 }
 
 impl SessionRun {
@@ -42,6 +44,7 @@ impl SessionRun {
             checkpoint: Mutex::new(None),
             protect_command_changes: AtomicBool::new(false),
             project_root: Mutex::new(None),
+            plan_implementation_unlocked: AtomicBool::new(false),
         }
     }
 
@@ -61,6 +64,15 @@ impl SessionRun {
 
     pub fn protect_command_changes(&self) -> bool {
         self.protect_command_changes.load(Ordering::SeqCst)
+    }
+
+    pub fn plan_implementation_unlocked(&self) -> bool {
+        self.plan_implementation_unlocked.load(Ordering::SeqCst)
+    }
+
+    pub fn set_plan_implementation_unlocked(&self, unlocked: bool) {
+        self.plan_implementation_unlocked
+            .store(unlocked, Ordering::SeqCst);
     }
 
     pub fn set_project_root(&self, project_root: String) {

@@ -17,6 +17,22 @@ const MAX_OUTPUT_TOKENS: u64 = 64_000;
 /// rejects clients below its `minVersion` (0.18.x), so keep this current.
 const COMMAND_CODE_CLIENT_VERSION: &str = "1.14.1";
 
+fn event_delta_text(value: &Value) -> Option<&str> {
+    ["text", "delta", "content"]
+        .iter()
+        .find_map(|key| {
+            value.get(*key).and_then(|field| {
+                field.as_str().or_else(|| {
+                    field
+                        .get("text")
+                        .or_else(|| field.get("content"))
+                        .and_then(Value::as_str)
+                })
+            })
+        })
+        .filter(|text| !text.is_empty())
+}
+
 /// Build the `config` block the gateway validates. It describes the working
 /// directory to the model; values are informational context, not credentials.
 fn build_config(project_root: &str) -> Value {
@@ -341,13 +357,11 @@ impl LlmProvider for CommandCode {
                 };
                 saw_event = true;
                 match value.get("type").and_then(Value::as_str).unwrap_or("") {
-                    "text-delta" => {
-                        if let Some(delta) = value.get("text").and_then(Value::as_str) {
-                            if !delta.is_empty() {
-                                text_out.push_str(delta);
-                                if let Some(sink) = &on_content {
-                                    sink(delta);
-                                }
+                    "text-delta" | "text" | "content-delta" | "output-text-delta" => {
+                        if let Some(delta) = event_delta_text(&value) {
+                            text_out.push_str(delta);
+                            if let Some(sink) = &on_content {
+                                sink(delta);
                             }
                         }
                     }
@@ -356,13 +370,11 @@ impl LlmProvider for CommandCode {
                             let _ = sink;
                         }
                     }
-                    "reasoning-delta" => {
-                        if let Some(delta) = value.get("text").and_then(Value::as_str) {
-                            if !delta.is_empty() {
-                                reasoning_out.push_str(delta);
-                                if let Some(sink) = &on_reasoning {
-                                    sink(delta);
-                                }
+                    "reasoning-delta" | "reasoning" => {
+                        if let Some(delta) = event_delta_text(&value) {
+                            reasoning_out.push_str(delta);
+                            if let Some(sink) = &on_reasoning {
+                                sink(delta);
                             }
                         }
                     }
@@ -548,5 +560,22 @@ mod tests {
         assert!(KNOWN_MODELS.contains(&"gpt-5.6-luna"));
         assert!(KNOWN_MODELS.contains(&"deepseek/deepseek-v4-pro"));
         assert!(KNOWN_MODELS.contains(&"xai/grok-4.5"));
+    }
+
+    #[test]
+    fn event_delta_text_reads_text_delta_or_nested_content() {
+        assert_eq!(event_delta_text(&json!({ "text": "Hi" })), Some("Hi"));
+        assert_eq!(
+            event_delta_text(&json!({ "delta": "There" })),
+            Some("There")
+        );
+        assert_eq!(
+            event_delta_text(&json!({ "delta": { "text": "Nested" } })),
+            Some("Nested")
+        );
+        assert_eq!(
+            event_delta_text(&json!({ "content": "Answer" })),
+            Some("Answer")
+        );
     }
 }

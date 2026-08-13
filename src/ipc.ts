@@ -375,6 +375,8 @@ export const api = {
   /** Permanently delete one regular file inside the active project. */
   deleteProjectFile: (relativePath: string): Promise<void> =>
     invoke("delete_project_file", { relativePath }),
+  writePreviewComputerSpec: (relativePath: string, contents: string): Promise<string> =>
+    invoke("write_preview_computer_spec", { relativePath, contents }),
   /** Clear active-project contents while keeping the project directory and .git history. */
   clearProjectFiles: (): Promise<number> => invoke("clear_project_files"),
   /** Durable agent-owned workspace checkpoints, newest first. */

@@ -310,9 +310,13 @@ async function nextCursorStreamEvent(iterator, openTools) {
 
 function resolveExecutionPolicy(value) {
   const mode = String(value || "").trim().toLowerCase();
-  // Plan keeps Hormachuelos plan-first prompts, but uses Ship-level tool permissions.
-  if (mode === "plan" || mode === "full" || mode === "multi_agent") {
+  if (mode === "full" || mode === "multi_agent") {
     return { requestedMode: mode, sdkMode: "agent", autoReview: false, readOnly: false };
+  }
+  if (mode === "plan") {
+    // Cursor builtins stay read-only. Host mutating tools stay registered so
+    // Rust can unlock them after the user confirms Apply.
+    return { requestedMode: "plan", sdkMode: "plan", autoReview: false, readOnly: true };
   }
   if (mode === "auto") {
     return { requestedMode: "auto", sdkMode: "agent", autoReview: true, readOnly: false };
@@ -339,9 +343,34 @@ function unresolvedCursorToolResult(status, error) {
   };
 }
 
+const CURSOR_MUTATING_BUILTINS = new Set([
+  "write",
+  "edit",
+  "delete",
+  "apply_patch",
+  "applypatch",
+  "apply_patch_v2",
+  "shell",
+  "bash",
+  "terminal",
+  "run_terminal_cmd",
+  "strreplace",
+  "str_replace",
+  "search_replace",
+  "notebook_edit",
+  "notebookedit",
+  "editnotebook",
+]);
+
 function isToolAllowed(policy, name) {
+  const tool = String(name || "").trim().toLowerCase();
+  if (policy.requestedMode === "plan") {
+    // Block Cursor built-in writes/shell. Host tools (write_file, run_command, …)
+    // stay allowed so Rust can enforce the Apply lock without cancelling the run.
+    return !CURSOR_MUTATING_BUILTINS.has(tool);
+  }
   if (!policy.readOnly) return true;
-  return READ_ONLY_TOOLS.has(String(name || "").trim().toLowerCase());
+  return READ_ONLY_TOOLS.has(tool);
 }
 
 const COMPUTER_HELPER_FLAG = "--computer-use-helper";

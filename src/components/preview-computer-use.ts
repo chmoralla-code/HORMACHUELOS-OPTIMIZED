@@ -1,4 +1,13 @@
 import {
+  assignPreviewFileInput,
+  installPreviewProbes,
+  isPreviewUploadFixture,
+  previewFixtureFile,
+  previewNetworkIdle,
+  previewProbeSnapshot,
+  scanPreviewA11y,
+} from "./preview-computer-qa";
+import {
   choosePreviewScrollCandidate,
   previewScrollMoved,
   type PreviewScrollCandidate,
@@ -24,6 +33,12 @@ export type PreviewComputerAction = {
     | "set_value"
     | "check"
     | "wait"
+    | "wait_for"
+    | "upload"
+    | "set_viewport"
+    | "save_spec"
+    | "record"
+    | "replay"
     | "open_tab"
     | "navigate"
     | "activate_tab";
@@ -58,6 +73,14 @@ export type PreviewComputerAction = {
   url?: string;
   /** Exact Preview tab id returned by computer_observe. */
   tab_id?: string;
+  /** Preview-safe upload fixture: tiny.png, sample.csv, or note.txt. */
+  fixture?: string;
+  /** Device frame for set_viewport: mobile, tablet, or desktop. */
+  viewport?: string;
+  /** record start/stop. */
+  state?: "start" | "stop";
+  /** Optional title for save_spec. */
+  title?: string;
 };
 
 type Point = { x: number; y: number };
@@ -329,8 +352,12 @@ class PreviewFrameComputerController {
   private settleTimer: number | null = null;
   private transientFx: HTMLElement[] = [];
   private humanTakeoverHandler: ((event: Event) => void) | null = null;
+  private recording: PreviewComputerAction[] | null = null;
+  private recordCleanup: (() => void) | null = null;
 
-  constructor(private readonly document: Document, private readonly view: Window) {}
+  constructor(private readonly document: Document, private readonly view: Window) {
+    installPreviewProbes(view);
+  }
 
   stop(): void {
     this.abortController?.abort();
@@ -419,6 +446,42 @@ class PreviewFrameComputerController {
       }
       elements.push(observed);
     }
+    const a11y = scanPreviewA11y(this.document, this.view, isVisible).map((issue) => {
+      let ref = "";
+      for (const [existingRef, element] of this.refs) {
+        if (element === issue.element) {
+          ref = existingRef;
+          break;
+        }
+      }
+      if (!ref && elements.length < MAX_OBSERVED_ELEMENTS) {
+        ref = `p${elements.length + 1}`;
+        this.refs.set(ref, issue.element);
+        const rect = issue.element.getBoundingClientRect();
+        elements.push({
+          ref,
+          tag: issue.tag,
+          role: "a11y",
+          name: issue.message,
+          selector: issue.selector,
+          rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+          disabled: false,
+        });
+      }
+      return {
+        ref: ref || undefined,
+        rule: issue.rule,
+        message: issue.message,
+        selector: issue.selector,
+        tag: issue.tag,
+      };
+    });
+    const probes = previewProbeSnapshot(this.view);
     this.ensureOverlay();
     this.setStatus(`Observed ${elements.length} target${elements.length === 1 ? "" : "s"}`, false);
     return {
@@ -436,7 +499,10 @@ class PreviewFrameComputerController {
       cursor: { x: Math.round(this.cursorPoint.x), y: Math.round(this.cursorPoint.y) },
       elements,
       content: visibleSemanticContent(this.document, this.view),
-      hint: "Use element refs with computer_actions. Scrollable regions include scroll x/y/maxX/maxY; use their ref for nested panes. viewport.scrollY is page-only. Coordinates are relative to this preview viewport.",
+      a11y,
+      console: probes.console,
+      network: probes.network,
+      hint: "Use element refs with computer_actions. a11y lists bounded accessibility hits with the same refs. console/network are page errors and failed fetches only. Prefer wait_for over wait. upload uses Preview fixtures tiny.png, sample.csv, or note.txt. viewport.scrollY is page-only.",
     };
   }
 
@@ -931,7 +997,21 @@ class PreviewFrameComputerController {
     for (const key of ["text", "value", "url", "title"] as const) {
       if (expected[key] != null && !match(actual[key], expected[key])) failures.push(key);
     }
-    return { passed: failures.length === 0, failures, expected, actual };
+    const rect = element?.getBoundingClientRect();
+    return {
+      passed: failures.length === 0,
+      failures,
+      expected,
+      actual,
+      rect: rect && rect.width > 0 && rect.height > 0
+        ? {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        }
+        : null,
+    };
   }
 
   private async settleScroll(signal: AbortSignal): Promise<void> {
@@ -959,6 +1039,41 @@ class PreviewFrameComputerController {
     if (action.type === "wait") {
       await delay(clamp(Number(action.duration_ms ?? 180), 0, 10_000), signal);
       return {};
+    }
+    if (action.type === "wait_for") {
+      const timeout = clamp(Number(action.duration_ms ?? 4_000), 50, 10_000);
+      const started = Date.now();
+      this.setGesture("hover", "WAIT");
+      let last: Record<string, unknown> = { passed: false };
+      while (Date.now() - started <= timeout) {
+        if (signal.aborted) throw abortError();
+        if (action.expect && Object.keys(action.expect).length > 0) {
+          last = this.checkExpectation(action, this.resolve(action));
+        } else {
+          last = { passed: previewNetworkIdle(this.view), expected: { network_idle: true } };
+        }
+        if (last.passed === true) {
+          return { ...last, waitedMs: Date.now() - started, timedOut: false };
+        }
+        await delay(48, signal);
+      }
+      return { ...last, waitedMs: Date.now() - started, timedOut: true, passed: false };
+    }
+    if (action.type === "upload") {
+      const fixture = String(action.fixture || "tiny.png");
+      if (!isPreviewUploadFixture(fixture)) {
+        throw new Error("Preview upload fixtures are tiny.png, sample.csv, or note.txt.");
+      }
+      const target = this.resolve(action);
+      const input = target.element as HTMLInputElement | null;
+      if (!input || input.tagName.toLowerCase() !== "input" || input.type.toLowerCase() !== "file") {
+        throw new Error("upload requires an observed <input type=file> in the active Preview tab.");
+      }
+      this.showTarget(input, "click");
+      this.setGesture("click", "UPLOAD");
+      await this.animateTo(target.point, signal, 0);
+      assignPreviewFileInput(input, previewFixtureFile(fixture));
+      return { fixture, files: input.files?.length ?? 0, name: fixture };
     }
     if (action.type === "scroll") {
       const explicitTarget = Boolean(action.ref || action.selector);
@@ -1185,6 +1300,57 @@ class PreviewFrameComputerController {
     }
   }
 
+  startRecording(): void {
+    this.stopRecording();
+    this.recording = [];
+    const record = (action: PreviewComputerAction) => {
+      if (this.recording && this.recording.length < 48) this.recording.push(action);
+    };
+    const click = (event: Event) => {
+      const target = event.target as Element | null;
+      if (!target || !("isTrusted" in event) || !(event as Event & { isTrusted: boolean }).isTrusted) return;
+      record({ type: "click", selector: selectorFor(target, this.document) });
+    };
+    const change = (event: Event) => {
+      const target = event.target as HTMLInputElement | null;
+      if (!target || !("isTrusted" in event) || !(event as Event & { isTrusted: boolean }).isTrusted) return;
+      if (target.type === "file") {
+        record({ type: "upload", selector: selectorFor(target, this.document), fixture: "tiny.png" });
+        return;
+      }
+      if (isEditable(target)) {
+        record({
+          type: "set_value",
+          selector: selectorFor(target, this.document),
+          value: target.type === "password" ? "" : String(target.value || "").slice(0, 512),
+        });
+      }
+    };
+    const keydown = (event: Event) => {
+      const keyEvent = event as KeyboardEvent;
+      if (!keyEvent.isTrusted) return;
+      if (!["Enter", "Tab", "Escape"].includes(keyEvent.key)) return;
+      const target = (event.target as Element) || this.document.body;
+      record({ type: "key", selector: selectorFor(target, this.document), keys: keyEvent.key });
+    };
+    this.document.addEventListener("click", click, true);
+    this.document.addEventListener("change", change, true);
+    this.document.addEventListener("keydown", keydown, true);
+    this.recordCleanup = () => {
+      this.document.removeEventListener("click", click, true);
+      this.document.removeEventListener("change", change, true);
+      this.document.removeEventListener("keydown", keydown, true);
+    };
+  }
+
+  stopRecording(): PreviewComputerAction[] {
+    this.recordCleanup?.();
+    this.recordCleanup = null;
+    const recorded = this.recording || [];
+    this.recording = null;
+    return recorded;
+  }
+
 }
 
 function controllerFor(frame: HTMLIFrameElement): PreviewFrameComputerController {
@@ -1218,6 +1384,20 @@ export async function runFrameComputerUse(
     : [];
   if (actions.length === 0) throw new Error("No Preview Computer Use actions were provided.");
   return controller.runActions(actions);
+}
+
+export function startFrameRecording(frame?: HTMLIFrameElement | null): void {
+  if (!frame) return;
+  controllerFor(frame).startRecording();
+}
+
+export function stopFrameRecording(frame?: HTMLIFrameElement | null): PreviewComputerAction[] {
+  if (!frame) return [];
+  try {
+    return controllerFor(frame).stopRecording();
+  } catch {
+    return [];
+  }
 }
 
 export function stopFrameComputerUse(frame?: HTMLIFrameElement | null): void {

@@ -254,6 +254,7 @@ async fn await_cursor_question(
     run: &SessionRun,
     request_id: &str,
     arguments: &Value,
+    permission_mode: &str,
 ) -> (bool, String) {
     let question = arguments
         .get("question")
@@ -268,13 +269,16 @@ async fn await_cursor_question(
         .unwrap_or(true);
     if options.is_empty() {
         options = vec![
-            "Continue with your recommended plan".into(),
+            crate::agent::PLAN_APPLY_OPTION.into(),
             "Simpler / minimal version".into(),
             "More complete / polished version".into(),
         ];
         allow_other = true;
     } else if options.len() == 1 {
         allow_other = true;
+    }
+    if permission_mode.eq_ignore_ascii_case("plan") && !run.plan_implementation_unlocked() {
+        options = crate::agent::ensure_plan_apply_options(options);
     }
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
@@ -291,7 +295,7 @@ async fn await_cursor_question(
         }),
     );
 
-    let response = tokio::select! {
+    let mut response = tokio::select! {
         biased;
         _ = wait_until_cursor_cancelled(run.cancel.clone()) => {
             (false, "User cancelled the question.".to_string())
@@ -305,6 +309,18 @@ async fn await_cursor_question(
         }
     };
     *run.question_tx.lock().unwrap() = None;
+    if response.0 && permission_mode.eq_ignore_ascii_case("plan") {
+        if crate::agent::ask_user_confirms_plan_implementation(&response.1, &question) {
+            run.set_plan_implementation_unlocked(true);
+            response.1.push_str(
+                "\n\n[System] The user confirmed Apply. You may now write, edit, and run commands to implement the agreed plan. Mutating tools are unlocked.",
+            );
+        } else if !run.plan_implementation_unlocked() {
+            response.1.push_str(
+                "\n\n[System] The user has not confirmed Apply. Keep planning. Do not write, edit, or modify files.",
+            );
+        }
+    }
     response
 }
 
@@ -339,6 +355,13 @@ async fn execute_cursor_host_tool(
     };
     crate::tools::normalize_tool_arguments(&name, &mut arguments);
 
+    if permission_mode.eq_ignore_ascii_case("plan")
+        && !run.plan_implementation_unlocked()
+        && crate::tools::is_plan_locked_tool(&name)
+    {
+        return (false, crate::tools::PLAN_LOCK_MESSAGE.to_string());
+    }
+
     // A model can confuse an account-status question with an authentication
     // request. Preserve the native agent's safety behavior and never pop open
     // a Connect flow just to answer "am I connected?".
@@ -357,7 +380,15 @@ async fn execute_cursor_host_tool(
     }
 
     if name == "ask_user" {
-        return await_cursor_question(app, session_id, run, request_id, &arguments).await;
+        return await_cursor_question(
+            app,
+            session_id,
+            run,
+            request_id,
+            &arguments,
+            permission_mode,
+        )
+        .await;
     }
 
     if name == "connect_account" {
@@ -741,8 +772,9 @@ fn bounded_cursor_history(history: &[HistoryTurn]) -> Vec<BridgeHistoryTurn> {
 
 fn cursor_permission_enforcement(mode: &str) -> &'static str {
     match mode {
-        "full" | "multi_agent" | "plan" => "cursor_sdk_agent",
+        "full" | "multi_agent" => "cursor_sdk_agent",
         "auto" => "cursor_sdk_auto_review",
+        "plan" => "cursor_sdk_plan_read_only",
         "ask" | "research" => "cursor_sdk_plan_read_only",
         _ => "cursor_sdk_plan_read_only",
     }
@@ -1602,7 +1634,10 @@ mod tests {
 
     #[test]
     fn restricted_modes_report_read_only_sdk_enforcement() {
-        assert_eq!(cursor_permission_enforcement("plan"), "cursor_sdk_agent");
+        assert_eq!(
+            cursor_permission_enforcement("plan"),
+            "cursor_sdk_plan_read_only"
+        );
         assert_eq!(
             cursor_permission_enforcement("ask"),
             "cursor_sdk_plan_read_only"

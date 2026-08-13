@@ -82,6 +82,21 @@ jobs:
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
+            Plan mode:
+            - File writes, edits, commands, and other mutations stay locked until the user confirms Apply
+            - The model must present a plan and ask questions first, including Apply vs keep planning
+            - Stack or scope answers such as React + Vite do not unlock implementation
+            - A new request starts planning again; only Apply, implement the plan, or go ahead unlocks writes
+
+            Visible answers:
+            - If a model finishes with only reasoning and empty content, that reasoning is promoted to the visible reply instead of a blank Thought for card
+
+            Native Preview sandwich:
+            - Opening the Preview hamburger keeps the native localhost WebView from painting over the menu
+
+            Preview QA extras:
+            - Save as test, wait_for, upload fixtures, device frames, a11y pN refs, visual snapshot on check failure, Watch me / Replay
+
             Desktop mode:
             - Preview sandwich (hamburger) → Desktop mode is a separate opt-in from Preview Computer Use
             - can drive ordinary Windows apps, including Windows Settings brightness, with the native cursor

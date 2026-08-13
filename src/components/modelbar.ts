@@ -18,7 +18,7 @@ const MODES: {
     chip: "plan",
     label: "Plan",
     title:
-      "Plan — refine request, suggest options, numbered plan; then execute with Ship-level permissions.",
+      "Plan — refine request, suggest options, numbered plan; wait for Apply before any file changes.",
     capability: "Thinking",
   },
   {
@@ -486,7 +486,7 @@ export class ModelBar {
       this.syncCapabilityDefault();
       this.renderProviderRail();
       const labels: Record<PermissionMode, string> = {
-        plan: "Plan — refine, then execute with full permissions",
+        plan: "Plan — refine first; Apply to change files",
         auto: "Auto — build with defaults",
         ask: "Ask — Answer Max reliability",
         full: "Full — max autonomy",
@@ -897,7 +897,7 @@ export class ModelBar {
     };
 
     addItem("Plan", "planList", {
-      title: "Plan — refine request, then execute with full permissions",
+      title: "Plan — refine request; wait for Apply before file changes",
       active: mode === "plan",
       onClick: () => {
         this.closeMenus();

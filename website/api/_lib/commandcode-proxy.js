@@ -166,6 +166,16 @@ export function commandCodeGenerateUrl(baseUrl) {
  * Translate Command Code NDJSON events into an OpenAI SSE payload and emit it.
  * Returns the total usage tokens seen in the stream.
  */
+function eventText(event) {
+  if (typeof event?.text === "string" && event.text) return event.text;
+  if (typeof event?.delta === "string" && event.delta) return event.delta;
+  if (typeof event?.content === "string" && event.content) return event.content;
+  if (event?.delta && typeof event.delta === "object") {
+    return String(event.delta.text || event.delta.content || "");
+  }
+  return "";
+}
+
 export async function relayCommandCodeStream({ reader, onSse }) {
   const decoder = new TextDecoder();
   let buffer = "";
@@ -186,19 +196,23 @@ export async function relayCommandCodeStream({ reader, onSse }) {
     }
     const type = String(event.type || "");
     switch (type) {
-      case "text-delta": {
+      case "text-delta":
+      case "text":
+      case "content-delta":
+      case "output-text-delta": {
         emit({
           choices: [{
-            delta: { content: String(event.text || "") },
+            delta: { content: eventText(event) },
             index: 0,
           }],
         });
         break;
       }
-      case "reasoning-delta": {
+      case "reasoning-delta":
+      case "reasoning": {
         emit({
           choices: [{
-            delta: { reasoning_content: String(event.text || "") },
+            delta: { reasoning_content: eventText(event) },
             index: 0,
           }],
         });

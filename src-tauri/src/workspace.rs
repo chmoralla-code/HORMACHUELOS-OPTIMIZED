@@ -348,6 +348,35 @@ pub fn delete_project_file(root: &Path, relative: &str) -> Result<()> {
     Ok(())
 }
 
+/// Write a Playwright spec produced from Preview Computer Use. Only
+/// `tests/*.spec.ts` or `tests/*.spec.js` inside the active project are allowed.
+pub fn write_preview_computer_spec(root: &Path, relative: &str, contents: &str) -> Result<String> {
+    if contents.len() > 64 * 1024 {
+        bail!("Preview spec is too large.");
+    }
+    let normalized = relative.replace('\\', "/");
+    let slash_count = normalized.chars().filter(|ch| *ch == '/').count();
+    if !(normalized.starts_with("tests/")
+        && slash_count == 1
+        && (normalized.ends_with(".spec.ts") || normalized.ends_with(".spec.js")))
+    {
+        bail!("Preview specs must be written to tests/*.spec.ts.");
+    }
+    let root = canonical_project_root(root)?;
+    let safe = validate_relative_path(&normalized)?;
+    let target = root.join(safe);
+    if !target.starts_with(&root) {
+        bail!("Preview spec resolves outside the active project.");
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .context("Could not create the tests folder for the Preview spec.")?;
+    }
+    std::fs::write(&target, contents)
+        .with_context(|| format!("Could not write Preview spec: {normalized}"))?;
+    Ok(normalized)
+}
+
 fn remove_project_entry(path: &Path, file_type: std::fs::FileType) -> Result<()> {
     if file_type.is_symlink() {
         // Do not traverse a link when clearing a project. Removing the link
@@ -567,7 +596,8 @@ Prepared with Hormachuelos.\n\n\
 mod tests {
     use super::{
         clear_project_files, delete_project_file, export_client_pack, list_project_files,
-        looks_like_project_root, read_project_file, resolve_open_project_root, ProjectNode,
+        looks_like_project_root, read_project_file, resolve_open_project_root,
+        write_preview_computer_spec, ProjectNode,
     };
     use std::path::{Path, PathBuf};
 
@@ -697,6 +727,33 @@ mod tests {
         assert!(!file.exists());
         assert!(delete_project_file(workspace.path(), "../outside.txt").is_err());
         assert!(delete_project_file(workspace.path(), "src").is_err());
+    }
+
+    #[test]
+    fn writes_preview_specs_only_into_the_tests_folder() {
+        let workspace = TestWorkspace::new();
+        let written = write_preview_computer_spec(
+            workspace.path(),
+            "tests/horma-preview.spec.ts",
+            "import { test } from '@playwright/test';\ntest('ok', async () => {});",
+        )
+        .expect("write preview spec");
+        assert_eq!(written, "tests/horma-preview.spec.ts");
+        assert!(workspace
+            .path()
+            .join("tests/horma-preview.spec.ts")
+            .is_file());
+        assert!(write_preview_computer_spec(workspace.path(), "src/evil.spec.ts", "nope").is_err());
+        assert!(
+            write_preview_computer_spec(workspace.path(), "tests/../secret.spec.ts", "nope")
+                .is_err()
+        );
+        assert!(write_preview_computer_spec(
+            workspace.path(),
+            "tests/horma-preview.spec.ts",
+            &"a".repeat(64 * 1024 + 1)
+        )
+        .is_err());
     }
 
     #[test]

@@ -3662,6 +3662,41 @@ export class Chat {
 
     this.markThinkingDone(elapsed);
     this.flushDeferredAssistant();
+    this.revealThoughtWhenReplyMissing();
+  }
+
+  /**
+   * Reasoning models sometimes finish with only a collapsed "Thought for …"
+   * row. If no assistant bubble followed the last user message, surface the
+   * sealed thought as the visible reply.
+   */
+  private revealThoughtWhenReplyMissing() {
+    if (this.replaying) return;
+    const pending = String((this.pendingAssistant as { __raw?: string } | null)?.__raw || "").trim();
+    if (pending) return;
+    if (this.hasVisibleAssistantReplyAfterLastUser()) return;
+    const sealed = this.node.querySelector(
+      ".thinking-wrap.thinking-done[data-thought]:last-of-type",
+    ) as HTMLElement | null;
+    const thought = (sealed?.getAttribute("data-thought") || "").trim();
+    if (thought.length < 40) return;
+    this.appendAssistantText(thought);
+  }
+
+  private hasVisibleAssistantReplyAfterLastUser(): boolean {
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    while (node) {
+      if (node instanceof HTMLElement && node.classList.contains("msg") && node.classList.contains("assistant")) {
+        const raw = String((node.querySelector(".msg-body.md") as { __raw?: string } | null)?.__raw || "").trim();
+        if (raw) return true;
+        const text = (node.textContent || "").replace(/Thought for[^\n]*/g, "").trim();
+        if (text) return true;
+      }
+      node = node.nextElementSibling;
+    }
+    return false;
   }
 
   hideThinking() {
@@ -4722,9 +4757,10 @@ export class Chat {
     }
     if (opts.length === 0) {
       opts = [
-        "Continue with your recommended plan",
+        "Apply this plan and implement the changes",
         "Simpler / minimal version",
         "More complete / polished version",
+        "Revise the plan — don't change files yet",
       ];
     }
     // Always offer freeform so Plan mode never dead-ends

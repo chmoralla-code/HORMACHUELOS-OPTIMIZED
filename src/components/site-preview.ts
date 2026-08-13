@@ -20,9 +20,18 @@ import { clear, el } from "./util";
 import { icon } from "./icons";
 import {
   runFrameComputerUse,
+  startFrameRecording,
   stopFrameComputerUse,
+  stopFrameRecording,
   type PreviewComputerAction,
 } from "./preview-computer-use";
+import {
+  isPreviewDeviceFrame,
+  previewPlaywrightSpec,
+  PREVIEW_DEVICE_FRAMES,
+  sanitizePreviewRecording,
+  type PreviewDeviceFrame,
+} from "./preview-computer-qa";
 import {
   isExternalPreviewUrl,
   previewTabKindForEntry,
@@ -851,6 +860,10 @@ export class SitePreview {
   private desktopComputerUseStatus: DesktopComputerUseStatus | null = null;
   private desktopComputerUseBusy = false;
   private desktopComputerUseMessage = "";
+  private deviceFrame: PreviewDeviceFrame = "desktop";
+  private watchingPreview = false;
+  private lastPreviewActions: PreviewComputerAction[] = [];
+  private lastPreviewRecording: PreviewComputerAction[] = [];
   private buildMenuToggle: HTMLButtonElement;
   private buildMenu: HTMLElement;
   private buildMenuCleanup: (() => void) | null = null;
@@ -1577,7 +1590,7 @@ export class SitePreview {
       foot.appendChild(resume);
     }
 
-    this.computerUseControl.append(head, copy, modes, foot);
+    this.computerUseControl.append(head, copy, modes, this.renderPreviewQaTools(), foot);
     if (this.computerUseMessage) {
       this.computerUseControl.appendChild(
         el("div", { class: "site-preview-computer-message", role: "status" }, [
@@ -1590,6 +1603,176 @@ export class SitePreview {
         "ACTIVE PREVIEW TAB ONLY · EMERGENCY STOP CTRL+ALT+ESC",
       ]),
     );
+  }
+
+  private renderPreviewQaTools(): HTMLElement {
+    const tools = el("div", { class: "site-preview-computer-qa" });
+    const frames = el("div", {
+      class: "site-preview-computer-modes",
+      role: "radiogroup",
+      "aria-label": "Preview device frame",
+    });
+    for (const id of ["desktop", "tablet", "mobile"] as PreviewDeviceFrame[]) {
+      const selected = this.deviceFrame === id;
+      const button = el("button", {
+        class: "site-preview-computer-mode" + (selected ? " is-selected" : ""),
+        type: "button",
+        role: "radio",
+        "aria-checked": String(selected),
+        title: PREVIEW_DEVICE_FRAMES[id].label + " Preview frame",
+      }, [PREVIEW_DEVICE_FRAMES[id].label]) as HTMLButtonElement;
+      button.addEventListener("click", () => {
+        this.applyDeviceFrame(id);
+        this.renderComputerUseControl();
+      });
+      frames.appendChild(button);
+    }
+    const actions = el("div", { class: "site-preview-computer-qa-actions" });
+    const watch = el("button", {
+      class: "site-preview-computer-resume",
+      type: "button",
+      title: "Record your clicks and typing in Preview, then replay them",
+    }, [this.watchingPreview ? "Stop watching" : "Watch me"]) as HTMLButtonElement;
+    watch.addEventListener("click", () => void this.togglePreviewWatch());
+    const replay = el("button", {
+      class: "site-preview-computer-resume",
+      type: "button",
+      title: "Replay the last Watch me recording",
+    }, ["Replay"]) as HTMLButtonElement;
+    replay.disabled = this.lastPreviewRecording.length === 0;
+    replay.addEventListener("click", () => void this.replayPreviewRecording());
+    const save = el("button", {
+      class: "site-preview-computer-resume",
+      type: "button",
+      title: "Write the last Preview Computer Use run as a Playwright spec",
+    }, ["Save as test"]) as HTMLButtonElement;
+    save.disabled = this.lastPreviewActions.length === 0 && this.lastPreviewRecording.length === 0;
+    save.addEventListener("click", () => void this.savePreviewSpec().catch((error) => {
+      this.computerUseMessage = String(error);
+      this.renderComputerUseControl();
+    }));
+    actions.append(watch, replay, save);
+    tools.append(
+      el("div", { class: "site-preview-desktop-apps-label" }, ["Device frame"]),
+      frames,
+      actions,
+    );
+    return tools;
+  }
+
+  private applyDeviceFrame(frame: PreviewDeviceFrame): void {
+    this.deviceFrame = frame;
+    this.root.dataset.deviceFrame = frame;
+    this.scheduleBrowserBoundsSync();
+  }
+
+  private async togglePreviewWatch(): Promise<void> {
+    const tab = this.activeTab;
+    if (!tab) {
+      this.computerUseMessage = "Open a Preview tab before watching.";
+      this.renderComputerUseControl();
+      return;
+    }
+    if (this.watchingPreview) {
+      const recorded = tab.kind === "browser"
+        ? await this.stopBrowserRecording(tab.id)
+        : stopFrameRecording(tab.frame);
+      this.watchingPreview = false;
+      this.lastPreviewRecording = sanitizePreviewRecording(recorded) as PreviewComputerAction[];
+      this.computerUseMessage = this.lastPreviewRecording.length
+        ? `Recorded ${this.lastPreviewRecording.length} Preview step${this.lastPreviewRecording.length === 1 ? "" : "s"}.`
+        : "Watch me stopped with no steps.";
+    } else {
+      if (tab.kind === "browser") {
+        await api.previewBrowserComputer(tab.id, "actions", {
+          actions: [{ type: "record", state: "start" }],
+        }).catch(() => undefined);
+      } else {
+        startFrameRecording(tab.frame);
+      }
+      this.watchingPreview = true;
+      this.computerUseMessage = "Watch me is on. Click and type in Preview, then stop watching.";
+    }
+    this.renderComputerUseControl();
+  }
+
+  private async stopBrowserRecording(label: string): Promise<PreviewComputerAction[]> {
+    const result = await api.previewBrowserComputer(label, "actions", {
+      actions: [{ type: "record", state: "stop" }],
+    }).catch(() => ({ recorded: [] as PreviewComputerAction[] }));
+    const recorded = Array.isArray((result as { recorded?: unknown }).recorded)
+      ? (result as { recorded: PreviewComputerAction[] }).recorded
+      : Array.isArray((result as { results?: Array<{ recorded?: PreviewComputerAction[] }> }).results?.[0]?.recorded)
+        ? (result as { results: Array<{ recorded: PreviewComputerAction[] }> }).results[0].recorded
+        : [];
+    return recorded;
+  }
+
+  private async replayPreviewRecording(): Promise<void> {
+    if (!this.lastPreviewRecording.length) return;
+    try {
+      await this.handleComputerUseRequest({
+        requestId: "preview-replay",
+        protocolVersion: 2,
+        operation: "actions",
+        args: { actions: this.lastPreviewRecording },
+      });
+      this.computerUseMessage = "Replayed the last Watch me recording.";
+    } catch (error) {
+      this.computerUseMessage = "Replay failed: " + String(error);
+    }
+    this.renderComputerUseControl();
+  }
+
+  private async savePreviewSpec(title?: string): Promise<Record<string, unknown>> {
+    const actions = this.lastPreviewRecording.length
+      ? this.lastPreviewRecording
+      : this.lastPreviewActions;
+    if (!actions.length) throw new Error("Run or record a Preview scenario before saving a test.");
+    const frame = PREVIEW_DEVICE_FRAMES[this.deviceFrame];
+    const spec = previewPlaywrightSpec({
+      title: title || "Preview Computer Use scenario",
+      url: this.activeTab?.entryPath || "/",
+      viewport: frame.width > 0 ? { width: frame.width, height: frame.height } : undefined,
+      actions,
+    });
+    const path = await api.writePreviewComputerSpec("tests/horma-preview.spec.ts", spec);
+    this.computerUseMessage = "Saved Playwright spec at " + path + ".";
+    this.renderComputerUseControl();
+    return { ok: true, path, bytes: spec.length };
+  }
+
+  private async attachCheckSnapshots(
+    tab: PreviewTab,
+    result: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const results = Array.isArray(result.results) ? result.results as Array<Record<string, unknown>> : [];
+    for (const item of results) {
+      if (item.type !== "check" || item.passed !== false || !item.rect || typeof item.rect !== "object") continue;
+      const rect = item.rect as { x: number; y: number; width: number; height: number };
+      try {
+        if (tab.kind === "browser") {
+          item.snapshot = await api.capturePreviewBrowserSelection(tab.id, {
+            x: Math.max(0, rect.x),
+            y: Math.max(0, rect.y),
+            width: Math.min(320, Math.max(8, rect.width)),
+            height: Math.min(180, Math.max(8, rect.height)),
+          });
+        } else {
+          const frameRect = tab.frame.getBoundingClientRect();
+          item.snapshot = await api.capturePreviewSelection({
+            x: frameRect.left + rect.x,
+            y: frameRect.top + rect.y,
+            width: Math.min(320, Math.max(8, rect.width)),
+            height: Math.min(180, Math.max(8, rect.height)),
+            devicePixelRatio: window.devicePixelRatio || 1,
+          });
+        }
+      } catch {
+        item.snapshot = null;
+      }
+    }
+    return result;
   }
 
   private async setComputerUseMode(mode: PreviewComputerUseMode): Promise<void> {
@@ -2305,6 +2488,62 @@ export class SitePreview {
    * single-action batches so the model must observe the newly active page before
    * reusing element refs.
    */
+  private async runComputerUseHostAction(
+    action: PreviewComputerAction,
+  ): Promise<Record<string, unknown>> {
+    if (action.type === "open_tab" || action.type === "navigate" || action.type === "activate_tab") {
+      return this.runComputerUseTabAction(action);
+    }
+    if (action.type === "set_viewport") {
+      const frame = String(action.viewport || action.value || "desktop");
+      if (!isPreviewDeviceFrame(frame)) {
+        throw new Error("set_viewport requires viewport=mobile, tablet, or desktop.");
+      }
+      this.applyDeviceFrame(frame);
+      this.renderComputerUseControl();
+      const size = PREVIEW_DEVICE_FRAMES[frame];
+      return {
+        ok: true,
+        completed: 1,
+        results: [{ index: 0, type: "set_viewport", ok: true, viewport: frame, width: size.width, height: size.height }],
+        needsObservation: true,
+      };
+    }
+    if (action.type === "save_spec") {
+      const saved = await this.savePreviewSpec(action.title);
+      return { ok: true, completed: 1, results: [{ index: 0, type: "save_spec", ok: true, ...saved }] };
+    }
+    if (action.type === "record") {
+      const state = action.state === "stop" ? "stop" : "start";
+      if (state === "start" && !this.watchingPreview) await this.togglePreviewWatch();
+      if (state === "stop" && this.watchingPreview) await this.togglePreviewWatch();
+      return {
+        ok: true,
+        completed: 1,
+        results: [{
+          index: 0,
+          type: "record",
+          ok: true,
+          state,
+          recorded: this.lastPreviewRecording.length,
+        }],
+        recorded: this.lastPreviewRecording,
+      };
+    }
+    if (action.type === "replay") {
+      if (!this.lastPreviewRecording.length) {
+        throw new Error("No Watch me recording is available to replay.");
+      }
+      await this.replayPreviewRecording();
+      return {
+        ok: true,
+        completed: 1,
+        results: [{ index: 0, type: "replay", ok: true, steps: this.lastPreviewRecording.length }],
+      };
+    }
+    throw new Error(`Unsupported Preview host action: ${action.type}`);
+  }
+
   private async runComputerUseTabAction(
     action: PreviewComputerAction,
   ): Promise<Record<string, unknown>> {
@@ -2399,14 +2638,21 @@ export class SitePreview {
         action.type === "open_tab"
         || action.type === "navigate"
         || action.type === "activate_tab"
+        || action.type === "set_viewport"
+        || action.type === "save_spec"
+        || action.type === "record"
+        || action.type === "replay"
       );
       if (tabActions.length > 0) {
         if (actions.length !== 1 || tabActions.length !== 1) {
-          throw new Error("Preview open_tab, navigate, and activate_tab must be the only action in their batch. Observe the newly active tab next.");
+          throw new Error("Preview open_tab, navigate, activate_tab, set_viewport, save_spec, record, and replay must be the only action in their batch.");
         }
-        result = await this.runComputerUseTabAction(tabActions[0]);
+        result = await this.runComputerUseHostAction(tabActions[0]);
       } else {
         result = await this.runComputerUseOnActiveTab(request);
+        const activeForSnapshot = this.activeTab;
+        if (activeForSnapshot) result = await this.attachCheckSnapshots(activeForSnapshot, result);
+        this.lastPreviewActions = actions;
       }
     } else {
       result = await this.runComputerUseOnActiveTab(request);
@@ -2670,10 +2916,18 @@ export class SitePreview {
     });
   }
 
+  private overlayChromeOpen(): boolean {
+    return !this.newTabMenu.hidden || !this.previewActionsMenu.hidden;
+  }
+
+  private browserSurfaceAllowed(): boolean {
+    return this.isOpen && !this.overlayChromeOpen();
+  }
+
   private syncBrowserSurfaces(allowActive = true) {
     const bounds = this.browserBounds() || this.lastBrowserBounds;
     if (!bounds) return;
-    const activeAllowed = allowActive && this.isOpen && this.newTabMenu.hidden;
+    const activeAllowed = allowActive && this.browserSurfaceAllowed();
     for (const tab of this.tabs) {
       if (tab.kind !== "browser" || !tab.browserReady) continue;
       const visible = activeAllowed && tab.id === this.activeTabId;
@@ -2691,7 +2945,7 @@ export class SitePreview {
         bounds = this.browserBounds();
       }
       if (!bounds) throw new Error("Browser viewport is not ready.");
-      const visible = this.isOpen && tab.id === this.activeTabId && this.newTabMenu.hidden;
+      const visible = this.browserSurfaceAllowed() && tab.id === this.activeTabId;
       await api.createPreviewBrowser(tab.id, tab.entryPath || BROWSER_HOME, bounds, visible);
       if (!this.tabs.includes(tab)) {
         await api.closePreviewBrowser(tab.id).catch(() => undefined);

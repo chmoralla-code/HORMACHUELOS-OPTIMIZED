@@ -137,6 +137,62 @@ fn has_streamed_reasoning(resp: &LlmResponse) -> bool {
         .unwrap_or(false)
 }
 
+/// Some reasoning models (DeepSeek / Hormachuelos v4 / Ultra) put the entire
+/// answer in `reasoning_content` and finish with empty `content`. Treat a
+/// complete, non-tool-announcing thought as a user-visible answer instead of
+/// ending the run on a collapsed "Thought for …" row.
+fn conclusion_from_reasoning(reasoning: &str) -> Option<String> {
+    let trimmed = reasoning.trim();
+    if trimmed.chars().count() < 40 {
+        return None;
+    }
+    if reply_announces_pending_action(trimmed) {
+        return None;
+    }
+    let ends_cleanly = trimmed
+        .chars()
+        .last()
+        .map(|c| matches!(c, '.' | '!' | '?' | '…' | ':' | ';' | ')' | ']' | '}' | '`'))
+        .unwrap_or(false)
+        || trimmed.ends_with("```");
+    if !ends_cleanly {
+        return None;
+    }
+    const MAX_VISIBLE: usize = 4_000;
+    if trimmed.len() <= MAX_VISIBLE {
+        return Some(trimmed.to_string());
+    }
+    let start = trimmed.len().saturating_sub(MAX_VISIBLE);
+    let sliced = trimmed.get(start..).unwrap_or(trimmed);
+    let from_break = sliced
+        .find("\n\n")
+        .map(|index| sliced[index + 2..].trim())
+        .filter(|part| !part.is_empty())
+        .unwrap_or(sliced.trim());
+    Some(from_break.to_string())
+}
+
+/// When the provider never emitted visible content, copy a finished thought
+/// into `text` so the chat shows a normal reply after "Thought for …".
+fn promote_reasoning_to_visible_answer(resp: &mut LlmResponse) -> bool {
+    if !resp.tool_calls.is_empty() {
+        return false;
+    }
+    let text_empty = resp.text.as_deref().map(str::trim).unwrap_or("").is_empty();
+    if !text_empty {
+        return false;
+    }
+    let Some(visible) = resp
+        .reasoning_content
+        .as_deref()
+        .and_then(conclusion_from_reasoning)
+    else {
+        return false;
+    };
+    resp.text = Some(visible);
+    true
+}
+
 /// A regular question is complete only after the user received substantive
 /// visible text. Some streaming providers return `text: None` after already
 /// emitting content, so the live-stream signal is part of this check.
@@ -184,8 +240,11 @@ fn reply_was_cut_off(resp: &LlmResponse) -> bool {
     }
     let text = resp.text.as_deref().unwrap_or("").trim();
     if text.is_empty() {
-        // Thought but produced no visible answer and no tool call yet.
-        return true;
+        // A finished explanation that only arrived in reasoning is a complete
+        // answer, not a mid-thought stall. Incomplete / tool-announcing
+        // thoughts still count as cut off so EmptyAnswer can retry.
+        return conclusion_from_reasoning(resp.reasoning_content.as_deref().unwrap_or(""))
+            .is_none();
     }
     // A very short reply with no punctuation is usually a complete interjection
     // ("Sure", "OK"). Only treat it as cut off when it ends on a word that
@@ -456,6 +515,9 @@ fn reply_announces_pending_action(text: &str) -> bool {
         "i'll inspect",
         "i'll scan",
         "i'll grab",
+        "i need to ",
+        "i should ",
+        "i must ",
         "looking for ",
         "searching for ",
         "searching the ",
@@ -1368,6 +1430,141 @@ pub(crate) fn parse_ask_user_options(args: &Value) -> Vec<String> {
     out
 }
 
+pub(crate) const PLAN_APPLY_OPTION: &str = "Apply this plan and implement the changes";
+pub(crate) const PLAN_REVISE_OPTION: &str = "Revise the plan — don't change files yet";
+
+fn rejects_plan_implementation(lower: &str) -> bool {
+    lower.contains("don't implement")
+        || lower.contains("do not implement")
+        || lower.contains("don't change files")
+        || lower.contains("do not change files")
+        || lower.contains("don't apply")
+        || lower.contains("do not apply")
+        || lower.contains("keep planning")
+        || lower.contains("revise the plan")
+        || lower.contains("just the plan")
+        || lower.contains("plan only")
+        || lower.contains("don't write")
+        || lower.contains("do not write")
+}
+
+fn matches_plan_apply_phrase(lower: &str, char_count: usize) -> bool {
+    lower.contains("apply this plan")
+        || lower.contains("implement this plan")
+        || lower.contains("implement the plan")
+        || lower.contains("apply the plan")
+        || lower.contains("apply and implement")
+        || lower.contains("go ahead and implement")
+        || lower.contains("go ahead and apply")
+        || lower.contains("execute the plan")
+        || lower.contains("start implementing")
+        || lower.contains("make the changes")
+        || lower.contains("ship the plan")
+        || lower.contains("continue with your recommended plan")
+        || lower.contains("continue with the recommended plan")
+        || lower.contains("continue with the plan")
+        || (lower.contains("build it") && char_count < 80)
+        || (lower.contains("do it") && char_count < 40)
+}
+
+fn is_bare_plan_confirmation(lower: &str, char_count: usize) -> bool {
+    char_count <= 48
+        && (matches!(
+            lower,
+            "yes"
+                | "y"
+                | "ok"
+                | "okay"
+                | "sure"
+                | "apply"
+                | "implement"
+                | "go ahead"
+                | "proceed"
+                | "lgtm"
+                | "approved"
+                | "do it"
+                | "build it"
+                | "ship it"
+        ) || lower.starts_with("apply this")
+            || lower.starts_with("implement this")
+            || lower.starts_with("yes, apply")
+            || lower.starts_with("yes apply")
+            || lower.starts_with("yes, implement")
+            || lower.starts_with("yes implement"))
+}
+
+/// True when a new user message is confirming the current plan should be implemented.
+/// Short yes/apply answers unlock. New work requests stay locked.
+pub(crate) fn user_confirms_plan_implementation(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if rejects_plan_implementation(&lower) {
+        return false;
+    }
+    let char_count = trimmed.chars().count();
+    matches_plan_apply_phrase(&lower, char_count) || is_bare_plan_confirmation(&lower, char_count)
+}
+
+/// True when an ask_user click/typed answer is Apply — not a stack or scope choice.
+pub(crate) fn ask_user_confirms_plan_implementation(answer: &str, question: &str) -> bool {
+    let trimmed = answer.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if rejects_plan_implementation(&lower) {
+        return false;
+    }
+    let char_count = trimmed.chars().count();
+    if matches_plan_apply_phrase(&lower, char_count) {
+        return true;
+    }
+    if !is_bare_plan_confirmation(&lower, char_count) {
+        return false;
+    }
+    let question = question.to_ascii_lowercase();
+    question.contains("apply")
+        || question.contains("implement")
+        || question.contains("go ahead")
+        || question.contains("this plan")
+}
+
+/// First-turn unlock only for an explicit "implement this plan" opener, not new work.
+pub(crate) fn prompt_unlocks_plan_implementation(prompt: &str) -> bool {
+    let trimmed = prompt.trim();
+    if trimmed.chars().count() > 220 {
+        return false;
+    }
+    user_confirms_plan_implementation(trimmed)
+}
+
+pub(crate) fn ensure_plan_apply_options(mut options: Vec<String>) -> Vec<String> {
+    let joined = options.join(" ").to_ascii_lowercase();
+    let has_apply = options.iter().any(|option| {
+        let lower = option.to_ascii_lowercase();
+        lower.contains("apply") || lower.contains("implement") || lower.contains("go ahead")
+    });
+    let has_revise = options.iter().any(|option| {
+        let lower = option.to_ascii_lowercase();
+        lower.contains("revise")
+            || lower.contains("keep planning")
+            || lower.contains("don't change")
+            || lower.contains("do not change")
+            || lower.contains("plan only")
+    });
+    if !has_apply {
+        options.insert(0, PLAN_APPLY_OPTION.to_string());
+    }
+    if !has_revise && !joined.contains("revise") {
+        options.push(PLAN_REVISE_OPTION.to_string());
+    }
+    options.truncate(8);
+    options
+}
+
 pub(crate) fn tool_confirm_summary(name: &str, args: &Value) -> String {
     match name {
         "run_command" => format!(
@@ -1609,6 +1806,12 @@ pub async fn run_loop(
         prompt = note;
     }
     let requires_project_completion = task_requires_project_completion(&prompt, task_profile);
+    let permission_mode = normalized_permission_mode(&settings.permission_mode);
+    if task_profile.is_design_edit()
+        || (permission_mode == "plan" && prompt_unlocks_plan_implementation(&prompt))
+    {
+        run.set_plan_implementation_unlocked(true);
+    }
 
     let mut history = history;
     for turn in &mut history {
@@ -1666,7 +1869,6 @@ pub async fn run_loop(
                 );
                 let model_display = display_model_name(&settings.model);
                 let provider_display = display_provider_name(&settings.provider);
-                let permission_mode = normalized_permission_mode(&settings.permission_mode);
                 let smart_agent_policy = crate::smart_agent::SmartAgentRun::system_instructions(
                     smart_agent_enabled,
                     fast_execution,
@@ -1683,7 +1885,9 @@ pub async fn run_loop(
                 };
                 let flavour_context =
                     flavour.context_block(execution_profile.context_budget().clamp(3_000, 8_000));
-                let completion_contract = if requires_project_completion {
+                let completion_contract = if requires_project_completion
+                    && !(permission_mode == "plan" && !run.plan_implementation_unlocked())
+                {
                     "\n\nAUTONOMOUS LONG-TASK CONTRACT:\n\
 - This is an implementation task. Keep using tools until the requested website, app, APK, software, or fix is actually complete and verified.\n\
 - Do not stop after a plan, a partial progress report, or an unfinished response. Do not tell the client to type \"continue\".\n\
@@ -1885,27 +2089,35 @@ Current user request:\n{prompt}",
         "plan" => "\
 === ACTIVE MODE: PLAN (maximize planning quality) ===\n\
 You are a product + technical planner first, implementer second.\n\
+FILE CHANGES ARE LOCKED until the user confirms they want this plan applied.\n\
 \n\
-GOAL: Understand the user, improve the request, propose options, get agreement, then implement carefully.\n\
-You have Ship-level / full tool permissions after the plan is accepted — no Approve prompts for ordinary mutations.\n\
+GOAL: Understand the user, improve the request, propose a plan, ask questions, and wait for an explicit Apply confirmation.\n\
+Mutating tools (write_file, edit_file, run_command, delete_file, git mutations, computer_actions, and similar) are unavailable until that confirmation.\n\
+Read-only tools (read_file, list_dir, glob, grep, git_status, web_search, ask_user, todo_write) are allowed so you can inspect and plan.\n\
 \n\
-MANDATORY FIRST RESPONSE (no write/run/scaffold tools yet):\n\
+MANDATORY FIRST RESPONSE (no write/run/scaffold tools):\n\
 1. Restate the goal in one plain sentence.\n\
 2. Improve / tweak the request: clarify ambiguous parts, suggest a better scope if the ask is too vague or too huge.\n\
 3. Present a short plan with numbered steps (stack, files/folders, build order, how to verify).\n\
-4. You MUST call the ask_user TOOL (not just write options in prose). The desktop UI only shows clickable choices when ask_user is invoked.\n\
-5. ask_user parameters: question (string), options (array of 2–6 short strings), allow_other=true.\n\
-   Example options: [\"React + Vite\", \"Plain HTML/CSS/JS\", \"Next.js\"].\n\
+4. Ask any needed questions.\n\
+5. You MUST call the ask_user TOOL (not just write options in prose). The desktop UI only shows clickable choices when ask_user is invoked.\n\
+6. ask_user parameters: question (string), options (array of 2–6 short strings), allow_other=true.\n\
+   Always include whether to apply/implement now vs keep planning. Example:\n\
+   [\"Apply this plan and implement the changes\", \"React + Vite\", \"Plain HTML/CSS/JS\", \"Revise the plan — don't change files yet\"].\n\
    NEVER list choices only in markdown — always use the tool.\n\
 \n\
-AFTER the user answers ask_user (or clearly says \"go ahead\" / \"build it\"):\n\
-- Implement only the agreed plan with full autonomy (same tool freedom as Ship / Full).\n\
+ANSWERS THAT ARE NOT APPLY:\n\
+- Stack, style, or scope choices (\"React + Vite\", \"simpler version\") are planning answers. Stay locked. Update the plan and ask_user again, including Apply.\n\
+- A new request such as \"build a website\" or \"add a dashboard\" is not confirmation. Plan again. Do not write files.\n\
+\n\
+ONLY AFTER the user confirms Apply (clicks Apply, or clearly says \"apply this plan\" / \"implement the plan\" / \"go ahead\"):\n\
+- Implement only the agreed plan. Mutating tools then unlock with full autonomy (no Approve prompts).\n\
 - Prefer read_file / list_dir / glob / grep first if you need project context.\n\
-- Edit files, run commands, install packages, and use mutating tools freely.\n\
-- If the user rejects the plan or asks to change it, adapt; do not spam the same approach.\n\
+- If the user rejects the plan or asks to change it, adapt and stay locked; do not write files yet.\n\
 \n\
 PLAN MODE RULES:\n\
-- Do NOT scaffold or write files on the first turn of a new build request.\n\
+- Do NOT write, edit, scaffold, delete, or run mutating commands until Apply is confirmed.\n\
+- Do NOT treat answering a clarifying question as permission to implement.\n\
 - Do NOT call done until real implementation is finished (or the user only wanted a plan and says stop).\n\
 - Pure questions still get direct answers with no tools.\n\
 - Keep language simple and human. No marketing fluff.",
@@ -1969,7 +2181,7 @@ BEHAVIOR:\n\
     };
 
     let execution_style = match mode.as_str() {
-        "plan" => "7. In PLAN mode: explain plans and options clearly. After the user accepts, implement with full tool permissions.\n",
+        "plan" => "7. In PLAN mode: present the plan and questions first. Do not write, edit, or modify files until the user confirms Apply. Clarifying answers are not Apply.\n",
         "ask" => "7. In ASK mode: evidence first (paths + findings). Do not implement unless the user explicitly asks.\n",
         "auto" => "7. In AUTO mode: keep responses concise. Prefer doing work over long preambles.\n",
         "multi_agent" => "7. In MULTI-AGENT mode: start independent local inspection tools together, then keep dependent actions ordered.\n",
@@ -2145,16 +2357,18 @@ Do not implement or scaffold unless I explicitly ask. Never end on reasoning, st
         format!(
             "{prompt}\n\n\
 [Plan mode active] First response: (1) restate & improve my request, (2) short numbered plan, \
-(3) you MUST call the ask_user tool with options: string[] (2–6 choices) and allow_other=true. \
+(3) you MUST call the ask_user tool with options: string[] (2–6 choices) and allow_other=true, \
+including whether to Apply this plan and implement now vs keep planning without file changes. \
 Writing \"choose one\" in text alone does NOT show UI buttons — only the ask_user tool does. \
-Do not write/scaffold files until I pick an option. After I accept, implement with full tool permissions."
+Do not write, edit, or modify files until I confirm Apply. Stack/scope answers are not Apply."
         )
     } else if mode == "plan" {
         format!(
             "{prompt}\n\n\
-[Plan mode · continuing session] Use session history. After agreement you have full tool permissions. \
-If you need a decision, call ask_user (options as a string array) — do not only list options in text. \
-Continue or adjust earlier plans instead of restarting from zero unless the user wants a new direction."
+[Plan mode · continuing session] Use session history. File changes stay locked until I confirm Apply \
+(\"apply this plan\", \"implement the plan\", or the Apply option). A new request is not Apply — plan again. \
+If you need a decision, call ask_user (options as a string array, including Apply vs keep planning) — \
+do not only list options in text. Continue or adjust earlier plans instead of restarting from zero unless I want a new direction."
         )
     } else if mode == "ask" {
         format!(
@@ -2393,6 +2607,11 @@ The tool entries are historical summaries; use fresh tools for the current works
             // proxy timeouts so continuing a session never loops on Reconnecting….
             let mut reconnect_attempt: u32 = 0;
             let mut automatic_recovery_reason: Option<AutomaticContinuationReason> = None;
+            let turn_schemas = tools::schemas_for_permission_phase(
+                tool_schemas.clone(),
+                &mode,
+                run.plan_implementation_unlocked() || task_profile.is_design_edit(),
+            );
             let response = loop {
                 let result = tokio::select! {
                     biased;
@@ -2437,7 +2656,7 @@ The tool entries are historical summaries; use fresh tools for the current works
                     }
                     result = provider.chat(
                         &messages,
-                        &tool_schemas,
+                        &turn_schemas,
                         Some(reasoning_sink.clone()),
                         Some(content_sink.clone()),
                         Some(tool_call_sink.clone()),
@@ -2646,6 +2865,23 @@ The tool entries are historical summaries; use fresh tools for the current works
                         "text",
                         json!({ "text": t, "continuation": resume_assistant }),
                     );
+                    if !t.trim().is_empty() {
+                        visible_text_streamed.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+
+        if promote_reasoning_to_visible_answer(&mut resp) {
+            if let Some(t) = &resp.text {
+                if !t.is_empty() && !visible_text_streamed.load(Ordering::SeqCst) {
+                    emit(
+                        &app,
+                        &session_id,
+                        "text",
+                        json!({ "text": t, "continuation": resume_assistant }),
+                    );
+                    visible_text_streamed.store(true, Ordering::SeqCst);
                 }
             }
         }
@@ -2658,10 +2894,18 @@ The tool entries are historical summaries; use fresh tools for the current works
             let continuation_reason = if stop_reason_requires_continuation(&resp.stop_reason) {
                 Some(AutomaticContinuationReason::OutputLimit)
             } else if cut_off && !auth_request_routed {
-                // The provider ended the stream while the model was still
-                // thinking or mid-sentence. Resume the same run instead of
-                // leaving a dangling "Let me…" as the final answer.
-                Some(AutomaticContinuationReason::OutputLimit)
+                // Thought-only empty replies need the visible-answer instruction.
+                // Mid-sentence visible text is a true output-limit cut.
+                if resp
+                    .text
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|text| !text.is_empty())
+                {
+                    Some(AutomaticContinuationReason::OutputLimit)
+                } else {
+                    Some(AutomaticContinuationReason::EmptyAnswer)
+                }
             } else if requires_project_completion
                 && !auth_request_routed
                 && (mode != "plan" || task_profile.is_design_edit())
@@ -2736,6 +2980,7 @@ The tool entries are historical summaries; use fresh tools for the current works
             // Nudge the model to call the tool so clickable options appear.
             let should_nudge_plan = mode == "plan"
                 && !task_profile.is_design_edit()
+                && !run.plan_implementation_unlocked()
                 && !auth_request_routed
                 && plan_ask_nudges < 2
                 && resp
@@ -2751,13 +2996,14 @@ The tool entries are historical summaries; use fresh tools for the current works
                     resp.reasoning_content.clone(),
                 ));
                 messages.push(ChatMessage::user(
-                    "[System â€” Plan mode] Your previous reply described options in text only. \
+                    "[System — Plan mode] Your previous reply described options in text only. \
 The app cannot show clickable choices unless you call the ask_user tool.\n\
 Call ask_user NOW with:\n\
-- question: a clear question\n\
-- options: a JSON array of 2â€“6 short strings (e.g. [\"Option A\", \"Option B\", \"Option C\"])\n\
+- question: a clear question that includes whether to apply/implement the plan now\n\
+- options: a JSON array of 2–6 short strings, including \
+\"Apply this plan and implement the changes\" and \"Revise the plan — don't change files yet\"\n\
 - allow_other: true\n\
-Do not write the options only as markdown. Do not scaffold or write files yet.",
+Do not write the options only as markdown. Do not write, edit, or modify files yet.",
                 ));
                 iteration = iteration.saturating_add(1);
                 continue;
@@ -2955,13 +3201,19 @@ Do not write the options only as markdown. Do not scaffold or write files yet.",
                 if options.is_empty() {
                     // Fallback choices so the UI is never blank when the model forgets options
                     options = vec![
-                        "Continue with your recommended plan".into(),
+                        PLAN_APPLY_OPTION.into(),
                         "Simpler / minimal version".into(),
                         "More complete / polished version".into(),
                     ];
                     allow_other = true;
                 } else if options.len() == 1 {
                     allow_other = true;
+                }
+                if mode == "plan"
+                    && !task_profile.is_design_edit()
+                    && !run.plan_implementation_unlocked()
+                {
+                    options = ensure_plan_apply_options(options);
                 }
 
                 let (tx, rx) = tokio::sync::oneshot::channel::<String>();
@@ -2997,14 +3249,42 @@ Do not write the options only as markdown. Do not scaffold or write files yet.",
                     return Ok(None);
                 }
 
-                let response = match answer {
+                let mut response = match answer {
                     Ok(Ok(answer)) => answer,
                     Ok(Err(_)) => "User did not respond.".to_string(),
                     Err(_) => "Question timed out after 10 minutes.".to_string(),
                 };
+                if mode == "plan" && !task_profile.is_design_edit() {
+                    if ask_user_confirms_plan_implementation(&response, &question) {
+                        run.set_plan_implementation_unlocked(true);
+                        response.push_str(
+                            "\n\n[System] The user confirmed Apply. You may now write, edit, and run commands to implement the agreed plan. Mutating tools are unlocked.",
+                        );
+                    } else if !run.plan_implementation_unlocked() {
+                        response.push_str(
+                            "\n\n[System] The user has not confirmed Apply. Keep planning. Do not write, edit, or modify files.",
+                        );
+                    }
+                }
                 (true, response)
             } else {
                 let mode = normalized_permission_mode(&settings.permission_mode);
+                if mode == "plan"
+                    && !task_profile.is_design_edit()
+                    && !run.plan_implementation_unlocked()
+                    && tools::is_plan_locked_tool(&tc.name)
+                {
+                    let denied = tools::PLAN_LOCK_MESSAGE.to_string();
+                    flavour.record_tool_result(&tc.id, &tc.name, &tc.arguments, false, &denied);
+                    emit(
+                        &app,
+                        &session_id,
+                        "tool_result",
+                        json!({ "id": tc.id, "name": tc.name, "ok": false, "content": denied }),
+                    );
+                    messages.push(ChatMessage::tool(&tc.id, &tc.name, &denied));
+                    continue;
+                }
                 // Confirm tools based on permission mode (plan / ask / auto / full)
                 if tools::needs_tool_confirm(&tc.name, &tc.arguments, root, &mode) {
                     let approved = await_tool_confirm(
@@ -3445,10 +3725,10 @@ fn cursor_permission_instructions(mode: &str) -> &'static str {
             "Execution mode: ASK · ANSWER MAX. This is a read-only investigation turn: answer the user's actual question directly, accurately, and completely. Use available read-only tools when they materially improve confidence, then synthesize their results into one organized, self-contained response. Lead with the answer, use clear sections or steps when useful, distinguish facts from inference, and surface uncertainty honestly. Never end with blank text, status-only text, raw tool output, or an internal note. Do not edit files, run shell commands, or invoke mutating tools."
         }
         "plan" => {
-            "Execution mode: PLAN. Present a plan and call ask_user before mutating work. After the user accepts, you have Ship-level / full tool permissions — edit files, run commands, and use mutating tools without further approval prompts."
+            "Execution mode: PLAN. Files are locked. Restate and improve the request, present a numbered plan, and call ask_user (include whether to Apply/implement now, or keep planning). Do not write, edit, or modify files until the user confirms Apply. Stack or scope answers are not Apply. After they confirm Apply, implement the agreed plan with full tool permissions and no further Approve prompts."
         }
         _ => {
-            "Execution mode: PLAN. Present a plan and call ask_user before mutating work. After the user accepts, you have Ship-level / full tool permissions — edit files, run commands, and use mutating tools without further approval prompts."
+            "Execution mode: PLAN. Files are locked. Restate and improve the request, present a numbered plan, and call ask_user (include whether to Apply/implement now, or keep planning). Do not write, edit, or modify files until the user confirms Apply. Stack or scope answers are not Apply. After they confirm Apply, implement the agreed plan with full tool permissions and no further Approve prompts."
         }
     }
 }
@@ -3463,9 +3743,13 @@ fn cursor_computer_use_instructions(enabled: bool) -> &'static str {
 - If the user says \"playwright this website\", asks to use Computer Use, QA/audit/debug a site, test a form/flow/dashboard/game, or reproduce a UI bug, drive the live Preview first. Do not reinterpret that as a request to author a Playwright test file.\n\
 - Use this evidence loop: (1) computer_observe, (2) choose a short concrete scenario, (3) send adjacent deterministic steps together in one computer_actions batch, (4) use check actions for postconditions, and (5) report exact pass/fail evidence. Never infer success merely because an event was dispatched.\n\
 - Observation includes action refs plus bounded visible semantic content such as headings, table cells, labels, alerts, status messages, and dialogs. Use it to understand and verify the rendered UI before inspecting source.\n\
-- Omit duration_ms for normal actions so distance-adaptive motion stays fast. Keyboard, type, set_value, and same-target actions are optimized for zero cosmetic delay. Do not add blind waits between deterministic steps; use wait only for a known async transition.\n\
+- Omit duration_ms for normal actions so distance-adaptive motion stays fast. Keyboard, type, set_value, and same-target actions are optimized for zero cosmetic delay. Do not add blind waits between deterministic steps.\n\
 - Use set_value for native date, time, datetime-local, month, week, number, range, color, text, textarea, contenteditable, and select fields. Date is YYYY-MM-DD, time is HH:MM, and datetime-local is YYYY-MM-DDTHH:MM. Never abandon a scenario merely because a browser picker UI is not listed as a separate target. Read the returned value, validity, and validationMessage.\n\
-- Use check with expect to verify visible, enabled, checked, text, value, URL, or title. A failed check returns expected versus actual evidence; repair or report the failed condition instead of claiming success.\n\
+- Use check with expect to verify visible, enabled, checked, text, value, URL, or title. A failed check returns expected versus actual evidence and a small visual snapshot of the target. Repair or report the failed condition instead of claiming success.\n\
+- Prefer wait_for over wait. wait_for polls an expect condition (or network idle when expect is omitted) until it passes or duration_ms elapses. Use wait only for a known async transition when no observable condition exists.\n\
+- Observation also includes bounded a11y hits with the same refs, recent console errors, and failed network requests. Click the a11y ref to inspect the failing control.\n\
+- Use upload with fixture tiny.png, sample.csv, or note.txt on an observed file input. Never try to open the operating-system file picker.\n\
+- set_viewport with viewport=mobile|tablet|desktop must be the only action in its batch, then observe again. save_spec writes tests/horma-preview.spec.ts from the last Preview run. record start/stop and replay drive Watch me from the sandwich.\n\
 - Password values are always [redacted] in observations and action/check results. Never try to reveal or verify the actual value of a credential field.\n\
 - For nested tables, lists, modals, and panes, scroll with the observed scrollable ref or a descendant ref. With no target, scroll happens under the visible AI cursor. Positive delta_y scrolls down; negative scrolls up. viewport.scrollY measures only the page. Read moved, boundary, before, after, and applied; if boundary is true, do not repeat the identical scroll blindly.\n\
 - To visit a URL inside Preview, use exactly one navigate action for the active tab or one open_tab action for another Preview Browser tab. To read another listed Preview tab, use exactly one activate_tab action with its tab_id. Never use open_url: it launches the external default browser and is outside Computer Use.\n\
@@ -3607,22 +3891,25 @@ fn project_context_block(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        can_recover_from_provider_blip, chat_message_size, compact_active_run_messages,
-        compact_fast_design_history, compact_history_messages, cursor_computer_use_instructions,
-        cursor_effort_for_request, cursor_permission_instructions, cursor_resume_id_for_task,
+        ask_user_confirms_plan_implementation, can_recover_from_provider_blip, chat_message_size,
+        compact_active_run_messages, compact_fast_design_history, compact_history_messages,
+        conclusion_from_reasoning, cursor_computer_use_instructions, cursor_effort_for_request,
+        cursor_permission_instructions, cursor_resume_id_for_task,
         desktop_computer_use_instructions, desktop_control_effort, display_model_name,
-        display_provider_name, identity_instructions, inspection_preview_watch_state,
-        model_effort_for_task, next_stalled_recovery_count, normalize_tool_calls,
-        normalized_permission_mode, orphaned_tool_previews, parallel_readonly_batch_len,
-        provider_tool_result_content, public_tool_arguments, public_tool_preview_delta,
-        reply_announces_pending_action, reply_was_cut_off, resolve_tool_preview_name,
-        response_has_visible_answer, response_made_concrete_progress,
+        display_provider_name, ensure_plan_apply_options, identity_instructions,
+        inspection_preview_watch_state, model_effort_for_task, next_stalled_recovery_count,
+        normalize_tool_calls, normalized_permission_mode, orphaned_tool_previews,
+        parallel_readonly_batch_len, promote_reasoning_to_visible_answer,
+        prompt_unlocks_plan_implementation, provider_tool_result_content, public_tool_arguments,
+        public_tool_preview_delta, reply_announces_pending_action, reply_was_cut_off,
+        resolve_tool_preview_name, response_has_visible_answer, response_made_concrete_progress,
         starts_as_explanatory_request, stop_reason_requires_continuation,
         task_likely_requires_project_completion, task_requires_project_completion,
-        tool_confirm_summary, truncate_utf8, uses_cursor_sdk, AgentTaskProfile,
-        AutomaticContinuationReason, HistoryToolCall, HistoryTurn, InspectionPreviewWatchState,
-        ACTIVE_RUN_CONTEXT_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_TURNS,
-        MAX_CONSECUTIVE_STALLED_RECOVERIES, NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS,
+        tool_confirm_summary, truncate_utf8, user_confirms_plan_implementation, uses_cursor_sdk,
+        AgentTaskProfile, AutomaticContinuationReason, HistoryToolCall, HistoryTurn,
+        InspectionPreviewWatchState, ACTIVE_RUN_CONTEXT_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_BYTES,
+        FAST_DESIGN_HISTORY_MAX_TURNS, MAX_CONSECUTIVE_STALLED_RECOVERIES,
+        NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS, PLAN_APPLY_OPTION, PLAN_REVISE_OPTION,
         PROVIDER_TOOL_RESULT_MAX_BYTES, STREAMED_INSPECTION_TOOL_TIMEOUT,
     };
     use crate::llm::{ChatMessage, LlmResponse, ToolCall};
@@ -4022,13 +4309,60 @@ mod tests {
     #[test]
     fn unknown_permission_modes_fail_closed_to_plan() {
         assert_eq!(normalized_permission_mode("unexpected"), "plan");
-        assert!(cursor_permission_instructions("plan").contains("Ship-level"));
-        assert!(!cursor_permission_instructions("plan").contains("read-only"));
+        assert!(cursor_permission_instructions("plan").contains("Files are locked"));
+        assert!(cursor_permission_instructions("plan").contains("Do not write"));
+        assert!(!cursor_permission_instructions("plan").contains("Ship-level"));
         assert_eq!(normalized_permission_mode("research"), "ask");
         assert_eq!(normalized_permission_mode("ask"), "ask");
         assert!(cursor_permission_instructions("ask").contains("read-only"));
         assert_eq!(normalized_permission_mode("multi_agent"), "multi_agent");
         assert!(cursor_permission_instructions("multi_agent").contains("MULTI-AGENT"));
+    }
+
+    #[test]
+    fn plan_confirmation_unlocks_apply_not_new_work_or_stack_choices() {
+        assert!(user_confirms_plan_implementation(
+            "Apply this plan and implement the changes"
+        ));
+        assert!(user_confirms_plan_implementation("implement the plan"));
+        assert!(user_confirms_plan_implementation("go ahead"));
+        assert!(user_confirms_plan_implementation("yes"));
+        assert!(user_confirms_plan_implementation(
+            "Continue with your recommended plan"
+        ));
+        assert!(!user_confirms_plan_implementation("React + Vite"));
+        assert!(!user_confirms_plan_implementation("build a website"));
+        assert!(!user_confirms_plan_implementation("add a dashboard"));
+        assert!(!user_confirms_plan_implementation(
+            "implement the dashboard"
+        ));
+        assert!(!user_confirms_plan_implementation("keep planning"));
+        assert!(!user_confirms_plan_implementation(
+            "Revise the plan — don't change files yet"
+        ));
+        assert!(prompt_unlocks_plan_implementation("apply this plan"));
+        assert!(!prompt_unlocks_plan_implementation(
+            "Build a marketing website with a blog and contact form"
+        ));
+        assert!(ask_user_confirms_plan_implementation(
+            PLAN_APPLY_OPTION,
+            "Which stack should we use?"
+        ));
+        assert!(!ask_user_confirms_plan_implementation(
+            "yes",
+            "Which stack should we use?"
+        ));
+        assert!(ask_user_confirms_plan_implementation(
+            "yes",
+            "Apply this plan and implement the changes?"
+        ));
+        assert!(!ask_user_confirms_plan_implementation(
+            "React + Vite",
+            "Which stack should we use?"
+        ));
+        let options = ensure_plan_apply_options(vec!["React + Vite".into(), "Plain HTML".into()]);
+        assert!(options.iter().any(|option| option == PLAN_APPLY_OPTION));
+        assert!(options.iter().any(|option| option == PLAN_REVISE_OPTION));
     }
 
     #[test]
@@ -4075,6 +4409,10 @@ mod tests {
         assert!(policy.contains("Use this evidence loop"));
         assert!(policy.contains("set_value"));
         assert!(policy.contains("check with expect"));
+        assert!(policy.contains("wait_for"));
+        assert!(policy.contains("a11y"));
+        assert!(policy.contains("tiny.png"));
+        assert!(policy.contains("set_viewport"));
         assert!(policy.contains("Never infer success"));
         assert!(policy.contains("distance-adaptive motion"));
         assert!(policy.contains("Protected CAPTCHAs"));
@@ -4302,7 +4640,8 @@ mod tests {
         };
         assert!(reply_was_cut_off(&dangling));
 
-        // Reasoning with no visible text at all is also mid-thought, not done.
+        // Reasoning with no visible text is a stall unless the thought itself
+        // is already a complete user-facing answer (promoted above).
         let thought_only = LlmResponse {
             text: None,
             tool_calls: Vec::new(),
@@ -4311,6 +4650,24 @@ mod tests {
             usage_tokens: 10,
         };
         assert!(reply_was_cut_off(&thought_only));
+        assert!(conclusion_from_reasoning("Let me find the relevant files.").is_none());
+
+        let explained = "The screenshot is the supervisor Incident Reports page. Three rows show NTE ISSUED, UNDER REVIEW, and PENDING REVIEW.";
+        let finished_thought = LlmResponse {
+            text: None,
+            tool_calls: Vec::new(),
+            reasoning_content: Some(explained.into()),
+            stop_reason: "stop".into(),
+            usage_tokens: 10,
+        };
+        assert!(!reply_was_cut_off(&finished_thought));
+        assert_eq!(
+            conclusion_from_reasoning(explained).as_deref(),
+            Some(explained)
+        );
+        let mut promoted = finished_thought;
+        assert!(promote_reasoning_to_visible_answer(&mut promoted));
+        assert_eq!(promoted.text.as_deref(), Some(explained));
 
         // A finished answer ends cleanly and must NOT be resumed.
         let complete = LlmResponse {

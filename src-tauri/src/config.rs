@@ -269,7 +269,7 @@ impl Settings {
             }
             "plan" => {
                 s.permission_mode = mode;
-                // Plan keeps planning UX; tool confirms are Ship-level (see needs_tool_confirm).
+                // Plan stays locked until the user confirms Apply (see agent plan lock).
                 s.auto_approve = false;
             }
             "ask" | "research" => {
