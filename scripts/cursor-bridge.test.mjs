@@ -155,6 +155,10 @@ test("computer use keeps ask observational; plan/full expose action tools", () =
     fullTools.computer_type_text.inputSchema.properties.text.maxLength,
     512,
   );
+  assert.equal(
+    fullTools.computer_type_text.inputSchema.properties.submit.type,
+    "boolean",
+  );
 });
 
 test("computer use redacts persisted text and forwards the emergency pause sentinel", () => {

@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod app_updater;
 pub mod checkpoint;
+pub mod computer_fx;
 pub mod computer_use;
 pub mod config;
 pub mod cursor_bridge;
@@ -22,7 +23,9 @@ pub mod tools;
 pub mod workspace;
 
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
+};
 use tauri_plugin_opener::OpenerExt;
 
 #[derive(serde::Serialize)]
@@ -1451,6 +1454,39 @@ async fn start_integration_browser_auth(
         .map_err(|e| e.to_string())
 }
 
+fn size_computer_fx_overlay(window: &tauri::WebviewWindow) {
+    let (x, y, width, height) = computer_fx::overlay_bounds();
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+    let _ = window.set_size(PhysicalSize::new(width, height));
+    let _ = window.set_ignore_cursor_events(true);
+}
+
+fn ensure_computer_fx_overlay(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("computer-fx") {
+        size_computer_fx_overlay(&window);
+        let _ = window.show();
+        return;
+    }
+    if let Ok(window) = WebviewWindowBuilder::new(
+        app,
+        "computer-fx",
+        WebviewUrl::App("computer-fx.html".into()),
+    )
+    .title("Computer FX")
+    .transparent(true)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .focused(false)
+    .resizable(false)
+    .build()
+    {
+        size_computer_fx_overlay(&window);
+        let _ = window.show();
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         // Keep this first: Tauri's single-instance guard must initialize before
@@ -1544,6 +1580,19 @@ pub fn run() {
             start_integration_browser_auth,
         ])
         .setup(|app| {
+            let handle = app.handle().clone();
+            computer_fx::install_emitter(move |event| {
+                let clear = event.kind == "clear";
+                if !clear {
+                    ensure_computer_fx_overlay(&handle);
+                }
+                let _ = handle.emit("computer-use-fx", &event);
+                if clear {
+                    if let Some(window) = handle.get_webview_window("computer-fx") {
+                        let _ = window.hide();
+                    }
+                }
+            });
             computer_use::install(app.handle().clone());
             computer_use::install_emergency_hotkey(app.handle().clone());
             desktop_computer_use::install(app.handle().clone());

@@ -1649,6 +1649,11 @@ pub async fn run_loop(
     let mut settings = settings;
     settings.model_effort = execution_profile
         .model_effort(&model_effort_for_task(&settings.model_effort, task_profile));
+    settings.model_effort = desktop_control_effort(
+        &settings.model_effort,
+        &prompt,
+        settings.desktop_computer_use_enabled,
+    );
     if uses_cursor_sdk(&settings.provider) {
         match crate::config::load_cursor_sdk_api_key(&settings.provider) {
             Ok(key) => {
@@ -3378,6 +3383,53 @@ fn cursor_effort_for_request(configured: &str, prompt: &str, computer_use_enable
     }
 }
 
+fn desktop_control_effort(configured: &str, prompt: &str, desktop_enabled: bool) -> String {
+    if !desktop_enabled {
+        return configured.to_string();
+    }
+    let prompt = prompt.to_ascii_lowercase();
+    let is_build_request = [
+        "build ",
+        "create ",
+        "make a ",
+        "make an ",
+        "make me ",
+        "code ",
+        "implement ",
+        "develop ",
+        "fix ",
+        "edit ",
+    ]
+    .iter()
+    .any(|needle| prompt.contains(needle));
+    let is_desktop_control = [
+        "search",
+        "find ",
+        "look up",
+        "youtube",
+        "google",
+        "chrome",
+        "browser",
+        "click",
+        "type ",
+        "open ",
+        "play ",
+        "brightness",
+        "volume",
+        "settings",
+    ]
+    .iter()
+    .any(|needle| prompt.contains(needle));
+    if is_desktop_control && !is_build_request {
+        match configured.trim().to_ascii_lowercase().as_str() {
+            "ultra" | "max" | "xhigh" | "extra-high" | "extrahigh" => "high".into(),
+            other => other.to_string(),
+        }
+    } else {
+        configured.to_string()
+    }
+}
+
 fn cursor_permission_instructions(mode: &str) -> &'static str {
     match mode {
         "multi_agent" => {
@@ -3430,7 +3482,9 @@ fn desktop_computer_use_instructions(enabled: bool) -> &'static str {
     "\n\nDESKTOP COMPUTER USE:\n\
 - Desktop mode is a separate opt-in from Preview Computer Use. Use computer_list_windows, computer_observe_window, computer_focus_window, computer_click, computer_type_text, computer_press_key, computer_scroll, computer_drag, and computer_game_sequence only for ordinary Windows apps outside Hormachuelos.\n\
 - Do not mix these with Preview tools. computer_observe / computer_actions stay inside Preview. computer_observe_window captures a native window screenshot.\n\
-- Loop: list windows, observe the target, then use that observation_token for exactly one action. Observe again before another action.\n\
+- Fast loop: list windows, observe once, then send adjacent deterministic actions in the SAME turn with that token. Example: Ctrl+L, type the query, press Enter. Do not start a new observe/think loop between those steps.\n\
+- computer_type_text accepts submit=true to type and press Enter in one call. Prefer that for search bars.\n\
+- Re-observe only after navigation, a new page/dialog, a failed action, or when you need a new screenshot to choose coordinates. The token still works while the same window geometry holds.\n\
 - Windows Settings is allowed, including Display brightness via cursor hover/drag on the slider.\n\
 - If the user pinned allowed apps, only those process names are targetable. An empty list means all ordinary apps except the safety blocklist.\n\
 - Never target password managers, Windows Security/UAC/login, terminals, Run, ChatGPT, Codex, or Hormachuelos itself. Win/Meta shortcuts are blocked.\n\
@@ -3556,20 +3610,20 @@ mod tests {
         can_recover_from_provider_blip, chat_message_size, compact_active_run_messages,
         compact_fast_design_history, compact_history_messages, cursor_computer_use_instructions,
         cursor_effort_for_request, cursor_permission_instructions, cursor_resume_id_for_task,
-        desktop_computer_use_instructions, display_model_name, display_provider_name,
-        identity_instructions, inspection_preview_watch_state, model_effort_for_task,
-        next_stalled_recovery_count, normalize_tool_calls, normalized_permission_mode,
-        orphaned_tool_previews, parallel_readonly_batch_len, provider_tool_result_content,
-        public_tool_arguments, public_tool_preview_delta, reply_announces_pending_action,
-        reply_was_cut_off, resolve_tool_preview_name, response_has_visible_answer,
-        response_made_concrete_progress, starts_as_explanatory_request,
-        stop_reason_requires_continuation, task_likely_requires_project_completion,
-        task_requires_project_completion, tool_confirm_summary, truncate_utf8, uses_cursor_sdk,
-        AgentTaskProfile, AutomaticContinuationReason, HistoryToolCall, HistoryTurn,
-        InspectionPreviewWatchState, ACTIVE_RUN_CONTEXT_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_BYTES,
-        FAST_DESIGN_HISTORY_MAX_TURNS, MAX_CONSECUTIVE_STALLED_RECOVERIES,
-        NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS, PROVIDER_TOOL_RESULT_MAX_BYTES,
-        STREAMED_INSPECTION_TOOL_TIMEOUT,
+        desktop_computer_use_instructions, desktop_control_effort, display_model_name,
+        display_provider_name, identity_instructions, inspection_preview_watch_state,
+        model_effort_for_task, next_stalled_recovery_count, normalize_tool_calls,
+        normalized_permission_mode, orphaned_tool_previews, parallel_readonly_batch_len,
+        provider_tool_result_content, public_tool_arguments, public_tool_preview_delta,
+        reply_announces_pending_action, reply_was_cut_off, resolve_tool_preview_name,
+        response_has_visible_answer, response_made_concrete_progress,
+        starts_as_explanatory_request, stop_reason_requires_continuation,
+        task_likely_requires_project_completion, task_requires_project_completion,
+        tool_confirm_summary, truncate_utf8, uses_cursor_sdk, AgentTaskProfile,
+        AutomaticContinuationReason, HistoryToolCall, HistoryTurn, InspectionPreviewWatchState,
+        ACTIVE_RUN_CONTEXT_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_TURNS,
+        MAX_CONSECUTIVE_STALLED_RECOVERIES, NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS,
+        PROVIDER_TOOL_RESULT_MAX_BYTES, STREAMED_INSPECTION_TOOL_TIMEOUT,
     };
     use crate::llm::{ChatMessage, LlmResponse, ToolCall};
     use anyhow::anyhow;
@@ -4035,7 +4089,8 @@ mod tests {
         assert!(policy.contains("computer_observe_window"));
         assert!(policy.contains("computer_game_sequence"));
         assert!(policy.contains("Settings"));
-        assert!(policy.contains("exactly one action"));
+        assert!(policy.contains("adjacent deterministic actions"));
+        assert!(policy.contains("submit=true"));
         assert!(policy.contains("Win/Meta shortcuts are blocked"));
         assert!(!policy.contains("zero approval"));
         assert!(!cursor_computer_use_instructions(true).contains("computer_list_windows"));
@@ -4066,6 +4121,30 @@ mod tests {
         assert_eq!(
             cursor_effort_for_request("light", "explain this file", false),
             "low"
+        );
+    }
+
+    #[test]
+    fn desktop_search_caps_ultra_effort_without_downgrading_builds() {
+        assert_eq!(
+            desktop_control_effort(
+                "ultra",
+                "search for bruno mars locked out of heaven music",
+                true
+            ),
+            "high"
+        );
+        assert_eq!(
+            desktop_control_effort("ultra", "open youtube and find that song", true),
+            "high"
+        );
+        assert_eq!(
+            desktop_control_effort("ultra", "make a youtube clone website", true),
+            "ultra"
+        );
+        assert_eq!(
+            desktop_control_effort("ultra", "search youtube", false),
+            "ultra"
         );
     }
 

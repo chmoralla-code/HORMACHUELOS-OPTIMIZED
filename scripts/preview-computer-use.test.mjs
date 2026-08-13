@@ -190,14 +190,42 @@ test("Preview Computer Use can fill native controls and verify evidence", () => 
   assert.match(agent, /check/);
 });
 
-test("desktop overlay assets stay deleted", () => {
+test("desktop overlay is click-through cinematic FX for Desktop mode", () => {
   for (const path of [
     "src-tauri/src/computer_fx.rs",
     "src-tauri/capabilities/computer-fx.json",
     "src/computer-fx.html",
     "src/computer-fx.ts",
-    "src/components/computer-use-hud.ts",
   ]) {
-    assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), false, `${path} must remain removed`);
+    assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), true, `${path} must exist`);
   }
+  assert.equal(
+    existsSync(new URL("../src/components/computer-use-hud.ts", import.meta.url)),
+    false,
+    "in-app computer-use HUD must stay removed",
+  );
+  const fx = read("src-tauri/src/computer_fx.rs");
+  const overlay = read("src/computer-fx.ts");
+  const lib = read("src-tauri/src/lib.rs");
+  const desktop = read("src-tauri/src/desktop_computer_use.rs");
+  const capability = read("src-tauri/capabilities/computer-fx.json");
+  const vite = read("vite.config.ts");
+  assert.match(fx, /typing_fx_never_serializes_typed_content/);
+  assert.match(fx, /payload\.text = None/);
+  assert.match(overlay, /__horma-ai-cursor/);
+  assert.match(overlay, /__horma-ai-shockwave/);
+  assert.match(overlay, /AI cursor · Desktop/);
+  assert.match(overlay, /prefers-reduced-motion/);
+  assert.match(overlay, /overlayWindow\.hide/);
+  assert.doesNotMatch(overlay, /backdrop-filter/);
+  assert.match(lib, /set_ignore_cursor_events\(true\)/);
+  assert.match(lib, /computer_fx::install_emitter/);
+  assert.match(capability, /"computer-fx"/);
+  assert.match(capability, /allow-set-ignore-cursor-events/);
+  assert.match(vite, /computer-fx\.html/);
+  assert.match(desktop, /computer_fx::clear/);
+  assert.match(desktop, /computer_fx::click/);
+  assert.match(desktop, /computer_fx::target/);
+  assert.match(desktop, /cursor_diverged/);
+  assert.match(desktop, /crate::computer_fx::clear\(\)/);
 });

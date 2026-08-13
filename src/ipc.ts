@@ -147,6 +147,11 @@ export type ComputerUseFxEvent = {
   text?: string | null;
   charIndex?: number | null;
   totalChars?: number | null;
+  gesture?: string | null;
+  width?: number | null;
+  height?: number | null;
+  deltaX?: number | null;
+  deltaY?: number | null;
 };
 
 export type AppUpdateProgress = {

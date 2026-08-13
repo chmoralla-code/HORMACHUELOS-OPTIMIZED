@@ -18,41 +18,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hormachuelos-optimized"
-version = "1.2.7-2"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "directories",
- "env_logger",
- "glob",
- "hmac",
- "image",
- "keyring",
- "log",
- "png 0.17.16",
- "regex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "thiserror 1.0.69",
- "tokio",
- "uuid",
- "walkdir",
- "webview2-com",
- "windows 0.58.0",
- "zip",
-]
-
-[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1701,6 +1666,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest",
+]
+
+[[package]]
+name = "hormachuelos-optimized"
+version = "1.2.7-3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "directories",
+ "env_logger",
+ "glob",
+ "hmac",
+ "image",
+ "keyring",
+ "log",
+ "png 0.17.16",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+ "walkdir",
+ "webview2-com",
+ "windows 0.58.0",
+ "zip",
 ]
 
 [[package]]

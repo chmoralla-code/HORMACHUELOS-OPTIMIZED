@@ -2,8 +2,10 @@
 //!
 //! Separate from Preview Computer Use. The agent never receives raw Win32
 //! handles without a short-lived observation token. Mutating actions require a
-//! fresh token, forcing observe -> one action -> observe. There is no overlay
-//! FX path: cursor motion uses Win32 only so the FPS profile stays intact.
+//! valid token for that window; adjacent steps may reuse it in the same turn.
+//! Re-observe after navigation or a dialog. Cursor motion uses Win32 input; a
+//! click-through overlay mirrors Preview's cinematic AI cursor over the target
+//! window.
 
 use anyhow::{bail, ensure, Context, Result};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -99,6 +101,7 @@ pub fn set_paused(paused: bool) {
         if let Err(error) = create_pause_sentinel() {
             log::error!("Could not publish the Desktop Computer Use pause state: {error}");
         }
+        crate::computer_fx::clear();
     } else if let Err(error) = clear_pause_sentinel() {
         // Resume fails closed: the UI and helper must agree before input resumes.
         PAUSED.store(true, Ordering::SeqCst);
@@ -294,10 +297,12 @@ fn clear_pause_sentinel() -> Result<()> {
 }
 
 fn ensure_not_paused() -> Result<()> {
-    ensure!(
-        !is_paused(),
-        "Computer Use is paused. Resume it from the Preview sandwich menu before continuing."
-    );
+    if is_paused() {
+        crate::computer_fx::clear();
+        bail!(
+            "Computer Use is paused. Resume it from the Preview sandwich menu before continuing."
+        );
+    }
     Ok(())
 }
 
@@ -468,7 +473,12 @@ fn execute_request(request: HelperRequest) -> Result<Value> {
             let window_id = arg_str(&request.args, "window_id")?;
             let claims =
                 verify_observation(arg_str(&request.args, "observation_token")?, window_id)?;
-            platform::type_text(&claims, arg_str(&request.args, "text")?)
+            let submit = request
+                .args
+                .get("submit")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            platform::type_text(&claims, arg_str(&request.args, "text")?, submit)
         }
         "press_key" => {
             let window_id = arg_str(&request.args, "window_id")?;
@@ -829,6 +839,17 @@ mod platform {
         Ok((hwnd, refreshed))
     }
 
+    fn emit_target(info: &WindowInfo) {
+        crate::computer_fx::target(info.x, info.y, info.width, info.height);
+    }
+
+    fn cursor_diverged(expected_x: i32, expected_y: i32) -> bool {
+        let Ok((cx, cy)) = cursor_pos() else {
+            return false;
+        };
+        (cx - expected_x).abs() > 28 || (cy - expected_y).abs() > 28
+    }
+
     fn point_in_window(info: &WindowInfo, x: i32, y: i32) -> Result<(i32, i32)> {
         ensure!(
             x >= 0 && y >= 0 && x < info.width && y < info.height,
@@ -1043,7 +1064,7 @@ mod platform {
             "expires_in_ms": OBSERVATION_TTL_MS,
             "mime_type": "image/png",
             "image_base64": STANDARD.encode(png),
-            "instruction": "Use this token for exactly one action, then observe again."
+            "instruction": "Use this token for adjacent deterministic actions in the same turn, then observe again after navigation or a dialog."
         }))
     }
 
@@ -1058,13 +1079,16 @@ mod platform {
     fn animate_cursor_to(to_x: i32, to_y: i32) {
         let Ok((from_x, from_y)) = cursor_pos() else {
             let _ = unsafe { SetCursorPos(to_x, to_y) };
+            crate::computer_fx::hover(to_x, to_y);
             return;
         };
+        crate::computer_fx::approach(from_x, from_y);
         let dx = to_x - from_x;
         let dy = to_y - from_y;
         let distance = ((dx * dx + dy * dy) as f64).sqrt();
         if distance < 6.0 {
             let _ = unsafe { SetCursorPos(to_x, to_y) };
+            crate::computer_fx::hover(to_x, to_y);
             return;
         }
         let steps = ((distance / 14.0).ceil() as i32).clamp(2, 22);
@@ -1073,10 +1097,15 @@ mod platform {
             let x = from_x + ((dx as f64) * t).round() as i32;
             let y = from_y + ((dy as f64) * t).round() as i32;
             let _ = unsafe { SetCursorPos(x, y) };
+            crate::computer_fx::cursor_move(x, y);
             if step < steps {
                 thread::sleep(Duration::from_millis(3));
+                if cursor_diverged(x, y) {
+                    crate::computer_fx::clear();
+                }
             }
         }
+        crate::computer_fx::hover(to_x, to_y);
     }
 
     fn typing_fx_delay(total_chars: u32) {
@@ -1097,10 +1126,12 @@ mod platform {
         clicks: u32,
     ) -> Result<Value> {
         let (_, info) = focus_window_fast(claims)?;
+        emit_target(&info);
         let (screen_x, screen_y) = point_in_window(&info, x, y)?;
         animate_cursor_to(screen_x, screen_y);
         unsafe { SetCursorPos(screen_x, screen_y)? };
         ensure_not_paused()?;
+        crate::computer_fx::press(screen_x, screen_y);
         let (down, up) = match button.to_ascii_lowercase().as_str() {
             "left" => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
             "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
@@ -1110,6 +1141,7 @@ mod platform {
         for index in 0..clicks {
             ensure_not_paused()?;
             send_inputs(&[mouse_input(down, 0), mouse_input(up, 0)])?;
+            crate::computer_fx::click(screen_x, screen_y, button);
             if index + 1 < clicks {
                 thread::sleep(Duration::from_millis(12));
             }
@@ -1122,11 +1154,11 @@ mod platform {
             "y": y,
             "button": button,
             "clicks": clicks,
-            "next": "Continue acting or observe again if the UI changed."
+            "next": "Keep using this token for the next adjacent step, or observe again if the UI changed."
         }))
     }
 
-    pub(super) fn type_text(claims: &ObservationClaims, text: &str) -> Result<Value> {
+    pub(super) fn type_text(claims: &ObservationClaims, text: &str, submit: bool) -> Result<Value> {
         ensure!(!text.is_empty(), "Text cannot be empty.");
         ensure!(
             !text.chars().any(char::is_control),
@@ -1139,11 +1171,12 @@ mod platform {
         );
         focus_window_fast(claims)?;
         let (_, info) = safe_window(&claims.window_id)?;
+        emit_target(&info);
         let (screen_x, screen_y) = point_in_window(&info, info.width / 2, (info.height * 2) / 3)?;
         animate_cursor_to(screen_x, screen_y);
         let chars: Vec<char> = text.chars().collect();
         let total = chars.len() as u32;
-        for ch in chars {
+        for (index, ch) in chars.iter().enumerate() {
             let mut encoded = [0u16; 2];
             let units = ch.encode_utf16(&mut encoded);
             for unit in units {
@@ -1153,14 +1186,25 @@ mod platform {
                     key_input(0, *unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
                 ])?;
             }
+            crate::computer_fx::type_char(screen_x, screen_y, "", index as u32, total);
             typing_fx_delay(total);
+        }
+        crate::computer_fx::type_done(screen_x, screen_y, "", total);
+        if submit {
+            ensure_not_paused()?;
+            send_inputs(&[
+                key_input(0x0D, 0, Default::default()),
+                key_input(0x0D, 0, KEYEVENTF_KEYUP),
+            ])?;
+            crate::computer_fx::key(screen_x, screen_y);
         }
         Ok(json!({
             "acted": true,
             "action": "type_text",
             "window_id": claims.window_id,
             "characters": text.chars().count(),
-            "next": "Continue acting or observe again if the UI changed."
+            "submitted": submit,
+            "next": "Keep using this token for the next adjacent step, or observe again if the UI changed."
         }))
     }
 
@@ -1225,6 +1269,7 @@ mod platform {
         let main_key = main_key.context("A non-modifier key is required.")?;
         focus_window_fast(claims)?;
         let (_, info) = safe_window(&claims.window_id)?;
+        emit_target(&info);
         let (screen_x, screen_y) = point_in_window(&info, info.width / 2, info.height / 2)?;
         animate_cursor_to(screen_x, screen_y);
         let mut inputs = Vec::new();
@@ -1238,12 +1283,13 @@ mod platform {
         }
         ensure_not_paused()?;
         send_inputs(&inputs)?;
+        crate::computer_fx::key(screen_x, screen_y);
         Ok(json!({
             "acted": true,
             "action": "press_key",
             "window_id": claims.window_id,
             "keys": normalized,
-            "next": "Continue acting or observe again if the UI changed."
+            "next": "Keep using this token for the next adjacent step, or observe again if the UI changed."
         }))
     }
 
@@ -1253,14 +1299,17 @@ mod platform {
         steps: &[GameControlStep],
     ) -> Result<Value> {
         let (_, info) = focus_window_fast(claims)?;
+        emit_target(&info);
         if let Some((x, y)) = focus_point {
             let (screen_x, screen_y) = point_in_window(&info, x, y)?;
             unsafe { SetCursorPos(screen_x, screen_y)? };
             ensure_not_paused()?;
+            crate::computer_fx::press(screen_x, screen_y);
             send_inputs(&[
                 mouse_input(MOUSEEVENTF_LEFTDOWN, 0),
                 mouse_input(MOUSEEVENTF_LEFTUP, 0),
             ])?;
+            crate::computer_fx::click(screen_x, screen_y, "left");
         }
 
         let started = std::time::Instant::now();
@@ -1304,17 +1353,19 @@ mod platform {
             "Scroll delta must be between -2400 and 2400."
         );
         let (_, info) = focus_window_fast(claims)?;
+        emit_target(&info);
         let (screen_x, screen_y) = point_in_window(&info, x, y)?;
         animate_cursor_to(screen_x, screen_y);
         unsafe { SetCursorPos(screen_x, screen_y)? };
         ensure_not_paused()?;
         send_inputs(&[mouse_input(MOUSEEVENTF_WHEEL, delta_y as u32)])?;
+        crate::computer_fx::scroll(screen_x, screen_y, 0, delta_y);
         Ok(json!({
             "acted": true,
             "action": "scroll",
             "window_id": claims.window_id,
             "delta_y": delta_y,
-            "next": "Continue acting or observe again if the UI changed."
+            "next": "Keep using this token for the next adjacent step, or observe again if the UI changed."
         }))
     }
 
@@ -1326,19 +1377,25 @@ mod platform {
         end_y: i32,
     ) -> Result<Value> {
         let (_, info) = focus_window_fast(claims)?;
+        emit_target(&info);
         let (from_x, from_y) = point_in_window(&info, start_x, start_y)?;
         let (to_x, to_y) = point_in_window(&info, end_x, end_y)?;
         animate_cursor_to(from_x, from_y);
         unsafe { SetCursorPos(from_x, from_y)? };
         ensure_not_paused()?;
         send_inputs(&[mouse_input(MOUSEEVENTF_LEFTDOWN, 0)])?;
+        crate::computer_fx::press(from_x, from_y);
         let drag_result = (|| -> Result<()> {
             for step in 1..=6 {
                 ensure_not_paused()?;
                 let x = from_x + (to_x - from_x) * step / 6;
                 let y = from_y + (to_y - from_y) * step / 6;
                 unsafe { SetCursorPos(x, y)? };
+                crate::computer_fx::drag(from_x, from_y, x, y);
                 thread::sleep(Duration::from_millis(2));
+                if cursor_diverged(x, y) {
+                    crate::computer_fx::clear();
+                }
             }
             Ok(())
         })();
@@ -1351,7 +1408,7 @@ mod platform {
             "acted": true,
             "action": "drag",
             "window_id": claims.window_id,
-            "next": "Continue acting or observe again if the UI changed."
+            "next": "Keep using this token for the next adjacent step, or observe again if the UI changed."
         }))
     }
 
@@ -1407,7 +1464,11 @@ mod platform {
     ) -> Result<Value> {
         unsupported()
     }
-    pub(super) fn type_text(_claims: &ObservationClaims, _text: &str) -> Result<Value> {
+    pub(super) fn type_text(
+        _claims: &ObservationClaims,
+        _text: &str,
+        _submit: bool,
+    ) -> Result<Value> {
         unsupported()
     }
     pub(super) fn press_key(_claims: &ObservationClaims, _keys: &str) -> Result<Value> {

@@ -88,7 +88,11 @@ jobs:
             - uses an allowed-apps list, or all ordinary windows when the list is empty
             - blocks password managers, Windows Security, terminals, Run, ChatGPT, Codex, and Hormachuelos
             - shares Ctrl+Alt+Esc with Preview Computer Use as the emergency stop
-            - keeps Preview Computer Use Preview-only; Desktop mode does not add overlay FX
+            - keeps Preview Computer Use Preview-only
+            - shows a click-through cinematic AI cursor overlay on the target Windows app (hover frame, shockwaves, scroll cues)
+            - chains adjacent Desktop steps in one turn (for example Ctrl+L, type, Enter) instead of thinking between each key
+            - computer_type_text can submit=true to type a search and press Enter in one call
+            - caps Ultra to High on simple Desktop search/click/open tasks so DeepSeek does not use max reasoning for every tiny action
 
             Monochrome active Preview frame:
             - animates a crisp black-to-gray-to-white perimeter only while Computer Use is actively engaged
