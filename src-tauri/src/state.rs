@@ -118,6 +118,9 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         let settings = Settings::load().unwrap_or_default();
+        crate::desktop_computer_use::set_allowed_apps(
+            settings.desktop_computer_use_allowed_apps.clone(),
+        );
         let recent = load_recent().unwrap_or_default();
         Self {
             project_root: Mutex::new(None),

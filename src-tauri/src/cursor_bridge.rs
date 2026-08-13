@@ -145,8 +145,12 @@ fn cursor_host_tool_is_available(name: &str, permission_mode: &str) -> bool {
 /// tool schemas. Cursor's built-in tool set changes between SDK releases; the
 /// host bridge keeps every advertised AI-Forge tool backed by the same native
 /// dispatcher and permission checks used by non-Cursor providers.
-fn cursor_host_tool_schemas(permission_mode: &str, computer_use_enabled: bool) -> Vec<Value> {
-    crate::tools::schemas(computer_use_enabled)
+fn cursor_host_tool_schemas(
+    permission_mode: &str,
+    computer_use_enabled: bool,
+    desktop_computer_use_enabled: bool,
+) -> Vec<Value> {
+    crate::tools::schemas_with(computer_use_enabled, desktop_computer_use_enabled)
         .into_iter()
         .filter_map(|schema| {
             let function = schema.get("function")?;
@@ -894,6 +898,7 @@ pub async fn run_cursor_turn(
     effort: &str,
     permission_mode: &str,
     computer_use_enabled: bool,
+    desktop_computer_use_enabled: bool,
     command_timeout_secs: u64,
     session_id: &str,
     run: Arc<SessionRun>,
@@ -954,6 +959,7 @@ pub async fn run_cursor_turn(
             effort,
             permission_mode,
             computer_use_enabled,
+            desktop_computer_use_enabled,
             command_timeout_secs,
             session_id,
             run.clone(),
@@ -1130,6 +1136,7 @@ async fn run_cursor_attempt(
     effort: &str,
     permission_mode: &str,
     computer_use_enabled: bool,
+    desktop_computer_use_enabled: bool,
     command_timeout_secs: u64,
     session_id: &str,
     run: Arc<SessionRun>,
@@ -1149,7 +1156,13 @@ async fn run_cursor_attempt(
     let bridge_arg = bridge.to_string_lossy().to_string();
     let cancel = run.cancel.clone();
     let computer_use_active = computer_use_enabled && !crate::computer_use::is_paused();
-    let host_tool_schemas = cursor_host_tool_schemas(permission_mode, computer_use_active);
+    let desktop_computer_use_active =
+        desktop_computer_use_enabled && !crate::desktop_computer_use::is_paused();
+    let host_tool_schemas = cursor_host_tool_schemas(
+        permission_mode,
+        computer_use_active,
+        desktop_computer_use_active,
+    );
 
     emit(&app, session_id, "thinking", json!({ "iteration": 0 }));
 
@@ -1651,7 +1664,7 @@ mod tests {
 
     #[test]
     fn cursor_registers_every_eligible_native_tool_with_permission_filtering() {
-        let full = cursor_host_tool_schemas("full", true);
+        let full = cursor_host_tool_schemas("full", true, false);
         let actual = full
             .iter()
             .map(|schema| schema["name"].as_str().expect("host tool name").to_string())
@@ -1670,11 +1683,20 @@ mod tests {
         assert!(actual.contains("open_path"));
         assert!(!actual.contains("done"));
         assert!(!actual.contains("todo_write"));
+        assert!(!actual.contains("computer_list_windows"));
         assert!(full.iter().all(|schema| {
             schema["description"].is_string() && schema["inputSchema"]["type"] == "object"
         }));
 
-        let ask = cursor_host_tool_schemas("ask", true);
+        let desktop = cursor_host_tool_schemas("full", true, true);
+        assert!(desktop
+            .iter()
+            .any(|schema| schema["name"] == "computer_list_windows"));
+        assert!(desktop
+            .iter()
+            .any(|schema| schema["name"] == "computer_observe_window"));
+
+        let ask = cursor_host_tool_schemas("ask", true, true);
         assert!(ask.iter().all(|schema| {
             let name = schema["name"].as_str().expect("ask tool name");
             crate::tools::is_readonly_tool(name) || crate::tools::is_computer_tool(name)

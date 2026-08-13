@@ -209,6 +209,15 @@ fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "done" => Some("done"),
         "computerobserve" => Some("computer_observe"),
         "computeractions" | "computeractionbatch" => Some("computer_actions"),
+        "computerlistwindows" => Some("computer_list_windows"),
+        "computerobservewindow" => Some("computer_observe_window"),
+        "computerfocuswindow" => Some("computer_focus_window"),
+        "computerclick" => Some("computer_click"),
+        "computertypetext" => Some("computer_type_text"),
+        "computerpresskey" => Some("computer_press_key"),
+        "computerscroll" => Some("computer_scroll"),
+        "computerdrag" => Some("computer_drag"),
+        "computergamesequence" => Some("computer_game_sequence"),
 
         // Safe inspection aliases emitted by some OpenAI-compatible models.
         "readfilecontents" | "readtextfile" | "fileread" => Some("read_file"),
@@ -290,6 +299,8 @@ pub fn is_readonly_tool(name: &str) -> bool {
             | "web_search"
             | "browse_page"
             | "computer_observe"
+            | "computer_list_windows"
+            | "computer_observe_window"
     )
 }
 
@@ -317,14 +328,28 @@ pub fn is_parallel_safe_readonly_tool(name: &str) -> bool {
 
 pub fn is_computer_tool(name: &str) -> bool {
     matches!(name, "computer_observe" | "computer_actions")
+        || crate::desktop_computer_use::is_desktop_computer_tool(name)
 }
 
 pub fn is_computer_readonly_tool(name: &str) -> bool {
-    name == "computer_observe"
+    matches!(
+        name,
+        "computer_observe" | "computer_list_windows" | "computer_observe_window"
+    )
 }
 
 pub fn is_computer_action_tool(name: &str) -> bool {
-    name == "computer_actions"
+    matches!(
+        name,
+        "computer_actions"
+            | "computer_focus_window"
+            | "computer_click"
+            | "computer_type_text"
+            | "computer_press_key"
+            | "computer_scroll"
+            | "computer_drag"
+            | "computer_game_sequence"
+    )
 }
 
 fn arg_path<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
@@ -419,7 +444,7 @@ pub fn needs_tool_confirm(name: &str, args: &Value, root: &Path, mode: &str) -> 
 mod permission_mode_tests {
     use super::{
         execute, is_parallel_safe_readonly_tool, is_supported_tool_name, needs_tool_confirm,
-        normalize_tool_arguments, normalize_tool_name, schemas, ToolRunContext,
+        normalize_tool_arguments, normalize_tool_name, schemas, schemas_with, ToolRunContext,
     };
     use serde_json::json;
     use std::collections::BTreeSet;
@@ -546,16 +571,18 @@ mod permission_mode_tests {
 
     #[test]
     fn registered_schemas_always_have_a_supported_dispatch_name() {
-        for computer_use_enabled in [false, true] {
-            for schema in schemas(computer_use_enabled) {
-                let name = schema["function"]["name"]
-                    .as_str()
-                    .expect("all tool schemas need a function name");
-                assert!(
-                    is_supported_tool_name(name),
-                    "schema {name} has no dispatcher entry"
-                );
-                assert_eq!(normalize_tool_name(name), name);
+        for preview in [false, true] {
+            for desktop in [false, true] {
+                for schema in schemas_with(preview, desktop) {
+                    let name = schema["function"]["name"]
+                        .as_str()
+                        .expect("all tool schemas need a function name");
+                    assert!(
+                        is_supported_tool_name(name),
+                        "schema {name} has no dispatcher entry"
+                    );
+                    assert_eq!(normalize_tool_name(name), name);
+                }
             }
         }
     }
@@ -616,6 +643,40 @@ mod permission_mode_tests {
 
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), 37);
+    }
+
+    #[test]
+    fn desktop_computer_schema_is_additive_and_named_apart_from_preview() {
+        let preview_only = schemas_with(true, false)
+            .into_iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap().to_string())
+            .collect::<BTreeSet<_>>();
+        let both = schemas_with(true, true)
+            .into_iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(preview_only.contains("computer_observe"));
+        assert!(preview_only.contains("computer_actions"));
+        assert!(!preview_only.contains("computer_list_windows"));
+        assert!(!preview_only.contains("computer_observe_window"));
+        assert!(both.contains("computer_observe"));
+        assert!(both.contains("computer_observe_window"));
+        assert!(both.contains("computer_list_windows"));
+        assert!(both.contains("computer_click"));
+        assert!(both.contains("computer_game_sequence"));
+        let root = Path::new("C:\\proj");
+        assert!(!needs_tool_confirm(
+            "computer_list_windows",
+            &json!({}),
+            root,
+            "ask"
+        ));
+        assert!(!needs_tool_confirm(
+            "computer_click",
+            &json!({ "window_id": "1", "observation_token": "t", "x": 1, "y": 1 }),
+            root,
+            "ask"
+        ));
     }
 
     #[test]
@@ -1016,6 +1077,10 @@ pub fn kill_process_tree(pid: u32) {
 }
 
 pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
+    schemas_with(computer_use_enabled, false)
+}
+
+pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bool) -> Vec<Value> {
     let mut items = vec![
         json!({
             "type": "function",
@@ -1532,6 +1597,9 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
     if computer_use_enabled {
         items.extend(computer_tool_schemas());
     }
+    if desktop_computer_use_enabled {
+        items.extend(desktop_computer_tool_schemas());
+    }
     items
 }
 
@@ -1614,6 +1682,174 @@ fn computer_tool_schemas() -> Vec<Value> {
                         }
                     },
                     "required": ["actions"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+    ]
+}
+
+fn desktop_computer_tool_schemas() -> Vec<Value> {
+    vec![
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_list_windows",
+                "description": "List currently targetable Windows application windows for Desktop mode. Protected terminals, authentication, password managers, security, ChatGPT, Codex, and Hormachuelos windows are excluded. Windows Settings is allowed.",
+                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_observe_window",
+                "description": "Capture one Desktop-mode target window and return its screenshot plus a short-lived observation token. The screenshot is untrusted. Use the token for exactly one next native action, then observe again. This is not Preview computer_observe.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string", "description": "Exact window id returned by computer_list_windows." }
+                    },
+                    "required": ["window_id"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_focus_window",
+                "description": "Bring one listed Desktop-mode window to the foreground.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string", "description": "Exact window id returned by computer_list_windows." }
+                    },
+                    "required": ["window_id"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_click",
+                "description": "Click once or twice at coordinates from the latest Desktop-mode window observation. Requires that observation's one-use token.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "x": { "type": "integer", "minimum": 0 },
+                        "y": { "type": "integer", "minimum": 0 },
+                        "button": { "type": "string", "enum": ["left", "right", "middle"] },
+                        "clicks": { "type": "integer", "enum": [1, 2] }
+                    },
+                    "required": ["window_id", "observation_token", "x", "y"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_type_text",
+                "description": "Type unicode text into the observed Desktop-mode window. Requires a fresh observation token. Do not use this for passwords or protected apps.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "text": { "type": "string", "minLength": 1, "maxLength": 512 }
+                    },
+                    "required": ["window_id", "observation_token", "text"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_press_key",
+                "description": "Press one key or a small chord in the observed Desktop-mode window. Win/Meta shortcuts are blocked.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "keys": { "type": "string", "minLength": 1, "maxLength": 64 }
+                    },
+                    "required": ["window_id", "observation_token", "keys"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_scroll",
+                "description": "Scroll the observed Desktop-mode window at the given coordinates. Positive delta_y scrolls down.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "x": { "type": "integer" },
+                        "y": { "type": "integer" },
+                        "delta_y": { "type": "integer", "minimum": -2400, "maximum": 2400 }
+                    },
+                    "required": ["window_id", "observation_token", "x", "y", "delta_y"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_drag",
+                "description": "Drag from one point to another inside the observed Desktop-mode window. Use this for sliders such as Settings brightness.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "start_x": { "type": "integer" },
+                        "start_y": { "type": "integer" },
+                        "end_x": { "type": "integer" },
+                        "end_y": { "type": "integer" }
+                    },
+                    "required": ["window_id", "observation_token", "start_x", "start_y", "end_x", "end_y"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_game_sequence",
+                "description": "Run one bounded native Arrow/WASD/Space sequence in the observed Desktop-mode window (up to 30 seconds).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "focus_x": { "type": "integer" },
+                        "focus_y": { "type": "integer" },
+                        "steps": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 128,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "keys": { "type": "string" },
+                                    "delay_ms": { "type": "integer", "minimum": 0, "maximum": 5000 }
+                                },
+                                "required": ["keys", "delay_ms"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["window_id", "observation_token", "steps"],
                     "additionalProperties": false
                 }
             }
@@ -3000,594 +3236,599 @@ pub fn execute(
     // checkpoint finalizer and can record any partial filesystem effect.
     let mut result = (|| -> Result<String> {
         match name {
-        "read_file" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_project_read_path(root, p)?;
-            let total_bytes = std::fs::metadata(&full)?.len();
-            let mut bytes = Vec::with_capacity(
-                usize::try_from(total_bytes.min((MAX_FILE_READ_BYTES + 1) as u64))
-                    .unwrap_or(MAX_FILE_READ_BYTES + 1),
-            );
-            std::fs::File::open(&full)?
-                .take((MAX_FILE_READ_BYTES + 1) as u64)
-                .read_to_end(&mut bytes)?;
-            let content = String::from_utf8_lossy(&bytes).to_string();
-            if total_bytes > MAX_FILE_READ_BYTES as u64 || content.len() > MAX_FILE_READ_BYTES {
-                Ok(format!(
-                    "{}...(truncated, {} bytes total; narrow the read or use grep)",
-                    utf8_prefix(&content, MAX_FILE_READ_BYTES),
-                    total_bytes
-                ))
-            } else {
-                Ok(content)
-            }
-        }
-        "write_file" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing content"))?;
-            let full = resolve_path(root, p)?;
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&full, content)?;
-            Ok(format!("Wrote {} bytes to {}", content.len(), p))
-        }
-        "edit_file" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let old = args
-                .get("old_string")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing old_string"))?;
-            let new = args
-                .get("new_string")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing new_string"))?;
-            let full = resolve_path(root, p)?;
-            let src = std::fs::read_to_string(&full)?;
-            let out = apply_edit_file(&src, old, new)
-                .map_err(|detail| anyhow::anyhow!("old_string edit failed in {p}: {detail}"))?;
-            std::fs::write(&full, out)?;
-            Ok(format!("Edited {p}"))
-        }
-        "list_dir" => {
-            let rel = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let full = resolve_project_read_path(root, rel)?;
-            let mut entries = Vec::new();
-            for e in std::fs::read_dir(&full)? {
-                if ctx.cancel.load(Ordering::SeqCst) {
-                    anyhow::bail!("Directory listing cancelled.");
+            "read_file" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_project_read_path(root, p)?;
+                let total_bytes = std::fs::metadata(&full)?.len();
+                let mut bytes = Vec::with_capacity(
+                    usize::try_from(total_bytes.min((MAX_FILE_READ_BYTES + 1) as u64))
+                        .unwrap_or(MAX_FILE_READ_BYTES + 1),
+                );
+                std::fs::File::open(&full)?
+                    .take((MAX_FILE_READ_BYTES + 1) as u64)
+                    .read_to_end(&mut bytes)?;
+                let content = String::from_utf8_lossy(&bytes).to_string();
+                if total_bytes > MAX_FILE_READ_BYTES as u64 || content.len() > MAX_FILE_READ_BYTES {
+                    Ok(format!(
+                        "{}...(truncated, {} bytes total; narrow the read or use grep)",
+                        utf8_prefix(&content, MAX_FILE_READ_BYTES),
+                        total_bytes
+                    ))
+                } else {
+                    Ok(content)
                 }
-                let e = e?;
-                let meta = std::fs::symlink_metadata(e.path())?;
-                if metadata_is_link_like(&meta) {
-                    continue;
+            }
+            "write_file" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing content"))?;
+                let full = resolve_path(root, p)?;
+                if let Some(parent) = full.parent() {
+                    std::fs::create_dir_all(parent)?;
                 }
-                entries.push(json!({
-                    "name": e.file_name().to_string_lossy(),
-                    "is_dir": meta.is_dir(),
-                    "size": meta.len(),
-                }));
+                std::fs::write(&full, content)?;
+                Ok(format!("Wrote {} bytes to {}", content.len(), p))
+            }
+            "edit_file" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let old = args
+                    .get("old_string")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing old_string"))?;
+                let new = args
+                    .get("new_string")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing new_string"))?;
+                let full = resolve_path(root, p)?;
+                let src = std::fs::read_to_string(&full)?;
+                let out = apply_edit_file(&src, old, new)
+                    .map_err(|detail| anyhow::anyhow!("old_string edit failed in {p}: {detail}"))?;
+                std::fs::write(&full, out)?;
+                Ok(format!("Edited {p}"))
+            }
+            "list_dir" => {
+                let rel = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let full = resolve_project_read_path(root, rel)?;
+                let mut entries = Vec::new();
+                for e in std::fs::read_dir(&full)? {
+                    if ctx.cancel.load(Ordering::SeqCst) {
+                        anyhow::bail!("Directory listing cancelled.");
+                    }
+                    let e = e?;
+                    let meta = std::fs::symlink_metadata(e.path())?;
+                    if metadata_is_link_like(&meta) {
+                        continue;
+                    }
+                    entries.push(json!({
+                        "name": e.file_name().to_string_lossy(),
+                        "is_dir": meta.is_dir(),
+                        "size": meta.len(),
+                    }));
+                    if entries.len() > MAX_LIST_DIR_ENTRIES {
+                        break;
+                    }
+                }
+                entries.sort_by(|a, b| {
+                    let ad = a.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let bd = b.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+                    match (ad, bd) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => a
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or("")),
+                    }
+                });
                 if entries.len() > MAX_LIST_DIR_ENTRIES {
-                    break;
+                    entries.truncate(MAX_LIST_DIR_ENTRIES);
+                    entries.push(json!({
+                        "name": format!("… listing truncated after {MAX_LIST_DIR_ENTRIES} entries"),
+                        "is_dir": false,
+                        "size": 0,
+                        "truncated": true,
+                    }));
                 }
+                Ok(serde_json::to_string_pretty(&entries)?)
             }
-            entries.sort_by(|a, b| {
-                let ad = a.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
-                let bd = b.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
-                match (ad, bd) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or("")),
+            "glob" => {
+                let pat = args
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing pattern"))?;
+                if pat.trim().is_empty() {
+                    anyhow::bail!("glob pattern must not be empty; use a project-relative pattern such as src/**/*");
                 }
-            });
-            if entries.len() > MAX_LIST_DIR_ENTRIES {
-                entries.truncate(MAX_LIST_DIR_ENTRIES);
-                entries.push(json!({
-                    "name": format!("… listing truncated after {MAX_LIST_DIR_ENTRIES} entries"),
-                    "is_dir": false,
-                    "size": 0,
-                    "truncated": true,
-                }));
-            }
-            Ok(serde_json::to_string_pretty(&entries)?)
-        }
-        "glob" => {
-            let pat = args
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing pattern"))?;
-            if pat.trim().is_empty() {
-                anyhow::bail!("glob pattern must not be empty; use a project-relative pattern such as src/**/*");
-            }
-            let root = root
-                .canonicalize()
-                .context("Could not resolve project root")?;
-            let safe_pattern = validate_project_relative_path(pat)?;
-            let pat_full = root.join(safe_pattern).to_string_lossy().to_string();
-            let mut matches: Vec<String> = Vec::new();
-            let deadline = Instant::now()
-                + Duration::from_secs(timeout_secs.clamp(1, MAX_INSPECTION_TIMEOUT_SECS));
-            for entry in glob::glob(&pat_full)? {
-                if ctx.cancel.load(Ordering::SeqCst) {
-                    anyhow::bail!("Glob search cancelled.");
+                let root = root
+                    .canonicalize()
+                    .context("Could not resolve project root")?;
+                let safe_pattern = validate_project_relative_path(pat)?;
+                let pat_full = root.join(safe_pattern).to_string_lossy().to_string();
+                let mut matches: Vec<String> = Vec::new();
+                let deadline = Instant::now()
+                    + Duration::from_secs(timeout_secs.clamp(1, MAX_INSPECTION_TIMEOUT_SECS));
+                for entry in glob::glob(&pat_full)? {
+                    if ctx.cancel.load(Ordering::SeqCst) {
+                        anyhow::bail!("Glob search cancelled.");
+                    }
+                    if Instant::now() > deadline {
+                        anyhow::bail!(
+                            "Glob search timed out; narrow the project-relative pattern and retry."
+                        );
+                    }
+                    let e = entry?;
+                    let Ok(relative) = e.strip_prefix(&root) else {
+                        continue;
+                    };
+                    let relative = relative.to_string_lossy();
+                    if let Ok(safe) = resolve_project_read_path(&root, relative.as_ref()) {
+                        let relative = safe
+                            .strip_prefix(&root)
+                            .unwrap_or(&safe)
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        matches.push(if relative.is_empty() {
+                            ".".into()
+                        } else {
+                            relative
+                        });
+                    }
+                    if matches.len() >= 500 {
+                        break;
+                    }
                 }
-                if Instant::now() > deadline {
+                Ok(serde_json::to_string_pretty(&matches)?)
+            }
+            "grep" => {
+                let pat = args
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing pattern"))?;
+                if pat.trim().is_empty() {
                     anyhow::bail!(
-                        "Glob search timed out; narrow the project-relative pattern and retry."
+                        "grep pattern must not be empty; provide a distinctive text or regex"
                     );
                 }
-                let e = entry?;
-                let Ok(relative) = e.strip_prefix(&root) else {
-                    continue;
+                let search_root = args.get("path").and_then(|v| v.as_str());
+                let dir = match search_root {
+                    Some(p) => resolve_project_read_path(root, p)?,
+                    None => resolve_project_read_path(root, ".")?,
                 };
-                let relative = relative.to_string_lossy();
-                if let Ok(safe) = resolve_project_read_path(&root, relative.as_ref()) {
-                    let relative = safe
-                        .strip_prefix(&root)
-                        .unwrap_or(&safe)
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    matches.push(if relative.is_empty() {
-                        ".".into()
-                    } else {
-                        relative
-                    });
-                }
-                if matches.len() >= 500 {
-                    break;
-                }
-            }
-            Ok(serde_json::to_string_pretty(&matches)?)
-        }
-        "grep" => {
-            let pat = args
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing pattern"))?;
-            if pat.trim().is_empty() {
-                anyhow::bail!(
-                    "grep pattern must not be empty; provide a distinctive text or regex"
-                );
-            }
-            let search_root = args.get("path").and_then(|v| v.as_str());
-            let dir = match search_root {
-                Some(p) => resolve_project_read_path(root, p)?,
-                None => resolve_project_read_path(root, ".")?,
-            };
-            // Weak providers sometimes send plain text containing an unmatched
-            // `[` or `(`. Fall back to a literal search instead of turning a
-            // harmless inspection request into a dead tool loop.
-            let re = regex::Regex::new(pat).or_else(|_| regex::Regex::new(&regex::escape(pat)))?;
-            let mut hits: Vec<Value> = Vec::new();
-            let project_root = root
-                .canonicalize()
-                .context("Could not resolve project root")?;
-            let deadline = Instant::now()
-                + Duration::from_secs(timeout_secs.clamp(1, MAX_INSPECTION_TIMEOUT_SECS));
-            GrepWalk {
-                display_root: &dir,
-                project_root: &project_root,
-                re: &re,
-                limit: 1000,
-                ctx,
-                deadline,
-            }
-            .walk(&dir, &mut hits)?;
-            Ok(serde_json::to_string_pretty(&hits)?)
-        }
-        "run_command" => {
-            let cmd = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing command"))?;
-            let timeout = args
-                .get("timeout_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(timeout_secs);
-            let cwd = args.get("cwd").and_then(|v| v.as_str());
-            let work_dir = match cwd {
-                Some(p) => resolve_path(root, p)?,
-                None => root.to_path_buf(),
-            };
-            // A background process spawned through PowerShell inherits the
-            // stdout/stderr pipes owned by `run_hidden`. PowerShell can exit
-            // while npm/Vite keeps those handles open, which made the agent
-            // wait forever at a seemingly completed Start-Process command.
-            // Preserve the compatibility path for models that still emit it,
-            // but launch it without pipes and return as soon as it starts.
-            if is_background_shell_command(cmd) {
-                let (pid, log_path) = start_detached_command(
-                    &work_dir,
-                    cmd,
-                    ".hormachuelos-background.log",
-                    false,
+                // Weak providers sometimes send plain text containing an unmatched
+                // `[` or `(`. Fall back to a literal search instead of turning a
+                // harmless inspection request into a dead tool loop.
+                let re =
+                    regex::Regex::new(pat).or_else(|_| regex::Regex::new(&regex::escape(pat)))?;
+                let mut hits: Vec<Value> = Vec::new();
+                let project_root = root
+                    .canonicalize()
+                    .context("Could not resolve project root")?;
+                let deadline = Instant::now()
+                    + Duration::from_secs(timeout_secs.clamp(1, MAX_INSPECTION_TIMEOUT_SECS));
+                GrepWalk {
+                    display_root: &dir,
+                    project_root: &project_root,
+                    re: &re,
+                    limit: 1000,
                     ctx,
-                )?;
-                return Ok(format!(
+                    deadline,
+                }
+                .walk(&dir, &mut hits)?;
+                Ok(serde_json::to_string_pretty(&hits)?)
+            }
+            "run_command" => {
+                let cmd = args
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing command"))?;
+                let timeout = args
+                    .get("timeout_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(timeout_secs);
+                let cwd = args.get("cwd").and_then(|v| v.as_str());
+                let work_dir = match cwd {
+                    Some(p) => resolve_path(root, p)?,
+                    None => root.to_path_buf(),
+                };
+                // A background process spawned through PowerShell inherits the
+                // stdout/stderr pipes owned by `run_hidden`. PowerShell can exit
+                // while npm/Vite keeps those handles open, which made the agent
+                // wait forever at a seemingly completed Start-Process command.
+                // Preserve the compatibility path for models that still emit it,
+                // but launch it without pipes and return as soon as it starts.
+                if is_background_shell_command(cmd) {
+                    let (pid, log_path) = start_detached_command(
+                        &work_dir,
+                        cmd,
+                        ".hormachuelos-background.log",
+                        false,
+                        ctx,
+                    )?;
+                    return Ok(format!(
                     "Started background command (PID {pid}) without waiting for its child process. Output is redirected to {}.",
                     log_path.display()
                 ));
+                }
+                run_hidden(&work_dir, cmd, timeout, ctx)
             }
-            run_hidden(&work_dir, cmd, timeout, ctx)
-        }
-        "start_dev_server" => {
-            let command = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing command"))?;
-            let cwd = args.get("cwd").and_then(|v| v.as_str());
-            let work_dir = match cwd {
-                Some(path) => resolve_path(root, path)?,
-                None => root.to_path_buf(),
-            };
-            let port = match args.get("port").and_then(|v| v.as_u64()) {
-                Some(port @ 1..=65_535) => Some(port as u16),
-                Some(_) => anyhow::bail!("port must be between 1 and 65535"),
-                None => None,
-            };
-            if let Some(port) = port.filter(|port| local_port_is_open(*port)) {
-                return Ok(format!(
+            "start_dev_server" => {
+                let command = args
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing command"))?;
+                let cwd = args.get("cwd").and_then(|v| v.as_str());
+                let work_dir = match cwd {
+                    Some(path) => resolve_path(root, path)?,
+                    None => root.to_path_buf(),
+                };
+                let port = match args.get("port").and_then(|v| v.as_u64()) {
+                    Some(port @ 1..=65_535) => Some(port as u16),
+                    Some(_) => anyhow::bail!("port must be between 1 and 65535"),
+                    None => None,
+                };
+                if let Some(port) = port.filter(|port| local_port_is_open(*port)) {
+                    return Ok(format!(
                     "A local development server is already reachable at http://127.0.0.1:{port}; reusing it instead of starting another."
                 ));
-            }
-            let (pid, log_path) = start_detached_command(
-                &work_dir,
-                command,
-                ".hormachuelos-dev-server.log",
-                true,
-                ctx,
-            )?;
-            let preview = port
-                .map(|port| format!(" Preview: http://127.0.0.1:{port}."))
-                .unwrap_or_default();
-            Ok(format!(
+                }
+                let (pid, log_path) = start_detached_command(
+                    &work_dir,
+                    command,
+                    ".hormachuelos-dev-server.log",
+                    true,
+                    ctx,
+                )?;
+                let preview = port
+                    .map(|port| format!(" Preview: http://127.0.0.1:{port}."))
+                    .unwrap_or_default();
+                Ok(format!(
                 "Started local development server in background (PID {pid}).{preview} The agent can continue without waiting for the server process. Output is redirected to {}.",
                 log_path.display()
             ))
-        }
-        "git_init" => run_hidden(root, "git init", 30, ctx),
-        "git_add_all" => run_hidden(root, "git add -A", 60, ctx),
-        "git_commit" => {
-            let msg = args
-                .get("message")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing message"))?;
-            run_git_commit(root, msg, ctx)
-        }
-        "git_status" => run_hidden(root, "git status --short", 30, ctx),
-        "list_drives" => {
-            let mut drives: Vec<Value> = Vec::new();
-            for letter in b'A'..=b'Z' {
-                let s = format!("{}:\\", letter as char);
-                if std::path::Path::new(&s).exists() {
-                    let label = format!("{}:", letter as char);
-                    let free = std::fs::metadata(&s)
-                        .ok()
-                        .map(|_| fs_free_space(&s).unwrap_or(0))
-                        .unwrap_or(0);
-                    let total = fs_total_space(&s).unwrap_or(0);
-                    drives.push(json!({
-                        "drive": label,
-                        "path": s,
-                        "free_bytes": free,
-                        "total_bytes": total,
-                    }));
-                }
             }
-            Ok(serde_json::to_string_pretty(&drives)?)
-        }
-        "sys_info" => {
-            let info = json!({
-                "os": std::env::consts::OS,
-                "arch": std::env::consts::ARCH,
-                "hostname": hostname(),
-                "username": std::env::var("USERNAME").unwrap_or_default(),
-                "home_dir": std::env::var("USERPROFILE").unwrap_or_default(),
-                "temp_dir": std::env::var("TEMP").unwrap_or_default(),
-                "cpu_count": num_cpus(),
-                "exe_dir": std::env::current_exe().map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_string_lossy().to_string()).unwrap_or_default(),
-            });
-            Ok(serde_json::to_string_pretty(&info)?)
-        }
-        "env_vars" => {
-            let filter = args.get("filter").and_then(|v| v.as_str());
-            let vars = environment_variable_inventory(std::env::vars(), filter);
-            Ok(serde_json::to_string_pretty(&vars)?)
-        }
-        "list_processes" => {
-            let output = run_hidden(
+            "git_init" => run_hidden(root, "git init", 30, ctx),
+            "git_add_all" => run_hidden(root, "git add -A", 60, ctx),
+            "git_commit" => {
+                let msg = args
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing message"))?;
+                run_git_commit(root, msg, ctx)
+            }
+            "git_status" => run_hidden(root, "git status --short", 30, ctx),
+            "list_drives" => {
+                let mut drives: Vec<Value> = Vec::new();
+                for letter in b'A'..=b'Z' {
+                    let s = format!("{}:\\", letter as char);
+                    if std::path::Path::new(&s).exists() {
+                        let label = format!("{}:", letter as char);
+                        let free = std::fs::metadata(&s)
+                            .ok()
+                            .map(|_| fs_free_space(&s).unwrap_or(0))
+                            .unwrap_or(0);
+                        let total = fs_total_space(&s).unwrap_or(0);
+                        drives.push(json!({
+                            "drive": label,
+                            "path": s,
+                            "free_bytes": free,
+                            "total_bytes": total,
+                        }));
+                    }
+                }
+                Ok(serde_json::to_string_pretty(&drives)?)
+            }
+            "sys_info" => {
+                let info = json!({
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "hostname": hostname(),
+                    "username": std::env::var("USERNAME").unwrap_or_default(),
+                    "home_dir": std::env::var("USERPROFILE").unwrap_or_default(),
+                    "temp_dir": std::env::var("TEMP").unwrap_or_default(),
+                    "cpu_count": num_cpus(),
+                    "exe_dir": std::env::current_exe().map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_string_lossy().to_string()).unwrap_or_default(),
+                });
+                Ok(serde_json::to_string_pretty(&info)?)
+            }
+            "env_vars" => {
+                let filter = args.get("filter").and_then(|v| v.as_str());
+                let vars = environment_variable_inventory(std::env::vars(), filter);
+                Ok(serde_json::to_string_pretty(&vars)?)
+            }
+            "list_processes" => {
+                let output = run_hidden(
                 root,
                 "Get-Process | Select-Object Id,ProcessName,CPU,WorkingSet | Format-Table -AutoSize",
                 30,
                 ctx,
             )?;
-            Ok(output)
-        }
-        "kill_process" => {
-            let pid = args
-                .get("pid")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| anyhow::anyhow!("missing pid"))?;
-            run_hidden(root, &format!("Stop-Process -Id {pid} -Force"), 30, ctx)
-        }
-        "open_url" => {
-            let url = args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing url"))?;
-            crate::integrations::open_browser(url)?;
-            Ok(format!("Opened browser: {url}"))
-        }
-        "connect_account" => {
-            let service = args
-                .get("service")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing service"))?;
-            let result = crate::integrations::browser_connect(service)?;
-            Ok(serde_json::to_string_pretty(&json!({
-                "service": service,
-                "flow_started": result.ok,
-                "connected": crate::integrations::has_token(service),
-                "secure_input_opened": true,
-                "message": result.message,
-                "detail": result.detail,
-            }))?)
-        }
-        "integration_status" => {
-            let service = args.get("service").and_then(|value| value.as_str());
-            let verify = args
-                .get("verify")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            if let Some(service) = service {
-                let status = crate::integrations::status_for(service)?;
-                if verify {
-                    let check = crate::integrations::test_connection_blocking(service)?;
+                Ok(output)
+            }
+            "kill_process" => {
+                let pid = args
+                    .get("pid")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| anyhow::anyhow!("missing pid"))?;
+                run_hidden(root, &format!("Stop-Process -Id {pid} -Force"), 30, ctx)
+            }
+            "open_url" => {
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing url"))?;
+                crate::integrations::open_browser(url)?;
+                Ok(format!("Opened browser: {url}"))
+            }
+            "connect_account" => {
+                let service = args
+                    .get("service")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing service"))?;
+                let result = crate::integrations::browser_connect(service)?;
+                Ok(serde_json::to_string_pretty(&json!({
+                    "service": service,
+                    "flow_started": result.ok,
+                    "connected": crate::integrations::has_token(service),
+                    "secure_input_opened": true,
+                    "message": result.message,
+                    "detail": result.detail,
+                }))?)
+            }
+            "integration_status" => {
+                let service = args.get("service").and_then(|value| value.as_str());
+                let verify = args
+                    .get("verify")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                if let Some(service) = service {
+                    let status = crate::integrations::status_for(service)?;
+                    if verify {
+                        let check = crate::integrations::test_connection_blocking(service)?;
+                        return Ok(serde_json::to_string_pretty(&json!({
+                            "id": status.id,
+                            "label": status.label,
+                            "connected": status.connected,
+                            "verified": check.ok,
+                            "message": check.message,
+                            "detail": check.detail,
+                        }))?);
+                    }
                     return Ok(serde_json::to_string_pretty(&json!({
                         "id": status.id,
                         "label": status.label,
                         "connected": status.connected,
-                        "verified": check.ok,
-                        "message": check.message,
-                        "detail": check.detail,
+                        "verified": null,
+                        "message": if status.connected {
+                            format!("{} has a credential saved in the OS keyring.", status.label)
+                        } else {
+                            format!("{} is not connected.", status.label)
+                        },
                     }))?);
                 }
-                return Ok(serde_json::to_string_pretty(&json!({
-                    "id": status.id,
-                    "label": status.label,
-                    "connected": status.connected,
-                    "verified": null,
-                    "message": if status.connected {
-                        format!("{} has a credential saved in the OS keyring.", status.label)
-                    } else {
-                        format!("{} is not connected.", status.label)
-                    },
-                }))?);
-            }
-            let list = crate::integrations::list_status()?;
-            let slim: Vec<serde_json::Value> = list
-                .into_iter()
-                .map(|s| {
-                    json!({
-                        "id": s.id,
-                        "label": s.label,
-                        "connected": s.connected,
-                        "env_keys": s.env_keys,
+                let list = crate::integrations::list_status()?;
+                let slim: Vec<serde_json::Value> = list
+                    .into_iter()
+                    .map(|s| {
+                        json!({
+                            "id": s.id,
+                            "label": s.label,
+                            "connected": s.connected,
+                            "env_keys": s.env_keys,
+                        })
                     })
-                })
-                .collect();
-            Ok(serde_json::to_string_pretty(&slim)?)
-        }
-        "open_path" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_path(root, p)?;
-            let lower = full
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            // HTML/web previews open in the in-app Preview panel (frontend), not Chrome.
-            if matches!(lower.as_str(), "html" | "htm" | "xhtml") {
-                return Ok(format!(
+                    .collect();
+                Ok(serde_json::to_string_pretty(&slim)?)
+            }
+            "open_path" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_path(root, p)?;
+                let lower = full
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                // HTML/web previews open in the in-app Preview panel (frontend), not Chrome.
+                if matches!(lower.as_str(), "html" | "htm" | "xhtml") {
+                    return Ok(format!(
                     "Preview requested for {} — open in Hormachuelos Preview panel (not external browser).",
                     full.display()
                 ));
+                }
+                open_filesystem_path(&full)?;
+                Ok(format!("Opened {}", full.display()))
             }
-            open_filesystem_path(&full)?;
-            Ok(format!("Opened {}", full.display()))
-        }
-        "download_file" => {
-            let url = args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing url"))?;
-            let dest = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_path(root, dest)?;
-            let (written, final_url) = download_public_file(url, &full)?;
-            Ok(format!(
-                "Downloaded {written} bytes from {final_url} to {dest}"
-            ))
-        }
-        "move_file" => {
-            let src = args
-                .get("src")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing src"))?;
-            let dst = args
-                .get("dst")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing dst"))?;
-            let src_full = resolve_path(root, src)?;
-            let dst_full = resolve_path(root, dst)?;
-            if let Some(parent) = dst_full.parent() {
-                std::fs::create_dir_all(parent)?;
+            "download_file" => {
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing url"))?;
+                let dest = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_path(root, dest)?;
+                let (written, final_url) = download_public_file(url, &full)?;
+                Ok(format!(
+                    "Downloaded {written} bytes from {final_url} to {dest}"
+                ))
             }
-            std::fs::rename(&src_full, &dst_full)?;
-            Ok(format!("Moved {src} → {dst}"))
-        }
-        "copy_file" => {
-            let src = args
-                .get("src")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing src"))?;
-            let dst = args
-                .get("dst")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing dst"))?;
-            let src_full = resolve_path(root, src)?;
-            let dst_full = resolve_path(root, dst)?;
-            if let Some(parent) = dst_full.parent() {
-                std::fs::create_dir_all(parent)?;
+            "move_file" => {
+                let src = args
+                    .get("src")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing src"))?;
+                let dst = args
+                    .get("dst")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing dst"))?;
+                let src_full = resolve_path(root, src)?;
+                let dst_full = resolve_path(root, dst)?;
+                if let Some(parent) = dst_full.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::rename(&src_full, &dst_full)?;
+                Ok(format!("Moved {src} → {dst}"))
             }
-            if src_full.is_dir() {
-                copy_dir_recursive(&src_full, &dst_full)?;
-                Ok(format!("Copied dir {src} → {dst}"))
-            } else {
-                std::fs::copy(&src_full, &dst_full)?;
-                Ok(format!("Copied {src} → {dst}"))
+            "copy_file" => {
+                let src = args
+                    .get("src")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing src"))?;
+                let dst = args
+                    .get("dst")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing dst"))?;
+                let src_full = resolve_path(root, src)?;
+                let dst_full = resolve_path(root, dst)?;
+                if let Some(parent) = dst_full.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if src_full.is_dir() {
+                    copy_dir_recursive(&src_full, &dst_full)?;
+                    Ok(format!("Copied dir {src} → {dst}"))
+                } else {
+                    std::fs::copy(&src_full, &dst_full)?;
+                    Ok(format!("Copied {src} → {dst}"))
+                }
             }
-        }
-        "delete_file" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_path(root, p)?;
-            if full.is_dir() {
-                std::fs::remove_dir_all(&full)?;
-            } else {
-                std::fs::remove_file(&full)?;
+            "delete_file" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_path(root, p)?;
+                if full.is_dir() {
+                    std::fs::remove_dir_all(&full)?;
+                } else {
+                    std::fs::remove_file(&full)?;
+                }
+                Ok(format!("Deleted {p}"))
             }
-            Ok(format!("Deleted {p}"))
-        }
-        "make_dir" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_path(root, p)?;
-            std::fs::create_dir_all(&full)?;
-            Ok(format!("Created dir {p}"))
-        }
-        "file_info" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_project_read_path(root, p)?;
-            let meta = std::fs::metadata(&full)?;
-            let info = json!({
-                "path": p,
-                "exists": true,
-                "is_dir": meta.is_dir(),
-                "is_file": meta.is_file(),
-                "size_bytes": meta.len(),
-                "readonly": meta.permissions().readonly(),
-                "modified": meta.modified().ok().map(|t| t.elapsed().ok().map(|d| d.as_secs()).unwrap_or(0)).unwrap_or(0),
-            });
-            Ok(serde_json::to_string_pretty(&info)?)
-        }
-        "view_image" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            view_image_file(root, p)
-        }
-        "view_video" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            view_video_file(root, p)
-        }
-        "done" => {
-            let summary = args
-                .get("summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Done.");
-            Ok(format!("__DONE__{summary}"))
-        }
-        "todo_write" => Ok(summarize_todo_write(args)),
-        "web_search" => {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing query"))?;
-            let max = args
-                .get("max_results")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5)
-                .clamp(1, 10) as usize;
-            web_search(query, max)
-        }
-        "browse_page" => {
-            let url = args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing url"))?;
-            let max_chars = args
-                .get("max_chars")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(12_000)
-                .clamp(500, 50_000) as usize;
-            browse_page(url, max_chars)
-        }
-        "export_client_pack" => {
-            let summary = args.get("handoff_summary").and_then(|v| v.as_str());
-            let zip_path = if let Some(out) = args
-                .get("output_path")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-            {
-                resolve_path(root, out)?
-            } else {
-                let name = root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "project".into());
-                root.parent()
-                    .unwrap_or(root)
-                    .join(format!("{name}-client-pack.zip"))
-            };
-            let result = crate::workspace::export_client_pack(root, &zip_path, summary)?;
-            Ok(format!(
-                "Client pack ready: {} ({} files). Handoff notes: {}",
-                result.zip_path, result.files_count, result.handoff_path
-            ))
-        }
-        "ask_user" => Err(anyhow::anyhow!(
-            "ask_user is handled by the agent loop, not tools::execute"
-        )),
-        "computer_observe" | "computer_actions" => {
-            let result = crate::computer_use::execute_tool(name, args, ctx.cancel.as_ref())?;
-            Ok(serde_json::to_string(&result)?)
-        }
-            other => Err(anyhow::anyhow!(
-                "Unknown tool: {other}. Call exactly one registered snake_case tool name per request."
+            "make_dir" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_path(root, p)?;
+                std::fs::create_dir_all(&full)?;
+                Ok(format!("Created dir {p}"))
+            }
+            "file_info" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_project_read_path(root, p)?;
+                let meta = std::fs::metadata(&full)?;
+                let info = json!({
+                    "path": p,
+                    "exists": true,
+                    "is_dir": meta.is_dir(),
+                    "is_file": meta.is_file(),
+                    "size_bytes": meta.len(),
+                    "readonly": meta.permissions().readonly(),
+                    "modified": meta.modified().ok().map(|t| t.elapsed().ok().map(|d| d.as_secs()).unwrap_or(0)).unwrap_or(0),
+                });
+                Ok(serde_json::to_string_pretty(&info)?)
+            }
+            "view_image" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                view_image_file(root, p)
+            }
+            "view_video" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                view_video_file(root, p)
+            }
+            "done" => {
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Done.");
+                Ok(format!("__DONE__{summary}"))
+            }
+            "todo_write" => Ok(summarize_todo_write(args)),
+            "web_search" => {
+                let query = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing query"))?;
+                let max = args
+                    .get("max_results")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(5)
+                    .clamp(1, 10) as usize;
+                web_search(query, max)
+            }
+            "browse_page" => {
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing url"))?;
+                let max_chars = args
+                    .get("max_chars")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(12_000)
+                    .clamp(500, 50_000) as usize;
+                browse_page(url, max_chars)
+            }
+            "export_client_pack" => {
+                let summary = args.get("handoff_summary").and_then(|v| v.as_str());
+                let zip_path = if let Some(out) = args
+                    .get("output_path")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    resolve_path(root, out)?
+                } else {
+                    let name = root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "project".into());
+                    root.parent()
+                        .unwrap_or(root)
+                        .join(format!("{name}-client-pack.zip"))
+                };
+                let result = crate::workspace::export_client_pack(root, &zip_path, summary)?;
+                Ok(format!(
+                    "Client pack ready: {} ({} files). Handoff notes: {}",
+                    result.zip_path, result.files_count, result.handoff_path
+                ))
+            }
+            "ask_user" => Err(anyhow::anyhow!(
+                "ask_user is handled by the agent loop, not tools::execute"
             )),
+            "computer_observe" | "computer_actions" => {
+                let result = crate::computer_use::execute_tool(name, args, ctx.cancel.as_ref())?;
+                Ok(serde_json::to_string(&result)?)
+            }
+            name if crate::desktop_computer_use::is_desktop_computer_tool(name) => {
+                let result = crate::desktop_computer_use::execute_tool(name, args)?;
+                Ok(serde_json::to_string(&result)?)
+            }
+            other => Err(anyhow::anyhow!(
+            "Unknown tool: {other}. Call exactly one registered snake_case tool name per request."
+        )),
         }
     })();
 

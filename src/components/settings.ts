@@ -2,6 +2,7 @@ import {
   api,
   onComputerUseStatus,
   type ComputerUseStatus,
+  type DesktopComputerUseStatus,
   type HostedProviderCatalogEntry,
   type IntegrationStatus,
   type Settings,
@@ -345,8 +346,9 @@ export function setHostedProviderCatalog(
   for (const entry of entries) {
     const provider = providerFromHostedCatalog(entry);
     if (!provider || HOSTED_PROVIDER_CATALOG.has(provider.id)) continue;
-    // When restricted, trust the server model list exactly. Otherwise keep the
-    // previous filter that drops unknown labels while preserving known aliases.
+    // Keep friendly names for every catalog model the picker can actually
+    // show. Hosted-managed providers (including dashboard-created ones) must
+    // accept newly added aliases without waiting for a desktop rebuild.
     const models = entry.models
       .map((model) => ({ id: String(model?.id || "").trim(), label: String(model?.label || "").trim() }))
       .filter((model) =>
@@ -354,7 +356,7 @@ export function setHostedProviderCatalog(
         model.label.length > 0 &&
         model.label.length <= 120 &&
         !/[\u0000-\u001f\u007f]/.test(model.label) &&
-        (hostedCatalogRestricted || provider.models.includes(model.id)),
+        (hostedCatalogRestricted || provider.hostedManaged || provider.models.includes(model.id)),
       );
     if (!models.length) continue;
     HOSTED_PROVIDER_CATALOG.set(provider.id, {
@@ -651,6 +653,23 @@ export function getProviderMeta(id: string) {
     (isHostedProviderAlias(normalized) ? fallbackHostedProvider(normalized) : undefined);
 }
 
+function normalizeAllowedApps(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const cleaned: string[] = [];
+  for (const item of value) {
+    const name = String(item || "")
+      .trim()
+      .replace(/^.*[\\/]/, "")
+      .toLowerCase();
+    if (!name.endsWith(".exe") || name.length > 128 || !/^[a-z0-9._-]+\.exe$/.test(name)) {
+      continue;
+    }
+    if (!cleaned.includes(name)) cleaned.push(name);
+    if (cleaned.length >= 32) break;
+  }
+  return cleaned;
+}
+
 /** Default settings matching the Rust Default impl. */
 export function defaultSettings(): Settings {
   const openai = PROVIDERS.find((p) => p.id === "cursor") || PROVIDERS[0];
@@ -668,6 +687,8 @@ export function defaultSettings(): Settings {
     taglish: false,
     computer_use_enabled: false,
     computer_use_prompt_activation: true,
+    desktop_computer_use_enabled: false,
+    desktop_computer_use_allowed_apps: [],
     smart_agent_enabled: true,
     flavour_enabled: true,
     model_effort: "high",
@@ -710,6 +731,10 @@ export function normalizeSettings(s: Settings): Settings {
   // Missing on older settings means Auto: explicit user prompts may enable
   // Computer Use for that request, while unrelated requests remain off.
   s.computer_use_prompt_activation = s.computer_use_prompt_activation !== false;
+  s.desktop_computer_use_enabled = !!s.desktop_computer_use_enabled;
+  s.desktop_computer_use_allowed_apps = normalizeAllowedApps(
+    s.desktop_computer_use_allowed_apps,
+  );
   // Missing on older desktop settings means enabled: Smart Agent is a safe,
   // provider-neutral orchestration layer and does not change credentials.
   s.smart_agent_enabled = s.smart_agent_enabled !== false;
@@ -811,6 +836,7 @@ export class SettingsModal {
   modelDiscoveryMessages: Record<string, string> = {};
   integrations: IntegrationStatus[] = [];
   computerUseStatus: ComputerUseStatus | null = null;
+  desktopComputerUseStatus: DesktopComputerUseStatus | null = null;
   private computerUseUnlisten: (() => void) | null = null;
   private previousFocus: HTMLElement | null = null;
   private modalSessionActive = false;
@@ -869,6 +895,7 @@ export class SettingsModal {
     }
     if (!this.modalSessionActive) return;
     this.computerUseStatus = await api.getComputerUseStatus().catch(() => null);
+    this.desktopComputerUseStatus = await api.getDesktopComputerUseStatus().catch(() => null);
     if (!this.modalSessionActive) return;
     this.computerUseUnlisten?.();
     this.computerUseUnlisten = await onComputerUseStatus((status) => {
@@ -876,6 +903,8 @@ export class SettingsModal {
       if (!this.modalSessionActive) return;
       const panel = this.root.querySelector<HTMLElement>(".computer-use-panel");
       if (panel) panel.replaceWith(this.renderComputerUsePanel());
+      const desktopPanel = this.root.querySelector<HTMLElement>(".desktop-computer-use-panel");
+      if (desktopPanel) desktopPanel.replaceWith(this.renderDesktopComputerUsePanel());
     }).catch(() => null);
     if (!this.modalSessionActive) return;
     for (const p of PROVIDERS) {
@@ -1384,6 +1413,7 @@ export class SettingsModal {
     ]));
 
     body.appendChild(this.renderComputerUsePanel());
+    body.appendChild(this.renderDesktopComputerUsePanel());
 
     body.appendChild(this.field("Taglish replies", () => {
       const wrap = el("label", { class: "set-check", style: "display:flex;align-items:center;gap:8px;cursor:pointer" });
@@ -1651,6 +1681,164 @@ export class SettingsModal {
     panel.appendChild(controls);
     return panel;
   }
+
+  private renderDesktopComputerUsePanel(): HTMLElement {
+    const status = this.desktopComputerUseStatus;
+    const supported = status?.supported ?? false;
+    const panel = el("section", {
+      class: "computer-use-panel desktop-computer-use-panel",
+      "aria-labelledby": "desktop-computer-use-title",
+    });
+
+    const head = el("div", { class: "computer-use-head" });
+    const titleWrap = el("div", { class: "computer-use-title-wrap" });
+    titleWrap.appendChild(
+      el("div", { class: "computer-use-title", id: "desktop-computer-use-title" }, ["Desktop mode"]),
+    );
+    titleWrap.appendChild(
+      el("div", { class: "computer-use-subtitle" }, [
+        "Control ordinary Windows apps, including Settings",
+      ]),
+    );
+    head.appendChild(titleWrap);
+    const badge = el("span", {
+      class: "computer-use-badge",
+      role: "status",
+      "aria-live": "polite",
+    });
+    head.appendChild(badge);
+    panel.appendChild(head);
+
+    const enabledId = this.nextFieldId();
+    const toggle = el("label", { class: "computer-use-toggle", for: enabledId });
+    const input = el("input", { id: enabledId, type: "checkbox" }) as HTMLInputElement;
+    input.checked = !!this.settings.desktop_computer_use_enabled;
+    input.disabled = !supported;
+    toggle.appendChild(input);
+    const copy = el("span", { class: "computer-use-toggle-copy" });
+    copy.appendChild(el("span", { class: "computer-use-toggle-label" }, ["Enable Desktop Computer Use"]));
+    copy.appendChild(
+      el("span", { class: "computer-use-toggle-note" }, [
+        supported
+          ? "Off by default. Lets the agent click, type, scroll, and drag outside Preview — including Windows Settings brightness."
+          : "Desktop Computer Use is available on Windows only.",
+      ]),
+    );
+    toggle.appendChild(copy);
+    panel.appendChild(toggle);
+
+    const warning = el("div", { class: "computer-use-warning" });
+    const paint = () => {
+      this.settings.desktop_computer_use_enabled = input.checked;
+      const paused = !!status?.paused;
+      badge.textContent = !supported ? "Unsupported" : paused ? "Paused" : input.checked ? "On" : "Off";
+      badge.className = "computer-use-badge " +
+        (paused ? "paused" : supported && input.checked ? "ready" : "unavailable");
+      warning.textContent = input.checked
+        ? "Password managers, Windows Security, terminals, and Hormachuelos stay blocked. Press Ctrl+Alt+Esc to stop."
+        : "Desktop mode is off. Preview Computer Use above is unchanged.";
+    };
+    input.addEventListener("change", paint);
+    panel.appendChild(warning);
+    paint();
+
+    const apps = el("div", { class: "computer-use-apps" });
+    apps.appendChild(el("div", { class: "computer-use-apps-label" }, ["Allowed apps"]));
+    const chips = el("div", { class: "computer-use-app-chips" });
+    const renderChips = () => {
+      clear(chips);
+      const names = this.settings.desktop_computer_use_allowed_apps || [];
+      if (!names.length) {
+        chips.appendChild(
+          el("span", { class: "computer-use-app-empty" }, [
+            "Empty = all ordinary apps except the safety blocklist",
+          ]),
+        );
+        return;
+      }
+      for (const name of names) {
+        const chip = el("span", { class: "computer-use-app-chip" }, [name]);
+        const remove = el("button", {
+          class: "computer-use-app-remove",
+          type: "button",
+          "aria-label": "Remove " + name,
+        }, ["×"]) as HTMLButtonElement;
+        remove.addEventListener("click", () => {
+          this.settings.desktop_computer_use_allowed_apps =
+            this.settings.desktop_computer_use_allowed_apps.filter((item) => item !== name);
+          renderChips();
+        });
+        chip.appendChild(remove);
+        chips.appendChild(chip);
+      }
+    };
+    renderChips();
+    apps.appendChild(chips);
+
+    const addRow = el("div", { class: "computer-use-app-add" });
+    const addInput = el("input", {
+      class: "field",
+      type: "text",
+      placeholder: "notepad.exe",
+      "aria-label": "Process name to allow",
+    }) as HTMLInputElement;
+    const addButton = el("button", { class: "btn sm", type: "button" }, ["Add"]) as HTMLButtonElement;
+    const addFromWindows = el("button", { class: "btn sm", type: "button" }, [
+      "Add open window",
+    ]) as HTMLButtonElement;
+    const addName = (raw: string) => {
+      const next = normalizeAllowedApps([
+        ...(this.settings.desktop_computer_use_allowed_apps || []),
+        raw,
+      ]);
+      this.settings.desktop_computer_use_allowed_apps = next;
+      addInput.value = "";
+      renderChips();
+    };
+    addButton.addEventListener("click", () => addName(addInput.value));
+    addInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addName(addInput.value);
+      }
+    });
+    addFromWindows.addEventListener("click", async () => {
+      addFromWindows.disabled = true;
+      try {
+        const listed = await api.listComputerUseTargets();
+        const windows = listed.windows || [];
+        if (!windows.length) {
+          alert("No ordinary windows are currently targetable.");
+          return;
+        }
+        const choice = windows
+          .map((window) => `${window.processName} — ${window.title}`)
+          .join("\n");
+        const picked = prompt("Type the process name to pin, for example notepad.exe:\n\n" + choice);
+        if (picked) addName(picked);
+      } catch (error) {
+        alert("Could not list windows: " + String(error));
+      } finally {
+        addFromWindows.disabled = false;
+      }
+    });
+    addRow.appendChild(addInput);
+    addRow.appendChild(addButton);
+    addRow.appendChild(addFromWindows);
+    apps.appendChild(addRow);
+    panel.appendChild(apps);
+
+    const controls = el("div", { class: "computer-use-controls" });
+    const shortcut = status?.emergencyShortcut || this.computerUseStatus?.emergencyShortcut || "Ctrl+Alt+Esc";
+    controls.appendChild(
+      el("div", { class: "computer-use-emergency" }, [
+        "Emergency stop: press " + shortcut + " to pause Preview and Desktop actions.",
+      ]),
+    );
+    panel.appendChild(controls);
+    return panel;
+  }
+
   /** GitHub / Supabase / Vercel / … connect cards */
   private renderIntegrationsPanel(): HTMLElement {
     const wrap = el("div", { class: "integrations-list" });

@@ -4775,6 +4775,54 @@
 .computer-use-controls .btn {
   flex: 0 0 auto;
 }
+.computer-use-apps {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.computer-use-apps-label {
+  color: var(--fg-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.computer-use-app-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.computer-use-app-chip,
+.computer-use-app-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: var(--fg-2);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 10.5px;
+}
+.computer-use-app-remove {
+  border: 0;
+  padding: 0;
+  color: var(--fg-4);
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.computer-use-app-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.computer-use-app-add .field {
+  flex: 1 1 140px;
+  min-width: 0;
+}
 
 /* Desktop Computer Use FX overlay */
 .computer-fx-body {

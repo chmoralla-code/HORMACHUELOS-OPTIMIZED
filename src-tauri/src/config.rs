@@ -73,6 +73,12 @@ pub struct Settings {
     /// Missing on older settings defaults to Auto so the new menu is immediately useful.
     #[serde(default = "default_computer_use_prompt_activation")]
     pub computer_use_prompt_activation: bool,
+    /// Opt-in native Windows Desktop Computer Use. Off by default.
+    #[serde(default)]
+    pub desktop_computer_use_enabled: bool,
+    /// Optional process-name allowlist. Empty means all ordinary apps except the hard blocklist.
+    #[serde(default)]
+    pub desktop_computer_use_allowed_apps: Vec<String>,
     /// Provider-neutral task planning and final verification scaffolding.
     /// Defaults on so existing installations benefit after upgrading, while the
     /// user can turn it off from Settings for a lighter direct-response flow.
@@ -191,6 +197,8 @@ impl Default for Settings {
             model_effort: default_model_effort(),
             computer_use_enabled: false,
             computer_use_prompt_activation: default_computer_use_prompt_activation(),
+            desktop_computer_use_enabled: false,
+            desktop_computer_use_allowed_apps: Vec::new(),
             smart_agent_enabled: default_smart_agent_enabled(),
             flavour_enabled: default_flavour_enabled(),
         }
@@ -409,6 +417,8 @@ impl Settings {
                 s.model = "deepseek/deepseek-v4-flash".into();
             }
         }
+        s.desktop_computer_use_allowed_apps =
+            crate::desktop_computer_use::sanitize_allowed_apps(s.desktop_computer_use_allowed_apps);
         s.validate()?;
         Ok(s)
     }
@@ -499,6 +509,10 @@ impl Settings {
                 "COMMANDCODE uses the Command Code gateway or the Hormachuelos hosted proxy."
             );
         }
+        ensure!(
+            self.desktop_computer_use_allowed_apps.len() <= 32,
+            "Desktop mode can pin at most 32 allowed apps."
+        );
         Ok(())
     }
 }
@@ -795,6 +809,10 @@ mod tests {
     #[test]
     fn computer_use_is_opt_in() {
         assert!(!Settings::default().computer_use_enabled);
+        assert!(!Settings::default().desktop_computer_use_enabled);
+        assert!(Settings::default()
+            .desktop_computer_use_allowed_apps
+            .is_empty());
     }
 
     #[test]

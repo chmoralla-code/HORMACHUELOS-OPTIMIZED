@@ -1657,7 +1657,7 @@ pub async fn run_loop(
                 let effort = cursor_effort_for_request(
                     &settings.model_effort,
                     &prompt,
-                    settings.computer_use_enabled,
+                    settings.computer_use_enabled || settings.desktop_computer_use_enabled,
                 );
                 let model_display = display_model_name(&settings.model);
                 let provider_display = display_provider_name(&settings.provider);
@@ -1687,6 +1687,14 @@ pub async fn run_loop(
                 } else {
                     ""
                 };
+                let computer_policy = format!(
+                    "{}{}",
+                    cursor_computer_use_instructions(settings.computer_use_enabled),
+                    desktop_computer_use_instructions(
+                        settings.desktop_computer_use_enabled
+                            && crate::desktop_computer_use::status().supported
+                    )
+                );
                 let wrapped_prompt = format!(
                     "{identity}\n\n{policy}{computer_policy}{completion_contract}{smart_agent_policy}{task_profile_policy}{execution_profile_policy}\n\n{project_context}{flavour_context}\n\n\
 IN-APP PREVIEW:\n\
@@ -1696,7 +1704,7 @@ IN-APP PREVIEW:\n\
 Current user request:\n{prompt}",
                     identity = identity_instructions(&model_display, &provider_display),
                     policy = cursor_permission_instructions(&permission_mode),
-                    computer_policy = cursor_computer_use_instructions(settings.computer_use_enabled),
+                    computer_policy = computer_policy,
                     completion_contract = completion_contract,
                     smart_agent_policy = smart_agent_policy,
                     task_profile_policy = task_profile_policy,
@@ -1717,6 +1725,8 @@ Current user request:\n{prompt}",
                     &effort,
                     &permission_mode,
                     settings.computer_use_enabled,
+                    settings.desktop_computer_use_enabled
+                        && crate::desktop_computer_use::status().supported,
                     settings.command_timeout_secs,
                     &session_id,
                     run,
@@ -1839,8 +1849,10 @@ Current user request:\n{prompt}",
         &settings.model,
         Some(&settings.model_effort),
     )?;
-    let tool_schemas =
-        tools::schemas(settings.computer_use_enabled && crate::computer_use::status().supported);
+    let tool_schemas = tools::schemas_with(
+        settings.computer_use_enabled && crate::computer_use::status().supported,
+        settings.desktop_computer_use_enabled && crate::desktop_computer_use::status().supported,
+    );
 
     let app_for_console = app.clone();
     let sid_console = session_id.clone();
@@ -2012,12 +2024,18 @@ BEHAVIOR:\n\
     let provider_display = display_provider_name(provider_id);
     let identity = identity_instructions(&model_display, &provider_display);
 
-    let computer_policy =
+    let computer_policy = format!(
+        "{}{}",
         if settings.computer_use_enabled && crate::computer_use::status().supported {
             cursor_computer_use_instructions(true)
         } else {
             ""
-        };
+        },
+        desktop_computer_use_instructions(
+            settings.desktop_computer_use_enabled
+                && crate::desktop_computer_use::status().supported
+        )
+    );
     let smart_agent_enabled = settings.smart_agent_enabled && requires_project_completion;
     let smart_agent_policy =
         crate::smart_agent::SmartAgentRun::system_instructions(smart_agent_enabled, fast_execution);
@@ -3405,6 +3423,21 @@ fn cursor_computer_use_instructions(enabled: bool) -> &'static str {
 - Keep actions targeted and reversible. Never replay a completed click/type batch after a later action fails. Stop immediately if Preview closes, the user manually changes its active tab, the user pauses Computer Use, or Ctrl+Alt+Esc is pressed."
 }
 
+fn desktop_computer_use_instructions(enabled: bool) -> &'static str {
+    if !enabled {
+        return "";
+    }
+    "\n\nDESKTOP COMPUTER USE:\n\
+- Desktop mode is a separate opt-in from Preview Computer Use. Use computer_list_windows, computer_observe_window, computer_focus_window, computer_click, computer_type_text, computer_press_key, computer_scroll, computer_drag, and computer_game_sequence only for ordinary Windows apps outside Hormachuelos.\n\
+- Do not mix these with Preview tools. computer_observe / computer_actions stay inside Preview. computer_observe_window captures a native window screenshot.\n\
+- Loop: list windows, observe the target, then use that observation_token for exactly one action. Observe again before another action.\n\
+- Windows Settings is allowed, including Display brightness via cursor hover/drag on the slider.\n\
+- If the user pinned allowed apps, only those process names are targetable. An empty list means all ordinary apps except the safety blocklist.\n\
+- Never target password managers, Windows Security/UAC/login, terminals, Run, ChatGPT, Codex, or Hormachuelos itself. Win/Meta shortcuts are blocked.\n\
+- For a realtime keyboard game, inspect once and use computer_game_sequence with a bounded timed plan instead of one model turn per key.\n\
+- Stop immediately if the user pauses Computer Use or presses Ctrl+Alt+Esc."
+}
+
 /// Transparent runtime identity. Product branding and authorship are separate
 /// from the provider/model actually serving the current request.
 fn identity_instructions(model_display: &str, provider_display: &str) -> String {
@@ -3523,19 +3556,20 @@ mod tests {
         can_recover_from_provider_blip, chat_message_size, compact_active_run_messages,
         compact_fast_design_history, compact_history_messages, cursor_computer_use_instructions,
         cursor_effort_for_request, cursor_permission_instructions, cursor_resume_id_for_task,
-        display_model_name, display_provider_name, identity_instructions,
-        inspection_preview_watch_state, model_effort_for_task, next_stalled_recovery_count,
-        normalize_tool_calls, normalized_permission_mode, orphaned_tool_previews,
-        parallel_readonly_batch_len, provider_tool_result_content, public_tool_arguments,
-        public_tool_preview_delta, reply_announces_pending_action, reply_was_cut_off,
-        resolve_tool_preview_name, response_has_visible_answer, response_made_concrete_progress,
-        starts_as_explanatory_request, stop_reason_requires_continuation,
-        task_likely_requires_project_completion, task_requires_project_completion,
-        tool_confirm_summary, truncate_utf8, uses_cursor_sdk, AgentTaskProfile,
-        AutomaticContinuationReason, HistoryToolCall, HistoryTurn, InspectionPreviewWatchState,
-        ACTIVE_RUN_CONTEXT_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_TURNS,
-        MAX_CONSECUTIVE_STALLED_RECOVERIES, NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS,
-        PROVIDER_TOOL_RESULT_MAX_BYTES, STREAMED_INSPECTION_TOOL_TIMEOUT,
+        desktop_computer_use_instructions, display_model_name, display_provider_name,
+        identity_instructions, inspection_preview_watch_state, model_effort_for_task,
+        next_stalled_recovery_count, normalize_tool_calls, normalized_permission_mode,
+        orphaned_tool_previews, parallel_readonly_batch_len, provider_tool_result_content,
+        public_tool_arguments, public_tool_preview_delta, reply_announces_pending_action,
+        reply_was_cut_off, resolve_tool_preview_name, response_has_visible_answer,
+        response_made_concrete_progress, starts_as_explanatory_request,
+        stop_reason_requires_continuation, task_likely_requires_project_completion,
+        task_requires_project_completion, tool_confirm_summary, truncate_utf8, uses_cursor_sdk,
+        AgentTaskProfile, AutomaticContinuationReason, HistoryToolCall, HistoryTurn,
+        InspectionPreviewWatchState, ACTIVE_RUN_CONTEXT_MAX_BYTES, FAST_DESIGN_HISTORY_MAX_BYTES,
+        FAST_DESIGN_HISTORY_MAX_TURNS, MAX_CONSECUTIVE_STALLED_RECOVERIES,
+        NATIVE_HISTORY_MAX_BYTES, NATIVE_HISTORY_MAX_TURNS, PROVIDER_TOOL_RESULT_MAX_BYTES,
+        STREAMED_INSPECTION_TOOL_TIMEOUT,
     };
     use crate::llm::{ChatMessage, LlmResponse, ToolCall};
     use anyhow::anyhow;
@@ -3991,6 +4025,20 @@ mod tests {
         assert!(policy.contains("distance-adaptive motion"));
         assert!(policy.contains("Protected CAPTCHAs"));
         assert!(!policy.contains("zero approval"));
+    }
+
+    #[test]
+    fn desktop_computer_use_prompt_is_opt_in_and_separate_from_preview() {
+        assert!(desktop_computer_use_instructions(false).is_empty());
+        let policy = desktop_computer_use_instructions(true);
+        assert!(policy.contains("computer_list_windows"));
+        assert!(policy.contains("computer_observe_window"));
+        assert!(policy.contains("computer_game_sequence"));
+        assert!(policy.contains("Settings"));
+        assert!(policy.contains("exactly one action"));
+        assert!(policy.contains("Win/Meta shortcuts are blocked"));
+        assert!(!policy.contains("zero approval"));
+        assert!(!cursor_computer_use_instructions(true).contains("computer_list_windows"));
     }
 
     #[test]

@@ -82,6 +82,7 @@ pub fn is_paused() -> bool {
 
 pub fn set_paused(paused: bool) {
     PAUSED.store(paused, Ordering::SeqCst);
+    crate::desktop_computer_use::set_paused(paused);
     if paused {
         if let Some(app) = APP.get() {
             let _ = app.emit("preview-computer-stop", json!({ "reason": "paused" }));

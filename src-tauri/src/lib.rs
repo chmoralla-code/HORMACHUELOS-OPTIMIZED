@@ -5,6 +5,7 @@ pub mod computer_use;
 pub mod config;
 pub mod cursor_bridge;
 pub mod design_source;
+pub mod desktop_computer_use;
 pub mod execution_profile;
 pub mod flavour;
 pub mod integration_chat;
@@ -157,7 +158,10 @@ async fn save_settings(
         "auto" | "full" | "multi_agent"
     );
     settings.validate().map_err(|e| e.to_string())?;
+    settings.desktop_computer_use_allowed_apps =
+        desktop_computer_use::sanitize_allowed_apps(settings.desktop_computer_use_allowed_apps);
     settings.save().map_err(|e| e.to_string())?;
+    desktop_computer_use::set_allowed_apps(settings.desktop_computer_use_allowed_apps.clone());
     *state.settings.lock().unwrap() = settings;
     Ok(())
 }
@@ -174,12 +178,23 @@ fn set_computer_use_paused(
     state: tauri::State<'_, state::AppState>,
 ) -> computer_use::ComputerUseStatus {
     computer_use::set_paused(paused);
+    desktop_computer_use::set_paused(paused);
     if paused {
         state.stop_all_runs();
     }
     let status = computer_use::status();
     let _ = app.emit("computer-use-status", &status);
     status
+}
+
+#[tauri::command]
+fn get_desktop_computer_use_status() -> desktop_computer_use::ComputerUseStatus {
+    desktop_computer_use::status()
+}
+
+#[tauri::command]
+fn list_computer_use_targets() -> Result<serde_json::Value, String> {
+    desktop_computer_use::list_targets().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1195,6 +1210,9 @@ async fn agent_run(
     } else {
         match config::Settings::load() {
             Ok(s) => {
+                crate::desktop_computer_use::set_allowed_apps(
+                    s.desktop_computer_use_allowed_apps.clone(),
+                );
                 *state.settings.lock().unwrap() = s.clone();
                 s
             }
@@ -1466,6 +1484,8 @@ pub fn run() {
             save_settings,
             get_computer_use_status,
             set_computer_use_paused,
+            get_desktop_computer_use_status,
+            list_computer_use_targets,
             computer_use::respond_preview_computer,
             set_api_key,
             has_api_key,
@@ -1526,6 +1546,7 @@ pub fn run() {
         .setup(|app| {
             computer_use::install(app.handle().clone());
             computer_use::install_emergency_hotkey(app.handle().clone());
+            desktop_computer_use::install(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

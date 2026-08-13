@@ -60,8 +60,9 @@ test("model surface is reduced to observe plus bounded action batches", () => {
   assert.match(tools, /inside Preview/);
   assert.match(tools, /"open_tab", "navigate", "activate_tab"/);
   assert.match(tools, /never launch the system browser/);
-  for (const symbol of removedDesktopSymbols.slice(5)) assert.doesNotMatch(tools, new RegExp(symbol));
-  assert.match(cursorBridge, /cursor_host_tool_schemas\(permission_mode, computer_use_active\)/);
+  assert.match(tools, /fn desktop_computer_tool_schemas/);
+  assert.match(tools, /computer_observe_window/);
+  assert.match(cursorBridge, /cursor_host_tool_schemas\(/);
   assert.match(cursorBridge, /"computerUseEnabled": false/);
 });
 

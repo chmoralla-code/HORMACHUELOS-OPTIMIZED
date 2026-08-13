@@ -21,6 +21,10 @@ export type Settings = {
   computer_use_enabled: boolean;
   /** Allow explicit chat prompts to activate Preview Computer Use for one request. */
   computer_use_prompt_activation: boolean;
+  /** Opt-in native Windows Desktop Computer Use. Off by default. */
+  desktop_computer_use_enabled: boolean;
+  /** Optional process names the Desktop agent may control. Empty = all ordinary apps except the blocklist. */
+  desktop_computer_use_allowed_apps: string[];
   /** Keep long build tasks on a durable plan and request a final verification pass. */
   smart_agent_enabled: boolean;
   /** Recall bounded project preferences and private per-session working memory. */
@@ -102,6 +106,26 @@ export type ComputerUseStatus = {
   emergencyShortcutAvailable: boolean;
   scope: "active-preview-tab-only";
   autoApproved: boolean;
+};
+
+export type DesktopComputerUseStatus = {
+  supported: boolean;
+  paused: boolean;
+  emergencyShortcut: string;
+  emergencyShortcutAvailable: boolean;
+};
+
+export type ComputerUseTarget = {
+  id: string;
+  title: string;
+  processName: string;
+  processId: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isForeground: boolean;
+  isMinimized: boolean;
 };
 
 export type PreviewComputerRequest = {
@@ -301,6 +325,10 @@ export const api = {
   getComputerUseStatus: (): Promise<ComputerUseStatus> => invoke("get_computer_use_status"),
   setComputerUsePaused: (paused: boolean): Promise<ComputerUseStatus> =>
     invoke("set_computer_use_paused", { paused }),
+  getDesktopComputerUseStatus: (): Promise<DesktopComputerUseStatus> =>
+    invoke("get_desktop_computer_use_status"),
+  listComputerUseTargets: (): Promise<{ windows?: ComputerUseTarget[] }> =>
+    invoke("list_computer_use_targets"),
   respondPreviewComputer: (
     requestId: string,
     ok: boolean,
