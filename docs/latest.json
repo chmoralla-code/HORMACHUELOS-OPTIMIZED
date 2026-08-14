@@ -1,11 +1,11 @@
 {
-  "version": "1.2.11-1",
-  "title": "Hormachuelos Optimized v1.2.11-1",
-  "whatsNew": "Hormachuelos Optimized 1.2.11-1 is ready to install from the in-app Update button.",
-  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.11-1/Hormachuelos_Optimized_1.2.11-1_x64.msi",
-  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.11-1/Hormachuelos_Optimized_1.2.11-1_x64-setup.exe",
-  "msiSha256": "8ea9ee4943c8e8b2ea1648a79291fc8ac1ced5317e5299d4685346f3be3faafc",
-  "exeSha256": "cd081baca4211260858aeef2c6e0216cb0223a33073a818aa3e37e3d73bd542f",
+  "version": "1.2.12",
+  "title": "Hormachuelos Optimized v1.2.12",
+  "whatsNew": "Hormachuelos Optimized is ready to install from the in-app Update button.",
+  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.12/Hormachuelos_Optimized_1.2.12_x64.msi",
+  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.12/Hormachuelos_Optimized_1.2.12_x64-setup.exe",
+  "msiSha256": "4f9308c6aff42fe795c176550f69ce4ec089feda7c4bfc25b9855034ae70781f",
+  "exeSha256": "28d0aa4d89d402f583a659caed939aa68f998ee4879df0ed17ff43b5f759de2d",
   "forceUpdate": false,
-  "publishedAt": "2026-08-14T08:37:50Z"
+  "publishedAt": "2026-08-14T12:30:06.974Z"
 }
