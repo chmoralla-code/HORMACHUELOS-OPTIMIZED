@@ -47,6 +47,8 @@ jobs:
 
       - name: Run FPS regression guards
         run: npm run test:fps
+      - name: Run desktop updater guards
+        run: npm run test:update
       - name: Run Preview Computer Use isolation guards
         run: npm run test:computer-use
 
@@ -70,7 +72,8 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
-          "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          $isPrerelease = [bool]($version -match '-(alpha|beta|rc|pre)')
+          "prerelease=$($isPrerelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
       - name: Build and publish release-channel installers
         uses: tauri-apps/tauri-action@v1
@@ -82,7 +85,13 @@ jobs:
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
-            This release (1.2.11-1):
+            This release (1.2.12):
+            - Ask mode auto-switches to Multi-Agent when you ask it to make or save a markdown/session file
+            - In-app Update reads GitHub Pages latest.json, cache-busts the feed, and prompts once when a newer build is live
+            - Version compare accepts 1.2.11-1 style builds so older installs can see 1.2.12
+            - Trading requests route to Thorough and follow a trading workspace policy
+            - Computer Use keeps the pointing-hand cursor through the Preview glow until the run ends
+            - Table-row clicks follow the row link instead of a nested cell
             - The agent can list and inspect a folder you name under your user profile (Music, Documents, Desktop, Downloads)
             - Excel, CSV, Word, PowerPoint, PDF, images, audio, and video show up in listings; read_file extracts Office/CSV/PDF text; write_file can create .xlsx; open_path opens the default Windows app
             - An empty project folder such as EXCELS still surfaces sibling workbooks in the parent directory
@@ -164,3 +173,9 @@ jobs:
           prerelease: ${{ steps.release_channel.outputs.prerelease }}
           releaseAssetNamePattern: Hormachuelos_Optimized_[version]_x64[setup][ext]
           uploadUpdaterSignatures: false
+
+      - name: Publish in-app update feed to GitHub Pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPDATE_WHATS_NEW: Hormachuelos Optimized is ready to install from the in-app Update button.
+        run: node scripts/publish-update-manifest.mjs --push-pages

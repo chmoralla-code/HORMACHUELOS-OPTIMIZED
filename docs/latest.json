@@ -1,11 +1,11 @@
 {
-  "version": "1.0.2",
-  "title": "Hormachuelos Optimized v1.0.2",
-  "whatsNew": "Fixes AI replies that could split into large blank gaps or expose broken Markdown. Live streamed text now stays in one organized reply, and completed messages are measured before FPS virtualization so scrolling remains fast without corrupting the layout.",
-  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.2/Hormachuelos_Optimized_1.0.2_x64.msi",
-  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.0.2/Hormachuelos_Optimized_1.0.2_x64-setup.exe",
-  "msiSha256": "00de4e3627362eb6bde2677c44768e028b9152a025932ffef7ba8ce8ce46f1c5",
-  "exeSha256": "c8bffe88970518cfe3c98861cbe896ed3012cb4511f33418be2e3b232ec1dad4",
+  "version": "1.2.11-1",
+  "title": "Hormachuelos Optimized v1.2.11-1",
+  "whatsNew": "Hormachuelos Optimized 1.2.11-1 is ready to install from the in-app Update button.",
+  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.11-1/Hormachuelos_Optimized_1.2.11-1_x64.msi",
+  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.11-1/Hormachuelos_Optimized_1.2.11-1_x64-setup.exe",
+  "msiSha256": "8ea9ee4943c8e8b2ea1648a79291fc8ac1ced5317e5299d4685346f3be3faafc",
+  "exeSha256": "cd081baca4211260858aeef2c6e0216cb0223a33073a818aa3e37e3d73bd542f",
   "forceUpdate": false,
-  "publishedAt": "2026-08-11T23:46:04Z"
+  "publishedAt": "2026-08-14T08:37:50Z"
 }

@@ -1797,6 +1797,15 @@
   inset: 0;
   pointer-events: none;
   border-radius: inherit;
+  padding: 56px;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
 }
 
 .site-preview.is-computer-use-active:not(.is-browser-tab) .site-preview-frame-host::before {

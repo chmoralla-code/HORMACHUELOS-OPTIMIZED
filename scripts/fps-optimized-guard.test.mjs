@@ -58,6 +58,17 @@ test("download page targets only the optimized release", () => {
   const page = read("docs/index.html");
   assert.match(page, /Download MSI/);
   assert.match(page, /Download Setup EXE/);
-  assert.match(page, /HORMACHUELOS-OPTIMIZED\/releases\/latest\/download/);
+  assert.match(page, /HORMACHUELOS-OPTIMIZED\/releases\/download\/v/);
   assert.doesNotMatch(page, /HORMACHUELOS\/releases\/latest\/download/);
+});
+
+test("release workflow publishes the in-app update feed to GitHub Pages", () => {
+  const workflow = read(".github/workflows/release-optimized.yml");
+  const publisher = read("scripts/publish-update-manifest.mjs");
+  assert.match(workflow, /publish-update-manifest\.mjs --push-pages/);
+  assert.match(workflow, /-\(alpha\|beta\|rc\|pre\)/);
+  assert.doesNotMatch(workflow, /version\.Contains\('-'\)/);
+  assert.match(publisher, /docs\/latest\.json/);
+  assert.match(publisher, /branch: PAGES_BRANCH/);
+  assert.match(read("src/components/update-gate.ts"), /UPDATE_MANIFEST_URL\}\?t=/);
 });

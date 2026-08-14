@@ -106,10 +106,12 @@ impl ExecutionProfile {
         let looks_large = LARGE_SIGNALS.iter().any(|signal| request.contains(signal));
         let looks_quick = QUICK_SIGNALS.iter().any(|signal| request.contains(signal));
         if !looks_large && looks_quick && request.len() <= 1_200 {
-            Self::Fast
-        } else {
-            Self::Balanced
+            return Self::Fast;
         }
+        if looks_like_trading_request(&request) {
+            return Self::Thorough;
+        }
+        Self::Balanced
     }
 
     pub const fn wire_name(self) -> &'static str {
@@ -183,7 +185,8 @@ impl ExecutionProfile {
             Self::Thorough => {
                 "\nTHOROUGH EXECUTION PROFILE:\n\
 - Inspect dependency boundaries and edge cases before changing code, then run the strongest relevant local validation.\n\
-- Use additional review or repair passes only when they can resolve a specific remaining risk.\n"
+- Use additional review or repair passes only when they can resolve a specific remaining risk.\n\
+- For trading work: inspect the actual strategy, settings, and results before judging a setup, and never invent prices or fills.\n"
             }
             Self::Safe => {
                 "\nSAFE BUILD EXECUTION PROFILE:\n\
@@ -195,9 +198,116 @@ impl ExecutionProfile {
     }
 }
 
+pub fn looks_like_trading_request(prompt: &str) -> bool {
+    let text = prompt.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        return false;
+    }
+    const PHRASES: &[&str] = &[
+        "backtest",
+        "backtesting",
+        "binance",
+        "bybit",
+        "okx",
+        "coinbase",
+        "kraken",
+        "forex",
+        "candlestick",
+        "candlesticks",
+        "stop loss",
+        "stoploss",
+        "take profit",
+        "take-profit",
+        "risk/reward",
+        "risk reward",
+        "position size",
+        "position sizing",
+        "order block",
+        "fair value gap",
+        "liquidity grab",
+        "tradingview",
+        "metatrader",
+        "equity curve",
+        "max drawdown",
+        "scalping",
+        "swing trade",
+        "day trade",
+        "day trading",
+        "long setup",
+        "short setup",
+        "go long",
+        "go short",
+        "paper trade",
+        "paper trading",
+        "live trade",
+        "live trading",
+        "order book",
+        "orderbook",
+        "funding rate",
+        "entry zone",
+        "invalidation",
+        "win rate",
+        "winrate",
+        "pine script",
+        "pinescript",
+        "smart money",
+        "xauusd",
+        "eurusd",
+        "gbpusd",
+        "usdjpy",
+        "btcusdt",
+        "ethusdt",
+        "price action",
+        "support and resistance",
+    ];
+    if PHRASES.iter().any(|phrase| text.contains(phrase)) {
+        return true;
+    }
+    const WORDS: &[&str] = &[
+        "trading",
+        "trader",
+        "trades",
+        "binance",
+        "bybit",
+        "forex",
+        "bitcoin",
+        "btc",
+        "ethereum",
+        "nasdaq",
+        "mt4",
+        "mt5",
+        "ccxt",
+        "ohlc",
+        "ohlcv",
+        "vwap",
+        "macd",
+        "leverage",
+        "drawdown",
+        "pips",
+        "lotsize",
+        "futures",
+        "perpetual",
+        "ict",
+        "fvg",
+    ];
+    if has_trading_word(&text, WORDS) {
+        return true;
+    }
+    has_trading_word(&text, &["trade"])
+        && has_trading_word(
+            &text,
+            &["buy", "sell", "long", "short", "bot", "strategy", "chart"],
+        )
+}
+
+fn has_trading_word(text: &str, words: &[&str]) -> bool {
+    text.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|word| words.iter().any(|needle| *needle == word))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ExecutionProfile;
+    use super::{looks_like_trading_request, ExecutionProfile};
 
     #[test]
     fn explicit_profile_wins_over_auto_routing() {
@@ -245,5 +355,25 @@ mod tests {
         assert_eq!(ExecutionProfile::Balanced.model_effort("xhigh"), "xhigh");
         assert_eq!(ExecutionProfile::Thorough.model_effort("medium"), "high");
         assert_eq!(ExecutionProfile::Safe.model_effort("low"), "medium");
+    }
+
+    #[test]
+    fn trading_requests_auto_route_to_thorough() {
+        assert!(looks_like_trading_request(
+            "Backtest the trading strategy for July and report the final equity"
+        ));
+        assert!(looks_like_trading_request(
+            "Should I buy BTC here or wait for a lower entry?"
+        ));
+        assert!(!looks_like_trading_request("What is React?"));
+        assert!(!looks_like_trading_request("Change the header color"));
+        assert_eq!(
+            ExecutionProfile::resolve(Some("auto"), "Backtest the trading strategy for July", None),
+            ExecutionProfile::Thorough
+        );
+        assert_eq!(
+            ExecutionProfile::resolve(Some("auto"), "change the text on this button", None),
+            ExecutionProfile::Fast
+        );
     }
 }

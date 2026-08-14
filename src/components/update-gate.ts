@@ -1,7 +1,9 @@
 import { api, onAppUpdateProgress, type AppUpdateProgress } from "../ipc";
+import { isVersionNewer } from "../update-version";
 import { el } from "./util";
 
-const UPDATE_MANIFEST_URL = "https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/latest.json";
+export const UPDATE_MANIFEST_URL = "https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/latest.json";
+const UPDATE_PROMPT_STORAGE_KEY = "ai-forge:update-prompted";
 
 export type AppRelease = {
   version: string;
@@ -125,29 +127,30 @@ export async function restoreUpdateState(): Promise<number> {
   return restored;
 }
 
-function versionParts(value: string): [number, number, number] | null {
-  const parts = value.trim().replace(/^v/, "").split(".");
-  if (parts.length !== 3) return null;
-  if (!parts.every((part) => /^\d+$/.test(part))) return null;
-  const numbers = parts.map((part) => Number.parseInt(part, 10));
-  if (numbers.some((part) => !Number.isSafeInteger(part) || part < 0)) return null;
-  return numbers as [number, number, number];
+export function shouldPromptUpdate(version: string): boolean {
+  const next = String(version || "").trim().replace(/^v/i, "");
+  if (!next) return false;
+  try {
+    return localStorage.getItem(UPDATE_PROMPT_STORAGE_KEY) !== next;
+  } catch {
+    return true;
+  }
 }
 
-function isVersionNewer(candidate: string, current: string): boolean {
-  const next = versionParts(candidate);
-  const installed = versionParts(current);
-  if (!next || !installed) return false;
-  for (let index = 0; index < next.length; index += 1) {
-    if (next[index] !== installed[index]) return next[index] > installed[index];
+export function markUpdatePrompted(version: string): void {
+  const next = String(version || "").trim().replace(/^v/i, "");
+  if (!next) return;
+  try {
+    localStorage.setItem(UPDATE_PROMPT_STORAGE_KEY, next);
+  } catch {
+    // Private-mode WebView storage must not block the sidebar badge.
   }
-  return false;
 }
 
 export async function checkDesktopUpdate(): Promise<UpdateCheck> {
   const currentVersion = await api.appVersion().catch(() => "0.0.0");
-  const res = await fetch(UPDATE_MANIFEST_URL, {
-    headers: { Accept: "application/json" },
+  const res = await fetch(`${UPDATE_MANIFEST_URL}?t=${Date.now()}`, {
+    headers: { Accept: "application/json", "Cache-Control": "no-cache" },
     cache: "no-store",
   });
   const data = await res.json().catch(() => ({})) as Partial<AppRelease> & { error?: string };
@@ -592,7 +595,10 @@ export function showUpdateDialog(options: UpdateInstallOptions = {}): HTMLElemen
       ]) as HTMLButtonElement;
       const laterBtn = el("button", { class: "btn update-later-btn", type: "button" }, ["Not now"]);
       const actions = el("div", { class: "update-dialog-actions" }, [installBtn, laterBtn]);
-      laterBtn.addEventListener("click", close);
+      laterBtn.addEventListener("click", () => {
+        markUpdatePrompted(latest.version);
+        close();
+      });
 
       const startInstall = () => {
         if (installing) return;

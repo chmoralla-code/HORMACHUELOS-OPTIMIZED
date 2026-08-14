@@ -34,7 +34,9 @@ import {
 } from "./components/auth-gate";
 import {
   checkDesktopUpdate,
+  markUpdatePrompted,
   restoreUpdateState,
+  shouldPromptUpdate,
   showUpdateDialog,
   showUpdateGate,
 } from "./components/update-gate";
@@ -1810,6 +1812,11 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\bno\s+(file\s+)?(changes?|edits?|modifications?)\b/.test(prompt);
   if (isExplicitReadOnly) return "ask";
 
+  const isFileWrite =
+    /\b(make|create|write|save|export|generate|put)\b[\s\S]{0,48}\b(md|markdown|\.md|notes?|files?|document|txt)\b/.test(prompt) ||
+    /\b(md|markdown)\s+files?\b/.test(prompt) ||
+    /\bsave\s+(this|it|the(?:\s+(?:session|conversation|chat|notes?))?)\s+(as|to|into)\b/.test(prompt) ||
+    /\bwrite\s+(this|it|the(?:\s+(?:session|conversation|chat))?)\s+(to|into|as)\b/.test(prompt);
   const isImplementPlan =
     /\b(apply|implement|execute) (this|the) plan\b/.test(prompt) ||
     /\bgo ahead and (implement|apply)\b/.test(prompt) ||
@@ -1824,7 +1831,7 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\b(can|could) you (add|create|build|implement|fix|scaffold|generate|repair|refactor|change|changing|update|updating|rename|renaming|edit|editing|replace|replacing|rewrite|rewriting|modify|modifying|delete|remove|patch|tweak|adjust)\b/.test(prompt) ||
     /\bplease (add|create|build|implement|fix|repair|refactor|change|update|rename|edit|replace|rewrite|modify|delete|remove|patch|tweak|adjust)\b/.test(prompt);
   const isContextualMake =
-    /\bmake\s+(a|an|the)\s+((new|responsive|polished|modern|simple|production[- ]ready)\s+){0,3}(app|application|website|site|page|component|feature|form|dashboard|game|project|file|folder|module|api|database|script|button)\b/.test(prompt) ||
+    /\bmake\s+(?:(?:a|an|the)\s+)?((new|responsive|polished|modern|simple|production[- ]ready)\s+){0,3}(app|application|website|site|page|component|feature|form|dashboard|game|project|file|folder|module|api|database|script|button|md|markdown|notes?|document)\b/.test(prompt) ||
     /\bmake\s+(this|that|it)\s+(work|better|faster|responsive|accessible|production[- ]ready)\b/.test(prompt) ||
     /\bmake\s+(this|that|it)\s+(say|read|display|titled)\b/.test(prompt) ||
     /\bmake\s+(this|that|the|my)\s+(title|heading|header|label|text|name)\b/.test(prompt) ||
@@ -1840,7 +1847,7 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
   const isApplyNow =
     /^(do it|go ahead and (do|apply|implement|make)|yes,?\s+(do it|apply|make the change)|apply (it|this|the change|the edit)|make the (change|edit)|implement (it|this|that))\b/.test(prompt) ||
     /\b(apply|make) (this|the) (change|edit|fix)\b/.test(prompt);
-  if (isImplementPlan || isApplySuggestions || isPoliteBuild || isContextualMake || isEditAction || isApplyNow) return "multi_agent";
+  if (isImplementPlan || isApplySuggestions || isPoliteBuild || isContextualMake || isEditAction || isApplyNow || isFileWrite) return "multi_agent";
 
   const isQuestion =
     prompt.includes("?") ||
@@ -2538,7 +2545,7 @@ async function init() {
   // New releases get a visible sidebar badge. Required releases still block
   // the app, while the background refresh keeps long-running clients informed.
   let forcedUpdateGateVisible = false;
-  const refreshUpdateNotification = async () => {
+  const refreshUpdateNotification = async ({ prompt = false }: { prompt?: boolean } = {}) => {
     try {
       const update = await checkDesktopUpdate();
       const available = update.updateAvailable || update.forceUpdate;
@@ -2550,6 +2557,19 @@ async function init() {
         }));
         return true;
       }
+      if (
+        prompt
+        && available
+        && update.latest
+        && !update.forceUpdate
+        && shouldPromptUpdate(update.latest.version)
+        && !document.querySelector(".auth-gate-overlay")
+      ) {
+        markUpdatePrompted(update.latest.version);
+        document.body.appendChild(showUpdateDialog({
+          beforeInstall: prepareForAppUpdate,
+        }));
+      }
     } catch (e) {
       // Keep an already-shown notification rather than hiding it due to a
       // transient offline error.
@@ -2559,13 +2579,13 @@ async function init() {
   };
   if (await refreshUpdateNotification()) return;
   window.setInterval(() => {
-    void refreshUpdateNotification();
+    void refreshUpdateNotification({ prompt: true });
   }, 15 * 60 * 1000);
   window.addEventListener("online", () => {
-    void refreshUpdateNotification();
+    void refreshUpdateNotification({ prompt: true });
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") void refreshUpdateNotification();
+    if (document.visibilityState === "visible") void refreshUpdateNotification({ prompt: true });
   });
 
   // Website account required — desktop signs in automatically after browser login/signup.
@@ -2593,6 +2613,7 @@ async function init() {
     applyWebsitePlanUsage(websiteUser);
   }
   await refreshWebsiteAccountStatus({ quiet: true }).catch(() => {});
+  if (await refreshUpdateNotification({ prompt: true })) return;
 
   // OpenCode-style chips inside the composer card
   modelBar = new ModelBar(() => {

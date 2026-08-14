@@ -205,6 +205,11 @@ test("client intent auto-switches Ask, Plan, and Multi-Agent", async () => {
     "plan",
   );
   assert.equal(infer("I'm planning to add a login page"), "plan");
+  assert.equal(infer("can you make md file for this conversation session?"), "multi_agent");
+  assert.equal(infer("can you make md file for this conversation session"), "multi_agent");
+  assert.equal(infer("save this as SESSION-NOTES.md"), "multi_agent");
+  assert.equal(infer("create a markdown file of this chat"), "multi_agent");
+  assert.equal(infer("how do I make a file?"), "ask");
 });
 
 test("all modes share a visible-reply contract and chat last-resort", async () => {

@@ -200,6 +200,7 @@ test("project and Browser tabs render bounded cinematic cursor feedback", () => 
     assert.match(source, /drag/);
     assert.doesNotMatch(source, /backdrop-filter/);
     assert.match(source, /(?:ai-cursor-hand|AI_CURSOR_HAND|aiCursorHandBeforeCss|__HORMA_HAND_URI__)/);
+    assert.match(source, /__horma-ai-fire/);
     const cursorFx = source
       .replace(/@keyframes __horma-ai-frame-(?:spin|breathe|glow|shade)\{[^}]*\}/g, "")
       .replace(/#__horma_browser_viewport(?::after)?\{[^}]*\}/g, "");
@@ -210,6 +211,30 @@ test("project and Browser tabs render bounded cinematic cursor feedback", () => 
   assert.match(browserController, /transients\.length>8/);
   assert.match(browserController, /initialization_script\(browser_computer_script\(\)\)/);
   assert.match(browserController, /ensure_main_caller\(&caller\)/);
+});
+
+test("AI cursor stays visible through the preview glow until Computer Use stops", () => {
+  const overlay = read("src/computer-fx.ts");
+  const cursor = read("src/computer-cursor.ts");
+  for (const source of [frameController, browserController, overlay]) {
+    assert.match(source, /__horma-ai-fire/);
+    assert.match(source, /data-gesture="hover"|data-gesture='hover'/);
+    assert.doesNotMatch(source, /scheduleSettle|CURSOR_SETTLE_MS|IDLE_HIDE_MS/);
+    assert.doesNotMatch(source, /settleTimer=setTimeout\(\(\)=>\{settleTimer=null;hide\(\)\},\s*900\)/);
+    assert.doesNotMatch(source, /hide\(\),900\)/);
+  }
+  assert.match(frameController, /this\.cursor\.dataset\.visible = "true"/);
+  assert.match(frameController, /replayAiCursorFire\(this\.cursor, gesture\)/);
+  assert.match(frameController, /this\.destroyOverlay\(\)/);
+  assert.match(browserController, /cursor\.dataset\.visible='true'/);
+  assert.match(browserController, /gesture\('idle','WATCH'\)/);
+  assert.match(browserController, /destroyFx\(\)/);
+  assert.match(overlay, /replayAiCursorFire\(cursor, gesture\)/);
+  assert.match(overlay, /event\.kind === "clear"/);
+  assert.match(cursor, /AI_CURSOR_HAND_HOTSPOT_X = 28/);
+  assert.match(cursor, /AI_CURSOR_HAND_HOTSPOT_Y = 0/);
+  assert.match(cursor, /replayAiCursorFire/);
+  assert.doesNotMatch(cursor, /animation:[^;]*infinite/);
 });
 
 test("Preview Computer Use can fill native controls and verify evidence", () => {
@@ -239,7 +264,13 @@ test("Preview Computer Use can fill native controls and verify evidence", () => 
   assert.match(browserController, /wait_for/);
   assert.match(browserController, /tiny\.png/);
   assert.match(browserController, /a11y/);
-  assert.match(broker, /accepts_native_form_values_and_evidence_checks/);
+  assert.match(frameController, /clickActivationTarget/);
+  assert.match(frameController, /ROW_HOST_SELECTOR/);
+  assert.match(frameController, /inner link or pointer-row host/);
+  assert.match(browserController, /const activate=/);
+  assert.match(browserController, /el=activate\(t\.el,t\.point\)/);
+  assert.match(browserController, /inner link or pointer-row host/);
+  assert.match(agent, /inner link or pointer-row host/);
   assert.match(agent, /PREVIEW COMPUTER USE · MAX QA/);
   assert.match(agent, /set_value/);
   assert.match(agent, /check/);

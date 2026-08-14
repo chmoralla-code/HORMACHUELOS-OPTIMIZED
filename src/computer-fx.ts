@@ -1,11 +1,15 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { aiCursorHandBeforeCss } from "./computer-cursor";
+import {
+  aiCursorFireCss,
+  aiCursorHandBeforeCss,
+  attachAiCursorFire,
+  replayAiCursorFire,
+} from "./computer-cursor";
 import type { ComputerUseFxEvent } from "./ipc";
 
 const MAX_CURSOR_TRAIL_SPARKS = 3;
 const MAX_CURSOR_TRANSIENTS = 8;
-const IDLE_HIDE_MS = 1400;
 const HUMAN_DIVERGE_PX = 28;
 
 const root = document.getElementById("fx-root") as HTMLDivElement;
@@ -16,7 +20,6 @@ let cursorLabel: HTMLElement | null = null;
 let targetFrame: HTMLElement | null = null;
 let targetPlate: HTMLElement | null = null;
 let status: HTMLElement | null = null;
-let hideTimer: number | null = null;
 let lastX = 32;
 let lastY = 32;
 const transients: HTMLElement[] = [];
@@ -34,24 +37,26 @@ function ensureOverlay(): void {
   const style = document.createElement("style");
   style.textContent = `
     #__horma-ai-cursor,#__horma-ai-target,#__horma-ai-status,.__horma-ai-fx{box-sizing:border-box!important;pointer-events:none!important;user-select:none!important;font-family:ui-monospace,SFMono-Regular,Consolas,monospace!important}
-    #__horma-ai-cursor{position:fixed!important;z-index:2147483646!important;left:0!important;top:0!important;width:0!important;height:0!important;opacity:0;transform:translate3d(32px,32px,0);will-change:transform,opacity;contain:layout style;overflow:visible;isolation:isolate;transition:opacity .16s ease}
+    #__horma-ai-cursor{position:fixed!important;z-index:2147483646!important;left:0!important;top:0!important;width:0!important;height:0!important;opacity:0;transform:translate3d(32px,32px,0);transform-origin:0 0;will-change:transform,opacity;contain:layout style;overflow:visible;isolation:isolate;transition:opacity .16s ease}
     #__horma-ai-cursor[data-visible="true"]{opacity:1}
     ${aiCursorHandBeforeCss("#__horma-ai-cursor", "::before")}
-    #__horma-ai-cursor::after{content:"";position:absolute;left:-12px;top:-12px;width:48px;height:48px;border:1px solid rgba(108,234,255,.7);border-radius:50%;opacity:.2;transform:scale(.72);transition:transform .16s cubic-bezier(.16,1,.3,1),opacity .16s ease}
-    #__horma-ai-cursor[data-gesture="approach"]::after{opacity:.82;transform:scale(1)}
-    #__horma-ai-cursor[data-gesture="hover"]::before{transform:scale(1.06) rotate(-2deg)}
-    #__horma-ai-cursor[data-gesture="press"]::before{transform:scale(.86) rotate(-3deg)}
+    ${aiCursorFireCss("#__horma-ai-cursor")}
+    #__horma-ai-cursor::after{content:"";position:absolute;left:-10px;top:-10px;width:20px;height:20px;border:1px solid rgba(255,176,64,.7);border-radius:50%;opacity:.18;transform:scale(.72);transition:transform .16s cubic-bezier(.16,1,.3,1),opacity .16s ease}
+    #__horma-ai-cursor[data-gesture="approach"]::after{opacity:.8;transform:scale(1)}
+    #__horma-ai-cursor[data-gesture="hover"]::before{transform:scale(1.04)}
+    #__horma-ai-cursor[data-gesture="hover"]::after,#__horma-ai-cursor[data-gesture="press"]::after,#__horma-ai-cursor[data-gesture="click"]::after{opacity:1;transform:scale(1.22);border-color:#ff7a18;box-shadow:0 0 16px #ff8a1a}
+    #__horma-ai-cursor[data-gesture="press"]::before{transform:scale(.94)}
     #__horma-ai-cursor[data-gesture="click"]::before{animation:__horma-click-pop .22s cubic-bezier(.16,1,.3,1)}
-    #__horma-ai-cursor[data-gesture="type"]::after,#__horma-ai-cursor[data-gesture="key"]::after{border-color:#a693ff;opacity:.85;transform:scale(.92)}
-    #__horma-ai-cursor[data-gesture="scroll"]::after,#__horma-ai-cursor[data-gesture="drag"]::after{border-color:#6ceaff;opacity:.9;transform:scale(1)}
-    #__horma-ai-cursor-core{position:absolute;left:-2px;top:-2px;width:4px;height:4px;opacity:0}
+    #__horma-ai-cursor[data-gesture="type"]::after,#__horma-ai-cursor[data-gesture="key"]::after{border-color:#ffb020;opacity:.85;transform:scale(.92)}
+    #__horma-ai-cursor[data-gesture="scroll"]::after,#__horma-ai-cursor[data-gesture="drag"]::after{border-color:#ffb020;opacity:.9;transform:scale(1)}
+    #__horma-ai-cursor-core{position:absolute;left:-3px;top:-3px;width:6px;height:6px;border-radius:50%;background:#fff;box-shadow:0 0 0 1px #000,0 0 8px #ff7a18;opacity:.95}
     #__horma-ai-cursor-label{position:absolute;left:22px;top:44px;white-space:nowrap;padding:4px 7px;border:1px solid rgba(123,230,255,.76);border-radius:999px;background:#07121ef2;color:#effdff;font:800 9px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:.08em;box-shadow:0 4px 12px rgba(0,0,0,.38);opacity:0;transform:translate3d(0,4px,0);transition:transform .14s cubic-bezier(.16,1,.3,1),opacity .14s ease}
     #__horma-ai-cursor[data-busy="true"] #__horma-ai-cursor-label{opacity:1;transform:translate3d(0,0,0)}
     @keyframes __horma-ai-frame-glow{0%,100%{opacity:.28}50%{opacity:1}}
     @keyframes __horma-ai-frame-shade{0%,100%{opacity:.92}50%{opacity:.48}}
     #__horma-ai-target{position:fixed!important;z-index:2147483644!important;left:0!important;top:0!important;opacity:0;overflow:hidden;border:0;border-radius:8px;background:transparent;transform:translate3d(0,0,0) scale(.97);transform-origin:center;will-change:transform,opacity;contain:layout style paint;transition:opacity .14s ease,transform .16s cubic-bezier(.16,1,.3,1)}
-    #__horma-ai-target::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(to right,#000 0,rgba(255,255,255,.38) 8px,transparent 72px),linear-gradient(to left,#000 0,rgba(255,255,255,.38) 8px,transparent 72px),linear-gradient(to bottom,#000 0,rgba(255,255,255,.38) 8px,transparent 72px),linear-gradient(to top,#000 0,rgba(255,255,255,.38) 8px,transparent 72px);box-shadow:inset 0 0 0 1px #000;animation:__horma-ai-frame-shade 5.2s ease-in-out infinite}
-    #__horma-ai-target::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;box-shadow:inset 0 0 0 2px #fff,inset 0 0 14px 2px rgba(255,255,255,.42),inset 0 0 36px 8px rgba(255,255,255,.12);animation:__horma-ai-frame-glow 5.2s ease-in-out infinite}
+    #__horma-ai-target::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;padding:56px;background:linear-gradient(to right,#000 0,rgba(255,255,255,.38) 8px,transparent 72px),linear-gradient(to left,#000 0,rgba(255,255,255,.38) 8px,transparent 72px),linear-gradient(to bottom,#000 0,rgba(255,255,255,.38) 8px,transparent 72px),linear-gradient(to top,#000 0,rgba(255,255,255,.38) 8px,transparent 72px);box-shadow:inset 0 0 0 1px #000;animation:__horma-ai-frame-shade 5.2s ease-in-out infinite;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor}
+    #__horma-ai-target::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;padding:56px;box-shadow:inset 0 0 0 2px #fff,inset 0 0 14px 2px rgba(255,255,255,.42),inset 0 0 36px 8px rgba(255,255,255,.12);animation:__horma-ai-frame-glow 5.2s ease-in-out infinite;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor}
     #__horma-ai-target[data-visible="true"]{opacity:1;transform:translate3d(var(--horma-target-x),var(--horma-target-y),0) scale(1)}
     #__horma-ai-target[data-gesture="press"]{transform:translate3d(var(--horma-target-x),var(--horma-target-y),0) scale(.985)}
     #__horma-ai-target[data-gesture="click"]{box-shadow:none}
@@ -61,7 +66,7 @@ function ensureOverlay(): void {
     .__horma-ai-shockwave{position:fixed!important;z-index:2147483645!important;left:0!important;top:0!important;width:20px!important;height:20px!important;margin:-10px 0 0 -10px;border:2px solid #79efff;border-radius:50%;box-shadow:0 0 0 2px rgba(126,92,255,.42),0 0 16px rgba(105,103,255,.55);will-change:transform,opacity;contain:strict}
     .__horma-ai-scroll-cue{position:fixed!important;z-index:2147483645!important;left:0!important;top:0!important;color:#effdff;background:#07121ee8;border:1px solid #6ceaff;border-radius:999px;padding:5px 8px;font:900 13px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;will-change:transform,opacity;contain:layout style paint}
     @keyframes __horma-click-pop{0%{transform:scale(.86)}55%{transform:scale(1.08)}100%{transform:scale(1)}}
-    @media(prefers-reduced-motion:reduce){#__horma-ai-cursor::before,#__horma-ai-cursor::after,#__horma-ai-target,#__horma-ai-target::before,#__horma-ai-target::after,#__horma-ai-cursor-label{animation:none!important;transition-duration:.01ms!important}.__horma-ai-trail,.__horma-ai-shockwave{display:none!important}}
+    @media(prefers-reduced-motion:reduce){#__horma-ai-cursor::before,#__horma-ai-cursor::after,#__horma-ai-target,#__horma-ai-target::before,#__horma-ai-target::after,#__horma-ai-cursor-label,.__horma-ai-fire i{animation:none!important;transition-duration:.01ms!important}.__horma-ai-trail,.__horma-ai-shockwave,.__horma-ai-fire{display:none!important}}
   `;
   document.head.appendChild(style);
   cursor = document.createElement("div");
@@ -73,6 +78,7 @@ function ensureOverlay(): void {
   cursorLabel.id = "__horma-ai-cursor-label";
   cursorLabel.textContent = "AI";
   cursor.append(core, cursorLabel);
+  attachAiCursorFire(cursor, (tag) => document.createElement(tag));
   targetFrame = document.createElement("div");
   targetFrame.id = "__horma-ai-target";
   targetFrame.setAttribute("aria-hidden", "true");
@@ -96,6 +102,7 @@ function setGesture(gesture: string, label = gesture.toUpperCase()): void {
   }
   if (cursorLabel) cursorLabel.textContent = `AI · ${label}`;
   if (status) status.textContent = `AI cursor · Desktop · ${label}`;
+  replayAiCursorFire(cursor, gesture);
 }
 
 function placeCursor(x: number, y: number): void {
@@ -200,17 +207,7 @@ function hideVisuals(): void {
   for (const effect of transients.splice(0)) effect.remove();
 }
 
-function scheduleIdleHide(): void {
-  if (hideTimer != null) window.clearTimeout(hideTimer);
-  hideTimer = window.setTimeout(() => {
-    hideVisuals();
-    void overlayWindow.hide();
-  }, IDLE_HIDE_MS);
-}
-
 function clearFx(): void {
-  if (hideTimer != null) window.clearTimeout(hideTimer);
-  hideTimer = null;
   hideVisuals();
   void overlayWindow.hide();
 }
@@ -273,7 +270,6 @@ function handleFx(event: ComputerUseFxEvent): void {
     default:
       setGesture(gesture);
   }
-  scheduleIdleHide();
 }
 
 listen<ComputerUseFxEvent>("computer-use-fx", (ev) => handleFx(ev.payload)).catch(console.error);
