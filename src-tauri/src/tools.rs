@@ -3774,10 +3774,7 @@ pub fn execute(
                 let search_root = args.get("path").and_then(|v| v.as_str());
                 let dir = match search_root {
                     Some(p) if grep_path_looks_unusable(p) => resolve_project_read_path(root, ".")?,
-                    Some(p) => match resolve_project_read_path(root, p) {
-                        Ok(path) => path,
-                        Err(_) => resolve_project_read_path(root, ".")?,
-                    },
+                    Some(p) => resolve_project_read_path(root, p)?,
                     None => resolve_project_read_path(root, ".")?,
                 };
                 // Weak providers sometimes send plain text containing an unmatched
@@ -4975,6 +4972,10 @@ mod security_tests {
             ("read_file", json!({"path": outside})),
             ("list_dir", json!({"path": "../outside"})),
             ("grep", json!({"pattern": "secret", "path": "../outside"})),
+            (
+                "grep",
+                json!({"pattern": "secret", "path": tree.outside.to_string_lossy().to_string()}),
+            ),
             ("file_info", json!({"path": "../outside/secret.txt"})),
             ("glob", json!({"pattern": "../outside/*"})),
         ] {
