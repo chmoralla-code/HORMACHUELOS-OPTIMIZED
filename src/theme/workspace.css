@@ -1755,13 +1755,6 @@
   .chip-label { max-width: 72px; }
 }
 
-/* Preview Computer Use monochrome active perimeter */
-@property --horma-preview-ai-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0turn;
-}
-
 /* Keep the two-pixel shell allocated at rest so the child Preview Browser never
    resizes when Computer Use starts or stops. */
 .site-preview {
@@ -1777,33 +1770,63 @@
   }
 }
 
-@keyframes site-preview-computer-perimeter {
-  to { --horma-preview-ai-angle: 1turn; }
+@keyframes site-preview-computer-glow {
+  0%, 100% { opacity: 0.28; }
+  50% { opacity: 1; }
+}
+
+@keyframes site-preview-computer-shade {
+  0%, 100% { opacity: 0.92; }
+  50% { opacity: 0.48; }
 }
 
 .site-preview.is-computer-use-active {
-  --horma-preview-ai-angle: 0turn;
   border-color: transparent;
-  border-image: conic-gradient(
-    from var(--horma-preview-ai-angle),
-    #000 0deg,
-    #111 58deg,
-    #707070 118deg,
-    #fff 180deg,
-    #8a8a8a 236deg,
-    #161616 306deg,
-    #000 360deg
-  ) 1;
-  animation: site-preview-computer-perimeter 2.4s linear infinite;
 }
 
-:root.app-backgrounded .site-preview.is-computer-use-active {
+/* Box-aligned black-to-white edge glow on the preview surface. Native Browser
+   tabs paint the same frame inside the page so it sits above that HWND. */
+.site-preview.is-computer-use-active:not(.is-browser-tab) .site-preview-frame-host {
+  isolation: isolate;
+}
+
+.site-preview.is-computer-use-active:not(.is-browser-tab) .site-preview-frame-host::before,
+.site-preview.is-computer-use-active:not(.is-browser-tab) .site-preview-frame-host::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.site-preview.is-computer-use-active:not(.is-browser-tab) .site-preview-frame-host::before {
+  z-index: 6;
+  background:
+    linear-gradient(to right, #000 0, rgba(255, 255, 255, 0.38) 8px, transparent 72px),
+    linear-gradient(to left, #000 0, rgba(255, 255, 255, 0.38) 8px, transparent 72px),
+    linear-gradient(to bottom, #000 0, rgba(255, 255, 255, 0.38) 8px, transparent 72px),
+    linear-gradient(to top, #000 0, rgba(255, 255, 255, 0.38) 8px, transparent 72px);
+  box-shadow: inset 0 0 0 1px #000;
+  animation: site-preview-computer-shade 5.2s ease-in-out infinite;
+}
+
+.site-preview.is-computer-use-active:not(.is-browser-tab) .site-preview-frame-host::after {
+  z-index: 7;
+  box-shadow:
+    inset 0 0 0 2px #fff,
+    inset 0 0 14px 2px rgba(255, 255, 255, 0.42),
+    inset 0 0 36px 8px rgba(255, 255, 255, 0.12);
+  animation: site-preview-computer-glow 5.2s ease-in-out infinite;
+}
+
+:root.app-backgrounded .site-preview.is-computer-use-active .site-preview-frame-host::before,
+:root.app-backgrounded .site-preview.is-computer-use-active .site-preview-frame-host::after {
   animation-play-state: paused;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .site-preview.is-computer-use-active {
-    --horma-preview-ai-angle: 42deg;
+  .site-preview.is-computer-use-active .site-preview-frame-host::before,
+  .site-preview.is-computer-use-active .site-preview-frame-host::after {
     animation: none;
   }
 }

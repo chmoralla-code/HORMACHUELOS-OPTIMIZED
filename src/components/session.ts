@@ -25,7 +25,7 @@ export type SessionMessage =
   | { type: "tool_call"; id: string; name: string; arguments: any; at?: number }
   | { type: "tool_result"; id: string; name: string; ok: boolean; content: string; at?: number }
   | { type: "question"; id: string; question: string; options: string[]; allow_other: boolean; answer: string | null; at?: number }
-  | { type: "done"; summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; at?: number; workMs?: number }
+  | { type: "done"; summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; kind?: string; at?: number; workMs?: number }
   | { type: "end"; reason: string; at?: number; workMs?: number }
   | { type: "cancelled"; at?: number; workMs?: number };
 
@@ -1362,6 +1362,7 @@ export function recordAgentEvent(
         files: (e.payload.files || []).map(redactChatCredentials),
         tech: (e.payload.tech || []).map(redactChatCredentials),
         features: (e.payload.features || []).map(redactChatCredentials),
+        kind: e.payload.kind,
         at,
       });
       normalizeLatestAssistantMessage(messages);

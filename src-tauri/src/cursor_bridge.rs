@@ -3,7 +3,7 @@
 
 use crate::agent::HistoryTurn;
 use crate::flavour::FlavourRun;
-use crate::smart_agent::{infer_director_job, SmartAgentRun};
+use crate::smart_agent::{infer_director_job, DirectorJob, SmartAgentRun};
 use crate::state::SessionRun;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -282,6 +282,7 @@ async fn await_cursor_question(
     }
     if permission_mode.eq_ignore_ascii_case("plan") && !run.plan_implementation_unlocked() {
         options = crate::agent::ensure_plan_apply_options(options);
+        crate::agent::emit_plan_ready_card(app, session_id, 0, "");
     }
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
@@ -1404,6 +1405,12 @@ async fn run_cursor_attempt(
                             &known_integration_secrets,
                         )
                         .await;
+                        if run.plan_implementation_unlocked()
+                            && smart_agent.job() == DirectorJob::Answer
+                            && permission_mode.eq_ignore_ascii_case("plan")
+                        {
+                            smart_agent.promote_to_change(&app, session_id);
+                        }
                         flavour.record_tool_result(
                             &request_id,
                             &raw_name,

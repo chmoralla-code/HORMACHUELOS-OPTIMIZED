@@ -637,7 +637,7 @@ export type AgentEventPayload =
   | { kind: "console_chunk"; payload: { stream: string; text: string } }
   | { kind: "usage"; payload: { iteration: number; turn_tokens: number; total_tokens: number; raw_tokens?: number; license?: LicenseStatus | null } }
   | { kind: "question"; payload: { id: string; question: string; options: string[]; allow_other: boolean } }
-  | { kind: "done"; payload: { summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; total_tokens?: number } }
+  | { kind: "done"; payload: { summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; kind?: string; total_tokens?: number } }
   | { kind: "cancelled"; payload: { iteration: number } }
   | { kind: "end"; payload: { reason: string; iteration: number; total_tokens?: number } };
 

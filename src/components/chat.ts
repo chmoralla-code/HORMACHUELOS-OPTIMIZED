@@ -1758,6 +1758,8 @@ export class Chat {
         "Usage limit reached. Wait for reset or Mag-load via GCash.";
     } else if (this.stopping || (this.running && this.userCancelled)) {
       this.input.placeholder = "Stopping…";
+    } else if (this.hasOpenQuestionThisTurn()) {
+      this.input.placeholder = "Choose an option above, or queue another message…";
     } else if (this.running) {
       const n = this.pendingQueue.length;
       this.input.placeholder =
@@ -2568,6 +2570,23 @@ export class Chat {
     );
   }
 
+  private isRecoverableInspectionFailure(name: string, content: string): boolean {
+    const compact = String(name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    if (!["grep", "listdir", "glob", "fileinfo", "readfile"].includes(compact)) return false;
+    const text = String(content || "").toLowerCase();
+    return (
+      text.includes("directory name is invalid") ||
+      text.includes("not found") ||
+      text.includes("project item not found") ||
+      text.includes("invalid segment") ||
+      text.includes("no such file") ||
+      text.includes("search path not found")
+    );
+  }
+
   private isPathMutatingTool(name: string): boolean {
     const compact = String(name || "")
       .trim()
@@ -2635,7 +2654,7 @@ export class Chat {
     if (this.isMultiAgentRun()) {
       const activity = this.multiAgentActivity(name, args);
       if (!ok) {
-        if (this.isRecoverableEditFailure(name, content)) {
+        if (this.isRecoverableEditFailure(name, content) || this.isRecoverableInspectionFailure(name, content)) {
           return `⚠️ ${activity.label} missed`;
         }
         return `⚠️ ${activity.label} needs attention`;
@@ -2781,7 +2800,7 @@ export class Chat {
     this.placeTurnChromeInOrder();
   }
 
-  /** One turn: Thought → Ran N → answer. Never leave chrome under a sealed bubble. */
+  /** One turn: Thought → Ran N → answer. After a Plan chooser, chrome sits under the options. */
   private placeTurnChromeInOrder() {
     if (this.replaying) return;
     const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
@@ -2790,6 +2809,10 @@ export class Chat {
     const batch = this.toolBatchEl?.isConnected
       ? this.toolBatchEl
       : this.latestActivityAfterLastUser(".tool-batch-wrap");
+    const running = this.runningIndicator?.isConnected
+      ? this.runningIndicator
+      : this.latestActivityAfterLastUser(".thinking-running");
+    const question = this.latestActivityAfterLastUser(".question-card");
     const answer = this.pendingAssistantMsg?.isConnected
       ? this.pendingAssistantMsg
       : this.latestAssistantMsgAfterLastUser();
@@ -2804,9 +2827,24 @@ export class Chat {
       }
     }
 
-    const sequence = [
+    const chrome = [
       ...(thought?.isConnected ? [thought] : []),
       ...batchGroup,
+      ...(running?.isConnected ? [running] : []),
+    ];
+
+    if (question?.isConnected) {
+      let ref: HTMLElement = question;
+      for (const node of chrome) {
+        if (node === ref) continue;
+        if (node.previousElementSibling !== ref) ref.after(node);
+        ref = node;
+      }
+      return;
+    }
+
+    const sequence = [
+      ...chrome,
       ...(answer?.isConnected ? [answer] : []),
     ];
     if (!sequence.length) return;
@@ -3263,13 +3301,25 @@ export class Chat {
   private ensureLiveActivity(label?: string) {
     const activity = label ?? this.liveThinkingLabel();
     if (!this.running || this.stopping || this.userCancelled || this.replaying) return;
+    if (this.node.querySelector(".tool-card.pending, .integration-auth-wrap:not(.integration-auth-done)")) {
+      return;
+    }
+    if (this.hasOpenQuestionThisTurn()) {
+      this.showPostChooserActivity("Waiting for your choice");
+      return;
+    }
+    if (this.hasAnsweredQuestionThisTurn()) {
+      if (this.pendingTools.size > 0) {
+        this.placeTurnChromeInOrder();
+        return;
+      }
+      this.showPostChooserActivity(activity);
+      return;
+    }
     // Pending / streaming tools already show what is happening
     if (this.pendingTools.size > 0) return;
     if (this.hasUsedTools) return;
     if (this.hasVisibleAssistantReplyAfterLastUser()) return;
-    if (this.node.querySelector(".tool-card.pending, .integration-auth-wrap:not(.integration-auth-done)")) {
-      return;
-    }
     if (this.thinking && !this.thinking.classList.contains("thinking-done") && this.thinking.isConnected) {
       this.setThinkingLabel(activity);
       this.scrollToBottom();
@@ -3277,6 +3327,51 @@ export class Chat {
     }
     this.showThinking(0);
     this.setThinkingLabel(activity);
+  }
+
+  private hasOpenQuestionThisTurn(): boolean {
+    return !!this.latestActivityAfterLastUser(".question-card.is-open");
+  }
+
+  private hasAnsweredQuestionThisTurn(): boolean {
+    return !!this.latestActivityAfterLastUser(".question-card.is-answered");
+  }
+
+  private hasQuestionCardThisTurn(): boolean {
+    return !!this.latestActivityAfterLastUser(".question-card");
+  }
+
+  /** Live row under the Plan chooser so the turn never looks frozen after options. */
+  private showPostChooserActivity(label: string) {
+    if (this.replaying) return;
+    if (this.runningIndicator?.isConnected) {
+      const lab = this.runningIndicator.querySelector(".thinking-simple-label") as HTMLElement | null;
+      if (lab) setShimmerText(lab, label, true);
+      this.kickThinkingDots(this.runningIndicator);
+      this.startDotsPulse();
+      this.placeTurnChromeInOrder();
+      this.scrollToBottom();
+      return;
+    }
+    if (this.thinking && !this.thinking.classList.contains("thinking-done") && this.thinking.isConnected) {
+      this.setThinkingLabel(label);
+      this.placeTurnChromeInOrder();
+      this.scrollToBottom();
+      return;
+    }
+    this.clearRunningIndicator();
+    const row = div("thinking-running post-plan-activity");
+    row.innerHTML =
+      `<span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>` +
+      `<span class="thinking-simple-label"></span>`;
+    const lab = row.querySelector(".thinking-simple-label") as HTMLElement;
+    setShimmerText(lab, label, true);
+    this.node.appendChild(row);
+    this.runningIndicator = row;
+    this.kickThinkingDots(row);
+    this.startDotsPulse();
+    this.placeTurnChromeInOrder();
+    this.scrollToBottom();
   }
 
   private clearRunningIndicator() {
@@ -3922,6 +4017,7 @@ export class Chat {
       if (lab) setShimmerText(lab, `${prefix} · ${label}${suffix}`, true);
       this.kickThinkingDots(this.runningIndicator);
       this.startDotsPulse();
+      this.placeTurnChromeInOrder();
       this.scrollToBottom();
       return;
     }
@@ -3938,6 +4034,8 @@ export class Chat {
     this.runningIndicator = row;
     this.kickThinkingDots(row);
     this.startDotsPulse();
+    this.placeTurnChromeInOrder();
+    this.scrollToBottom();
     this.scrollToBottom();
   }
 
@@ -4880,12 +4978,18 @@ export class Chat {
     }
     if (!this.toolBatchResultIds.has(id)) {
       this.toolBatchResultIds.add(id);
-      const recoverable = !ok && this.isRecoverableEditFailure(toolName, content);
+      const recoverable = !ok && (
+        this.isRecoverableEditFailure(toolName, content)
+        || this.isRecoverableInspectionFailure(toolName, content)
+      );
       if (!ok && !recoverable) this.toolBatchFailures += 1;
     }
     if (completedBatch) this.paintToolBatchLabel();
     const path = this.toolArgPath(toolArgs);
-    const recoverable = !ok && this.isRecoverableEditFailure(toolName, content);
+    const recoverable = !ok && (
+      this.isRecoverableEditFailure(toolName, content)
+      || this.isRecoverableInspectionFailure(toolName, content)
+    );
     if (ok && path && this.isPathMutatingTool(toolName)) {
       this.recoverMultiAgentPathAttention(path);
     }
@@ -5197,13 +5301,17 @@ export class Chat {
     files: string[];
     tech: string[];
     features: string[];
+    kind?: string;
     at?: number;
     workMs?: number;
   }) {
-    this.runCompleted = true;
+    const planReady = String(data.kind || "").toLowerCase() === "plan"
+      || /^plan ready$/i.test(String(data.title || "").trim());
+    if (planReady && this.hasPlanReadyCardThisTurn()) return;
+    if (!planReady) this.runCompleted = true;
     this.normalizeLatestAssistantReply();
     this.flushAssistantPaints();
-    this.collapseDeliveryEssayInLatestReply();
+    if (!planReady) this.collapseDeliveryEssayInLatestReply();
     this.compactLatestAssistantTranscript();
     this.finalizeThinking();
     this.sealPendingTools("done");
@@ -5212,9 +5320,9 @@ export class Chat {
     this.pendingAssistantMsg = null;
     const at = data.at ?? this.now();
 
-    const card = div("done-card summary-card");
+    const card = div("done-card summary-card" + (planReady ? " plan-ready-card" : ""));
 
-    const title = this.cleanSentence(data.title) || "Done";
+    const title = this.cleanSentence(data.title) || (planReady ? "Plan ready" : "Done");
     const completion = this.buildCompletionSummary(data);
     let primaryText = completion.primary;
     // Don't echo the assistant reply again under Done (Cursor / chat turns)
@@ -5225,9 +5333,17 @@ export class Chat {
         primaryText = "";
       }
     }
+    if (planReady && !primaryText) {
+      primaryText = this.cleanSentence(data.summary)
+        || "Choose Apply to implement, or keep planning without changing files.";
+    }
 
     const header = el("div", { class: "summary-header" });
-    header.appendChild(el("span", { class: "summary-status", "aria-label": "Task completed" }, ["Completed"]));
+    header.appendChild(el(
+      "span",
+      { class: "summary-status" + (planReady ? " is-plan" : ""), "aria-label": planReady ? "Plan ready" : "Task completed" },
+      [planReady ? "Plan ready" : "Completed"],
+    ));
     header.appendChild(el("h3", { class: "summary-title" }, [title]));
     card.appendChild(header);
 
@@ -5253,11 +5369,12 @@ export class Chat {
       card.appendChild(meta);
     }
 
-    const packBtn = el("button", {
-      class: "btn sm summary-export-btn",
-      type: "button",
-      title: "Zip project for client handoff",
-    }, ["Export Client Pack"]) as HTMLButtonElement;
+    if (!planReady) {
+      const packBtn = el("button", {
+        class: "btn sm summary-export-btn",
+        type: "button",
+        title: "Zip project for client handoff",
+      }, ["Export Client Pack"]) as HTMLButtonElement;
     packBtn.addEventListener("click", async () => {
       packBtn.disabled = true;
       packBtn.textContent = "Packing…";
@@ -5284,6 +5401,7 @@ export class Chat {
       }
     });
     card.appendChild(packBtn);
+    }
 
     card.style.opacity = "0";
     this.node.appendChild(card);
@@ -5434,12 +5552,49 @@ export class Chat {
     this.placeTurnChromeInOrder();
     this.sealPendingTools(completed ? "done" : "interrupted");
     if (completed) this.clearRecoverableMultiAgentAttention();
+    if (
+      this.activePermissionMode === "plan"
+      && this.hasQuestionCardThisTurn()
+      && !this.hasPlanReadyCardThisTurn()
+      && !this.hasCompletedCardThisTurn()
+    ) {
+      this.appendDone({
+        kind: "plan",
+        title: "Plan ready",
+        summary: "The plan is ready. Choose an option to apply it or keep planning.",
+        description: "No files will change until you confirm Apply.",
+        files: [],
+        tech: [],
+        features: [],
+        at,
+        workMs,
+      });
+    }
     // Stamp the last AI chat once the agent is done replying
     this.sealAiTimestamp(at, workMs ?? this.currentWorkMs(at) ?? undefined);
     this.pendingAssistant = null;
     this.pendingAssistantMsg = null;
     this.scrollToBottom();
     this.scheduleStableMessageVirtualization();
+  }
+
+  private hasPlanReadyCardThisTurn(): boolean {
+    return this.hasCardAfterLastUser(".plan-ready-card");
+  }
+
+  private hasCompletedCardThisTurn(): boolean {
+    return this.hasCardAfterLastUser(".done-card:not(.plan-ready-card)");
+  }
+
+  private hasCardAfterLastUser(selector: string): boolean {
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    while (node) {
+      if (node instanceof HTMLElement && node.matches(selector)) return true;
+      node = node.nextElementSibling;
+    }
+    return false;
   }
 
   showQuestion(id: string, question: string, options: string[], allowOther: boolean, savedAnswer: string | null = null, at?: number) {
@@ -5452,7 +5607,7 @@ export class Chat {
       if ((n as HTMLElement).getAttribute("data-qid") === id) n.remove();
     });
 
-    const card = div("question-card");
+    const card = div("question-card is-open");
     card.setAttribute("data-qid", id);
     card.setAttribute("role", "group");
     card.setAttribute("aria-label", "Choose an option");
@@ -5495,12 +5650,20 @@ export class Chat {
         (q.includes("apply") || q.includes("implement") || q.includes("this plan"))
       );
     };
+    const markQuestionAnswered = (answer: string) => {
+      card.classList.remove("is-open");
+      card.classList.add("is-answered");
+      this.showPostChooserActivity("Working on your choice…");
+      this.refreshPlaceholder();
+      void answer;
+    };
     const submitAnswer = async (answer: string) => {
       if (answerAppliesPlan(answer)) {
         window.dispatchEvent(
           new CustomEvent("horma:run-permission-mode", { detail: { mode: "multi_agent" } }),
         );
       }
+      markQuestionAnswered(answer);
       const sid = this.getSessionId();
       if (!sid) throw new Error("No active session");
       await api.respondToQuestion(answer, sid);
@@ -5565,12 +5728,19 @@ export class Chat {
     card.appendChild(choices);
 
     if (savedAnswer !== null) {
+      card.classList.remove("is-open");
+      card.classList.add("is-answered");
       const answerNote = el("div", { class: "question-answer" }, ["You chose: " + savedAnswer]);
       card.appendChild(answerNote);
     }
 
     void at;
     this.node.appendChild(card);
+    this.placeTurnChromeInOrder();
+    if (!this.replaying && this.running && savedAnswer === null) {
+      this.showPostChooserActivity("Waiting for your choice");
+      this.refreshPlaceholder();
+    }
     // Keep the chooser in view under the assistant message
     requestAnimationFrame(() => {
       card.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -5639,6 +5809,7 @@ export class Chat {
           files: e.payload.files,
           tech: e.payload.tech,
           features: e.payload.features,
+          kind: e.payload.kind,
           at,
           workMs: this.currentWorkMs(at) ?? undefined,
         });

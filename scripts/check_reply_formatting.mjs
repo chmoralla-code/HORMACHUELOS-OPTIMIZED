@@ -212,6 +212,40 @@ assert.equal(
   "The snake game is ready in Preview.",
 );
 assert.equal(
+  compactVisibleReply(
+    "A few decisions before I lock the plan:\nThe user confirmed Apply. I'll implement the plan as described: in-app bell.\nLet me set up tasks and read the remaining reference files.",
+  ),
+  "A few decisions before I lock the plan:",
+);
+assert.equal(
+  compactVisibleReply("HR can open Applications (`src/app/employee/(app)/applications/page.tsx` / `src/lib/nav.ts`)."),
+  "HR can open Applications.",
+);
+assert.equal(
+  compactVisibleReply("Applications (`Application` type in `src/lib/data.ts`) live in localStorage."),
+  "Applications live in localStorage.",
+);
+assert.equal(
+  compactVisibleReply("`sendAnnouncementEmails` (`src/lib/announcements/resend.ts`) can email staff."),
+  "`sendAnnouncementEmails` can email staff.",
+);
+assert.equal(
+  compactVisibleReply("Add `src/lib/application-notify.ts` for SMS."),
+  "Add `application-notify.ts` for SMS.",
+);
+assert.equal(
+  compactVisibleReply("Keep planning (this is just a proposal yet)."),
+  "Keep planning (this is just a proposal yet).",
+);
+assert.match(
+  compactVisibleReply("The file is at C:\\Users\\Cyrhiel\\proj\\src\\lib\\nav.ts"),
+  /C:\\Users\\Cyrhiel\\proj\\src\\lib\\nav.ts/,
+);
+assert.doesNotMatch(
+  renderMarkdown("HR can open Applications (`src/app/employee/(app)/applications/page.tsx` / `src/lib/nav.ts`)."),
+  /src\/app\/employee/,
+);
+assert.equal(
   compactVisibleReply("Let me check the server log.\n\nLet me start the game."),
   "",
 );
@@ -447,6 +481,9 @@ for (const requiredReplyStitch of [
   "if (!shouldDiscard) return",
   "insertToolCardInBatch",
   "placeTurnChromeInOrder",
+  "showPostChooserActivity",
+  "Waiting for your choice",
+  "Choose an option above, or queue another message",
   "mergeCurrentTurnAssistantBubbles",
   "coalesceSessionTurnLayout",
   "resumeOpenRunAfterLoad",

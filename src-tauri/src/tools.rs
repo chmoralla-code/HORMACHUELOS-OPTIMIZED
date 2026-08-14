@@ -111,6 +111,13 @@ pub fn normalize_tool_arguments(name: &str, arguments: &mut Value) {
         "grep" => {
             promote_alias(args, "pattern", &["query", "regex", "search"]);
             promote_alias(args, "path", &["directory", "dir", "root"]);
+            if args
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(grep_path_looks_unusable)
+            {
+                args.insert("path".into(), Value::String(".".into()));
+            }
         }
         "glob" => promote_alias(args, "pattern", &["glob", "query"]),
         "run_command" | "start_dev_server" => {
@@ -153,6 +160,51 @@ pub fn normalize_tool_arguments(name: &str, arguments: &mut Value) {
             args.insert("path".into(), Value::String(".".into()));
         }
     }
+}
+
+fn grep_path_looks_unusable(path: &str) -> bool {
+    path.trim()
+        .chars()
+        .any(|c| matches!(c, '|' | '*' | '?' | '"' | '<' | '>' | '\0'))
+        || path.contains("::")
+}
+
+fn grep_file_hits(
+    path: &Path,
+    display_root: &Path,
+    re: &regex::Regex,
+    limit: usize,
+    hits: &mut Vec<Value>,
+) -> Result<()> {
+    if hits.len() >= limit {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(path)?;
+    let rel = path
+        .strip_prefix(display_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let label = if rel.is_empty() {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string())
+    } else {
+        rel
+    };
+    for (i, line) in text.lines().enumerate() {
+        if re.is_match(line) {
+            hits.push(json!({
+                "path": label,
+                "line": i + 1,
+                "text": line.chars().take(500).collect::<String>(),
+            }));
+            if hits.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// True when `name` is a registered dispatcher name or an explicitly safe
@@ -806,6 +858,10 @@ mod permission_mode_tests {
             real_traversal,
             json!({ "pattern": "needle", "path": "../outside" })
         );
+
+        let mut pipe_path = json!({ "pattern": "needle", "path": "createSeed|employee/em" });
+        normalize_tool_arguments("grep", &mut pipe_path);
+        assert_eq!(pipe_path, json!({ "pattern": "needle", "path": "." }));
 
         let mut move_args = json!({ "source": "a.txt", "destination": "b.txt" });
         normalize_tool_arguments("move_file", &mut move_args);
@@ -3717,7 +3773,11 @@ pub fn execute(
                 }
                 let search_root = args.get("path").and_then(|v| v.as_str());
                 let dir = match search_root {
-                    Some(p) => resolve_project_read_path(root, p)?,
+                    Some(p) if grep_path_looks_unusable(p) => resolve_project_read_path(root, ".")?,
+                    Some(p) => match resolve_project_read_path(root, p) {
+                        Ok(path) => path,
+                        Err(_) => resolve_project_read_path(root, ".")?,
+                    },
                     None => resolve_project_read_path(root, ".")?,
                 };
                 // Weak providers sometimes send plain text containing an unmatched
@@ -3731,15 +3791,21 @@ pub fn execute(
                     .context("Could not resolve project root")?;
                 let deadline = Instant::now()
                     + Duration::from_secs(timeout_secs.clamp(1, MAX_INSPECTION_TIMEOUT_SECS));
-                GrepWalk {
-                    display_root: &dir,
-                    project_root: &project_root,
-                    re: &re,
-                    limit: 1000,
-                    ctx,
-                    deadline,
+                let meta = std::fs::symlink_metadata(&dir)
+                    .with_context(|| format!("Search path not found: {}", dir.display()))?;
+                if meta.is_file() {
+                    grep_file_hits(&dir, &project_root, &re, 1000, &mut hits)?;
+                } else {
+                    GrepWalk {
+                        display_root: &dir,
+                        project_root: &project_root,
+                        re: &re,
+                        limit: 1000,
+                        ctx,
+                        deadline,
+                    }
+                    .walk(&dir, &mut hits)?;
                 }
-                .walk(&dir, &mut hits)?;
                 Ok(serde_json::to_string_pretty(&hits)?)
             }
             "run_command" => {
@@ -4976,7 +5042,32 @@ mod security_tests {
         )
         .expect("plain text with an unmatched bracket should use literal search");
         assert!(searched.contains("brackets.txt"));
-        assert!(searched.contains("[literal"));
+        assert_eq!(searched.contains("[literal"), true);
+    }
+
+    #[test]
+    fn grep_searches_files_and_ignores_invalid_windows_paths() {
+        let tree = TempTree::new();
+        let context = ToolRunContext::noop();
+        let file_hits = execute(
+            "grep",
+            &json!({ "pattern": "inside", "path": "inside.txt" }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("grep should search a file path without treating it as a directory");
+        assert!(file_hits.contains("inside"), "{file_hits}");
+
+        let rescued = execute(
+            "grep",
+            &json!({ "pattern": "inside", "path": "createSeedEmployeeApplications|employee/em" }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("grep should ignore regex-like paths instead of failing on Windows");
+        assert!(rescued.contains("inside"), "{rescued}");
     }
 
     #[test]

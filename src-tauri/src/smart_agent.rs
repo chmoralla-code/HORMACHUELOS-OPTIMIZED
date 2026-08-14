@@ -69,7 +69,10 @@ pub fn infer_director_job(
     fast_execution: bool,
 ) -> DirectorJob {
     let text = prompt.trim().to_ascii_lowercase();
-    if permission_mode == "ask" || is_answer_prompt(&text) {
+    if permission_mode == "ask" || permission_mode == "plan" {
+        return DirectorJob::Answer;
+    }
+    if is_answer_prompt(&text) && !looks_like_code_change(&text) {
         return DirectorJob::Answer;
     }
     if computer_use_enabled && is_operate_prompt(&text) {
@@ -81,7 +84,74 @@ pub fn infer_director_job(
     if requires_project_completion {
         return DirectorJob::Ship;
     }
+    if permission_mode == "multi_agent" || permission_mode == "auto" || permission_mode == "full" {
+        return DirectorJob::Change;
+    }
     DirectorJob::Answer
+}
+
+fn looks_like_code_change(text: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "can you change",
+        "could you change",
+        "please change",
+        "can you add",
+        "can you create",
+        "can you build",
+        "can you implement",
+        "can you fix",
+        "can you update",
+        "can you rename",
+        "can you edit",
+        "can you replace",
+        "can you delete",
+        "can you remove",
+        "change this",
+        "change that",
+        "change it",
+        "changing this",
+        "update this",
+        "rename this",
+        "edit this",
+        "replace this",
+        "delete this",
+        "remove this",
+        "fix this",
+        "add this",
+        "change the title",
+        "change the heading",
+        "change the header",
+        "make this say",
+        "make it say",
+        "apply this change",
+        "apply the change",
+        "make the change",
+        "make the edit",
+    ];
+    if NEEDLES.iter().any(|needle| text.contains(needle)) {
+        return true;
+    }
+    [
+        "change ",
+        "changing ",
+        "rename ",
+        "update ",
+        "edit ",
+        "replace ",
+        "modify ",
+        "delete ",
+        "remove ",
+        "add ",
+        "fix ",
+        "implement ",
+        "create ",
+        "build ",
+        "patch ",
+        "tweak ",
+        "adjust ",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix))
 }
 
 fn is_answer_prompt(text: &str) -> bool {
@@ -166,6 +236,7 @@ impl Phase {
 #[derive(Debug)]
 pub struct SmartAgentRun {
     job: DirectorJob,
+    settings_enabled: bool,
     enabled: bool,
     fast_execution: bool,
     phase: Phase,
@@ -196,6 +267,7 @@ impl SmartAgentRun {
     pub fn for_job(job: DirectorJob, settings_enabled: bool, fast_execution: bool) -> Self {
         Self {
             job,
+            settings_enabled,
             enabled: settings_enabled && job.uses_ledger(),
             fast_execution,
             phase: match job {
@@ -222,6 +294,17 @@ impl SmartAgentRun {
 
     pub const fn allows_done(&self) -> bool {
         self.job.allows_done()
+    }
+
+    /// Plan → Apply must be allowed to call `done`, otherwise the Completed
+    /// card never appears after implementation.
+    pub fn promote_to_change(&mut self, app: &AppHandle, session_id: &str) {
+        *self = Self::for_job(
+            DirectorJob::Change,
+            self.settings_enabled,
+            self.fast_execution,
+        );
+        self.emit_plan(app, session_id);
     }
 
     fn ledger_ids_labels(&self) -> (&'static [&'static str], &'static [&'static str]) {
@@ -876,6 +959,16 @@ mod tests {
         );
         assert_eq!(
             infer_director_job(
+                "change this title to atindans",
+                "multi_agent",
+                false,
+                false,
+                false,
+            ),
+            DirectorJob::Change
+        );
+        assert_eq!(
+            infer_director_job(
                 "click the submit button in preview",
                 "multi_agent",
                 true,
@@ -884,5 +977,17 @@ mod tests {
             ),
             DirectorJob::Operate
         );
+        assert_eq!(
+            infer_director_job(
+                "im planning to add sms for approvals",
+                "plan",
+                false,
+                false,
+                false,
+            ),
+            DirectorJob::Answer
+        );
+        assert!(!SmartAgentRun::for_job(DirectorJob::Answer, true, false).allows_done());
+        assert!(SmartAgentRun::for_job(DirectorJob::Change, true, false).allows_done());
     }
 }

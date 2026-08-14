@@ -82,11 +82,19 @@ jobs:
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
-            This release (1.2.9-1):
+            This release (1.2.10-1):
+            - Plan mode ends with a Plan ready chooser; Apply unlocks writes, and a new request plans again
+            - "simply explain" stays Ask; "okay apply all your suggestions except …" switches to Multi-Agent
+            - Ask no longer auto-resumes after an announced action, so the run can idle
+            - Visible replies hide dumped file-path chips
+            - Thought / Ran N sit under the Plan chooser so the run does not look frozen
+            - Computer Use and Desktop mode draw a box-aligned black-to-white glow that slowly fades in and out on the preview or target window
+
+            Gemini 3.7 Flash:
             - Gemini 3.7 Flash is in the model picker; Command Code Studio keys (user_…) call google/gemini-3.7-flash
+
+            Ask mode:
             - Ask mode can start the local website with start_dev_server and open Preview
-            - Preview pane resize, session-switch reply layout, and one Thought / Ran N / answer column
-            - Gemini thinking requests use a 16k output budget so greetings are not swallowed by empty recovery loops
 
             Plan mode:
             - File writes, edits, commands, and other mutations stay locked until the user confirms Apply
@@ -116,7 +124,8 @@ jobs:
             - caps Ultra to High on simple Desktop search/click/open tasks so DeepSeek does not use max reasoning for every tiny action
 
             Monochrome active Preview frame:
-            - animates a crisp black-to-gray-to-white perimeter only while Computer Use is actively engaged
+            - animates a box-aligned black-to-white edge glow only while Computer Use is actively engaged
+            - slowly fades the glow in and out, matching the preview rectangle instead of an oval vignette
             - clears the perimeter, AI cursor, target frame, status badge, and particles when the AI finishes, is cancelled, errors, or the user presses Stop
             - keeps the border allocation stable, pauses while backgrounded, honors reduced motion, and uses no blur or backdrop filtering
 

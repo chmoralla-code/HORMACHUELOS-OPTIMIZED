@@ -199,7 +199,10 @@ test("project and Browser tabs render bounded cinematic cursor feedback", () => 
     assert.match(source, /scroll/);
     assert.match(source, /drag/);
     assert.doesNotMatch(source, /backdrop-filter/);
-    assert.doesNotMatch(source, /animation:[^;]*(?:infinite|linear infinite)/);
+    const cursorFx = source
+      .replace(/@keyframes __horma-ai-frame-(?:spin|breathe|glow|shade)\{[^}]*\}/g, "")
+      .replace(/#__horma_browser_viewport(?::after)?\{[^}]*\}/g, "");
+    assert.doesNotMatch(cursorFx, /animation:[^;]*(?:infinite|linear infinite)/);
   }
   assert.match(frameController, /MAX_CURSOR_TRAIL_SPARKS = 3/);
   assert.match(frameController, /MAX_CURSOR_TRANSIENTS = 8/);
@@ -268,7 +271,12 @@ test("desktop overlay is click-through cinematic FX for Desktop mode", () => {
   assert.match(overlay, /AI cursor · Desktop/);
   assert.match(overlay, /prefers-reduced-motion/);
   assert.match(overlay, /overlayWindow\.hide/);
+  assert.match(overlay, /__horma-ai-frame-glow/);
+  assert.match(overlay, /linear-gradient\(to right/);
+  assert.match(overlay, /inset 0 0 0 2px #fff/);
   assert.doesNotMatch(overlay, /backdrop-filter/);
+  assert.match(browserController, /__horma_browser_viewport/);
+  assert.match(browserController, /viewportFx\?\.remove/);
   assert.match(lib, /set_ignore_cursor_events\(true\)/);
   assert.match(lib, /computer_fx::install_emitter/);
   assert.match(capability, /"computer-fx"/);

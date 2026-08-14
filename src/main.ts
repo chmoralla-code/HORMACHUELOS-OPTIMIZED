@@ -1776,15 +1776,27 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\bplan only\b/.test(prompt) ||
     /\b(make|draft|propose|write) a plan\b/.test(prompt) ||
     /\bplanning first\b/.test(prompt) ||
+    /\bplann(?:ing|ign)\b/.test(prompt) ||
+    /\bproposal\b/.test(prompt) ||
+    /\bjust a proposal\b/.test(prompt) ||
     (/\bplan\b/.test(prompt) && !/\b(implement|apply) (this|the) plan\b/.test(prompt));
   if (isPlan) return "plan";
 
   const isSimplify =
     /\bsimplif/i.test(prompt) ||
+    /\bsimply (explain|put|tell|describe)\b/.test(prompt) ||
+    /\bcan you simply\b/.test(prompt) ||
+    /\bexplain\b.{0,24}\bsimply\b/.test(prompt) ||
     /\b(in simple terms|in plain english|in plain language|eli5|make it shorter|make it simpler|make this simpler|make this shorter|shorter explanation|shorter version|less technical|explain it simply|explain simply|simpler explanation)\b/.test(
       prompt,
     );
   if (isSimplify) return "ask";
+
+  // How-to questions mention add/change but still want an answer, not an edit.
+  const isHowTo =
+    /^(how do i|how to|how can i|how should i|how would i)\b/.test(prompt) ||
+    /\bhow (do|can|should|would) (i|you|we)\b/.test(prompt);
+  if (isHowTo) return "ask";
 
   // A non-mutating constraint is an Answer/Ask contract, not a planning
   // request. Keep this ahead of generic build verbs: phrases such as
@@ -1802,14 +1814,33 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\b(apply|implement|execute) (this|the) plan\b/.test(prompt) ||
     /\bgo ahead and (implement|apply)\b/.test(prompt) ||
     /\bstart implementing\b/.test(prompt);
+  const isApplySuggestions =
+    /\bokay,? apply\b/.test(prompt) ||
+    /\bok,? apply\b/.test(prompt) ||
+    /\bapply all\b/.test(prompt) ||
+    /\bapply (your|these|the|my) suggestions\b/.test(prompt) ||
+    /\bapply .{0,48}suggestions\b/.test(prompt);
   const isPoliteBuild =
-    /\b(can|could) you (add|create|build|implement|fix|scaffold|generate|repair|refactor)\b/.test(prompt) ||
-    /\bplease (add|create|build|implement|fix|repair|refactor)\b/.test(prompt);
+    /\b(can|could) you (add|create|build|implement|fix|scaffold|generate|repair|refactor|change|changing|update|updating|rename|renaming|edit|editing|replace|replacing|rewrite|rewriting|modify|modifying|delete|remove|patch|tweak|adjust)\b/.test(prompt) ||
+    /\bplease (add|create|build|implement|fix|repair|refactor|change|update|rename|edit|replace|rewrite|modify|delete|remove|patch|tweak|adjust)\b/.test(prompt);
   const isContextualMake =
     /\bmake\s+(a|an|the)\s+((new|responsive|polished|modern|simple|production[- ]ready)\s+){0,3}(app|application|website|site|page|component|feature|form|dashboard|game|project|file|folder|module|api|database|script|button)\b/.test(prompt) ||
     /\bmake\s+(this|that|it)\s+(work|better|faster|responsive|accessible|production[- ]ready)\b/.test(prompt) ||
+    /\bmake\s+(this|that|it)\s+(say|read|display|titled)\b/.test(prompt) ||
+    /\bmake\s+(this|that|the|my)\s+(title|heading|header|label|text|name)\b/.test(prompt) ||
+    /\bturn\s+(this|that|it|the)\s+into\b/.test(prompt) ||
     /\bmake\s+me\s+(a|an|the)\s+((new|responsive|polished|modern|simple)\s+){0,3}(app|application|website|site|page|component|feature|form|dashboard|game|project|file|folder|module|api|database|script|button)\b/.test(prompt);
-  if (isImplementPlan || isPoliteBuild || isContextualMake) return "multi_agent";
+  const isEditAction =
+    /\b(change|changing)\s+(this|that|it)\b/.test(prompt) ||
+    /\b(change|changing)\s+(the|my)\s+(title|heading|header|label|text|name|button|color|colour|copy|placeholder|caption)\b/.test(prompt) ||
+    /^(please\s+)?(change|changing|rename|renaming|update|updating|edit|editing|replace|replacing|rewrite|rewriting|modify|modifying|delete|remove|patch|tweak|adjust)\b/.test(prompt) ||
+    /\b(rename|renaming|update|updating|edit|editing|replace|replacing|rewrite|rewriting|modify|modifying|patch|tweak|adjust)\s+(this|that|it|the|my)\b/.test(prompt) ||
+    /\b(delete|remove)\s+(this|that|it|the|my)\b/.test(prompt) ||
+    /\bset\s+(the\s+)?(title|heading|label|text|name)\b/.test(prompt);
+  const isApplyNow =
+    /^(do it|go ahead and (do|apply|implement|make)|yes,?\s+(do it|apply|make the change)|apply (it|this|the change|the edit)|make the (change|edit)|implement (it|this|that))\b/.test(prompt) ||
+    /\b(apply|make) (this|the) (change|edit|fix)\b/.test(prompt);
+  if (isImplementPlan || isApplySuggestions || isPoliteBuild || isContextualMake || isEditAction || isApplyNow) return "multi_agent";
 
   const isQuestion =
     prompt.includes("?") ||
@@ -1825,7 +1856,7 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\b(give|provide|write)\b.{0,56}\b(report|analysis|assessment|review|summary)\b/.test(prompt);
 
   const isBuildAction =
-    /\b(add|create|build|implement|scaffold|generate|fix|debug|repair|refactor|upgrade)\b/.test(prompt);
+    /\b(add|create|build|implement|scaffold|generate|fix|debug|repair|refactor|upgrade|rename)\b/.test(prompt);
   // "Review and fix" is implementation; a plain architecture/security review
   // is an answer. Evaluate the explicit mutation before the analysis fallback.
   if (isBuildAction) return "multi_agent";

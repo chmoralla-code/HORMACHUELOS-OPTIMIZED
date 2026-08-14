@@ -140,6 +140,7 @@ Never mention auto-view, view_image, timeouts, HTTP, providers, paste paths, or 
 If the user asks where a file is, or for its full path / full directory, the visible reply MUST include the absolute filesystem path (project root joined with the relative path). Do not only cite docs/file.md. Do not list the whole project. \
 If the user asks to simplify, shorten, or re-explain, rewrite the previous answer in 2-5 short everyday sentences. No Result heading, no Recommended next step, no tools, no done. \
 For ordinary explanations, lead with the plain-language answer; use a numbered process only when they asked for steps. \
+Visible replies are for people, not a file tree: do not paste project paths, backtick paths, or parenthetical lists such as (src/app/employee/(app)/applications/page.tsx / src/lib/nav.ts). Name the screen or helper in everyday words. Only include a path when the user asked where a file is — then give the absolute filesystem path as its own short line. \
 Do not call done for a description-only, location-only, simplify-only, or question-only turn. \
 When you will call done, the desktop host already shows a Completed card — visible chat is 1-2 short sentences only. Do not write Result, Highlights, Files, Technology, or Recommended next step in the bubble.";
 
@@ -865,6 +866,8 @@ fn asks_to_simplify_or_rephrase(text: &str) -> bool {
         || t.contains("less technical")
         || t.contains("explain it simply")
         || t.contains("explain simply")
+        || t.contains("simply explain")
+        || t.contains("can you simply")
         || t.contains("simpler explanation")
         || t.contains("simplify your")
         || t.contains("simplify the")
@@ -1023,6 +1026,34 @@ fn emit(app: &AppHandle, session_id: &str, kind: &str, payload: Value) {
             session_id: session_id.to_string(),
             payload,
         },
+    );
+}
+
+pub(crate) fn emit_plan_ready_card(
+    app: &AppHandle,
+    session_id: &str,
+    total_tokens: u64,
+    summary: &str,
+) {
+    let summary = if summary.trim().is_empty() {
+        "The plan is ready. Choose an option to apply it or keep planning."
+    } else {
+        summary.trim()
+    };
+    emit(
+        app,
+        session_id,
+        "done",
+        json!({
+            "summary": summary,
+            "title": "Plan ready",
+            "description": "No files will change until you confirm Apply.",
+            "files": [],
+            "tech": [],
+            "features": [],
+            "kind": "plan",
+            "total_tokens": total_tokens,
+        }),
     );
 }
 
@@ -1874,6 +1905,9 @@ fn request_looks_like_question(text: &str) -> bool {
         return true;
     }
     starts_as_explanatory_request(text)
+        || text.starts_with("what ")
+        || text.starts_with("what's ")
+        || text.starts_with("whats ")
         || text.starts_with("why ")
         || text.starts_with("who ")
         || text.starts_with("where ")
@@ -1887,6 +1921,8 @@ fn request_looks_like_question(text: &str) -> bool {
         || text.contains("can you tell")
         || text.contains("can you describe")
         || text.contains("can you explain")
+        || text.contains("can you simply explain")
+        || text.contains("simply explain")
         || text.contains("can you look")
         || text.contains("can you simplif")
         || text.contains("could you simplif")
@@ -1909,11 +1945,18 @@ fn request_looks_like_question(text: &str) -> bool {
 }
 
 fn request_looks_like_plan(text: &str) -> bool {
+    if matches_plan_apply_phrase(text, text.chars().count()) {
+        return false;
+    }
     text.contains("make a plan")
         || text.contains("draft a plan")
         || text.contains("propose a plan")
         || text.contains("write a plan")
         || text.contains("planning first")
+        || text.contains("planning to")
+        || text.contains("plannign")
+        || text.contains("proposal")
+        || text.contains("just a proposal")
         || ((text.contains(" plan") || text.starts_with("plan ") || text == "plan")
             && !matches_plan_apply_phrase(text, text.chars().count()))
 }
@@ -1990,6 +2033,156 @@ fn request_looks_like_analysis(text: &str) -> bool {
         })
 }
 
+fn request_looks_like_how_to(text: &str) -> bool {
+    text.starts_with("how do i")
+        || text.starts_with("how to ")
+        || text.starts_with("how can i")
+        || text.starts_with("how should i")
+        || text.starts_with("how would i")
+        || text.contains("how do i ")
+        || text.contains("how can i ")
+        || text.contains("how should i ")
+        || text.contains("how would i ")
+}
+
+fn request_looks_like_apply_now(text: &str) -> bool {
+    text == "do it"
+        || text.starts_with("do it ")
+        || text.starts_with("do it.")
+        || text == "yes, do it"
+        || text == "yes do it"
+        || text.contains("apply this change")
+        || text.contains("apply the change")
+        || text.contains("apply the edit")
+        || text.contains("apply all")
+        || text.contains("okay apply")
+        || text.contains("ok apply")
+        || text.contains("apply your suggestions")
+        || text.contains("apply these suggestions")
+        || text.contains("apply the suggestions")
+        || text.contains("make the change")
+        || text.contains("make the edit")
+        || text.starts_with("go ahead and do")
+        || text.starts_with("go ahead and apply")
+        || text.starts_with("go ahead and implement")
+}
+
+fn request_looks_like_edit_action(text: &str) -> bool {
+    const IMPERATIVE_PREFIXES: &[&str] = &[
+        "change ",
+        "changing ",
+        "rename ",
+        "renaming ",
+        "update ",
+        "updating ",
+        "edit ",
+        "editing ",
+        "replace ",
+        "replacing ",
+        "rewrite ",
+        "rewriting ",
+        "modify ",
+        "modifying ",
+        "delete ",
+        "remove ",
+        "patch ",
+        "tweak ",
+        "adjust ",
+        "please change ",
+        "please update ",
+        "please rename ",
+        "please edit ",
+        "please replace ",
+        "please modify ",
+    ];
+    if IMPERATIVE_PREFIXES
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+    {
+        return true;
+    }
+    [
+        "can you change",
+        "could you change",
+        "please change",
+        "can you update",
+        "could you update",
+        "please update",
+        "can you rename",
+        "could you rename",
+        "please rename",
+        "can you edit",
+        "could you edit",
+        "please edit",
+        "can you replace",
+        "please replace",
+        "can you modify",
+        "please modify",
+        "can you delete",
+        "please delete",
+        "can you remove",
+        "please remove",
+        "can you patch",
+        "can you tweak",
+        "can you adjust",
+        "change this",
+        "change that",
+        "change it",
+        "changing this",
+        "changing that",
+        "change the title",
+        "change the heading",
+        "change the header",
+        "change the label",
+        "change the text",
+        "change the name",
+        "change the button",
+        "change the color",
+        "change the colour",
+        "update this",
+        "update that",
+        "update it",
+        "update the",
+        "rename this",
+        "rename that",
+        "rename it",
+        "rename the",
+        "edit this",
+        "edit that",
+        "edit it",
+        "edit the",
+        "replace this",
+        "replace that",
+        "replace the",
+        "modify this",
+        "modify that",
+        "modify the",
+        "rewrite this",
+        "delete this",
+        "remove this",
+        "patch this",
+        "tweak this",
+        "adjust this",
+        "set the title",
+        "set the heading",
+        "set the label",
+        "make this say",
+        "make it say",
+        "make this read",
+        "make it read",
+        "make this titled",
+        "make this heading",
+        "make the heading",
+        "make this title",
+        "make the title",
+        "turn this into",
+        "turn it into",
+        "turn that into",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
 fn request_looks_like_polite_build(text: &str) -> bool {
     [
         "can you add",
@@ -2007,6 +2200,26 @@ fn request_looks_like_polite_build(text: &str) -> bool {
         "please fix",
         "can you scaffold",
         "can you generate",
+        "can you change",
+        "could you change",
+        "please change",
+        "can you update",
+        "please update",
+        "can you rename",
+        "please rename",
+        "can you edit",
+        "please edit",
+        "can you replace",
+        "please replace",
+        "can you modify",
+        "please modify",
+        "can you delete",
+        "please delete",
+        "can you remove",
+        "please remove",
+        "can you patch",
+        "can you tweak",
+        "can you adjust",
     ]
     .iter()
     .any(|needle| text.contains(needle))
@@ -2104,6 +2317,7 @@ fn request_looks_like_build_action(text: &str) -> bool {
     .any(|term| contains_task_term(text, term))
         || text.contains("add this")
         || text.contains("update the")
+        || request_looks_like_edit_action(text)
         || request_looks_like_contextual_make(text)
 }
 
@@ -2124,8 +2338,13 @@ pub(crate) fn infer_permission_mode(prompt: &str) -> Option<String> {
     if request_explicitly_forbids_changes(&text) {
         return Some("ask".into());
     }
+    if request_looks_like_how_to(&text) {
+        return Some("ask".into());
+    }
     if matches_plan_apply_phrase(&text, text.chars().count())
         || request_looks_like_polite_build(&text)
+        || request_looks_like_edit_action(&text)
+        || request_looks_like_apply_now(&text)
     {
         return Some("multi_agent".into());
     }
@@ -2438,7 +2657,12 @@ Describe each image briefly in the visible reply. Do not mention vision provider
         fast_execution,
     );
     requires_project_completion = requires_project_completion && director_job.allows_done();
-    if director_job == crate::smart_agent::DirectorJob::Answer && permission_mode != "plan" {
+    if director_job == crate::smart_agent::DirectorJob::Answer
+        && permission_mode != "plan"
+        && permission_mode != "multi_agent"
+        && permission_mode != "auto"
+        && permission_mode != "full"
+    {
         permission_mode = "ask".into();
         requires_project_completion = false;
     }
@@ -2733,7 +2957,7 @@ Allowed: read_file, list_dir, glob, grep, git_status, web_search, browse_page, v
 MANDATORY FIRST RESPONSE (no write/run/scaffold tools):\n\
 1. Restate the goal in one plain sentence.\n\
 2. Improve / tweak the request: clarify ambiguous parts, suggest a better scope if the ask is too vague or too huge.\n\
-3. Present a short plan with numbered steps (stack, files/folders, build order, how to verify).\n\
+3. Present a short plan with numbered steps (stack, what to change, build order, how to verify). Use everyday names for screens and helpers — do not dump file paths in the plan.\n\
 4. Ask any needed questions.\n\
 5. You MUST call the ask_user TOOL (not just write options in prose). The desktop UI only shows clickable choices when ask_user is invoked.\n\
 6. ask_user parameters: question (string), options (array of 2–6 short strings), allow_other=true.\n\
@@ -2753,7 +2977,9 @@ ONLY AFTER the user confirms Apply (clicks Apply, or clearly says \"apply this p
 PLAN MODE RULES:\n\
 - Do NOT write, edit, scaffold, delete, or run commands that create files until Apply is confirmed.\n\
 - Do NOT treat answering a clarifying question as permission to implement.\n\
-- Do NOT call done until real implementation is finished (or the user only wanted a plan and says stop).\n\
+- Do NOT write that Apply was already confirmed. Wait for the clickable chooser.\n\
+- Calling done before Apply shows a Plan ready card; still call ask_user so the user can Apply or keep planning.\n\
+- After Apply, call done only when the implementation is actually finished.\n\
 - Pure questions still get direct answers with no tools.\n\
 - Keep language simple and human. No marketing fluff.",
         "ask" => "\
@@ -2770,7 +2996,7 @@ ANSWER CONTRACT:\n\
 - When the user asks where a file is, or for its full path/directory, answer immediately with the absolute filesystem path. Join the project root with the relative path from write_file/file_info. Do not list_dir the whole project. Do not call done.\n\
 - Keep answers short. Do not write Result, Recommended next step, or Why I'm stopping sections unless the user asked for a report.\n\
 - If they ask to simplify or shorten, rewrite the last answer in 2-5 short everyday sentences. Do not call tools or done.\n\
-- Cite concrete project-relative paths for code discussion; give the absolute path when asked where a file lives. Distinguish verified facts from inference.\n\
+- Talk about screens, helpers, and behavior in plain language. Do not list project-relative file paths in the visible reply. Give the absolute filesystem path only when they asked where a file lives. Distinguish verified facts from inference.\n\
 - Use session history for follow-ups and resolve words such as 'it', 'that', and 'continue' from this chat.\n\
 - Use ask_user only when a missing choice would materially change the answer.\n\
 \n\
@@ -2860,8 +3086,8 @@ BEHAVIOR:\n\
         "guided" => "=== CAPABILITY: GUIDED ===\n- Move step by step. Prefer ask_user for each major fork.\n- Keep tool batches small.\n\n",
         "agent" => "=== CAPABILITY: AGENT ===\n- Use tools freely for in-project work. Prefer action over long narration.\n\n",
         "balanced" => "=== CAPABILITY: BALANCED ===\n- Smart defaults. Concise replies. Limit exploratory tool loops.\n\n",
-        "answer_max" => "=== CAPABILITY: ANSWER MAX ===\n- Maximize answer reliability and completeness without wasting tool calls. Answer directly when context is sufficient; otherwise perform bounded research, cross-check important claims, and synthesize a visible answer.\n- Cite paths/evidence, separate verified facts from inference, preserve session context, and self-check that every part of the question was answered.\n\n",
-        "investigate" => "=== CAPABILITY: INVESTIGATE ===\n- Deep multi-file research with list_dir/glob/grep/read_file/web_search/browse_page.\n- Cite paths and evidence, then synthesize the findings into a visible answer.\n\n",
+        "answer_max" => "=== CAPABILITY: ANSWER MAX ===\n- Maximize answer reliability and completeness without wasting tool calls. Answer directly when context is sufficient; otherwise perform bounded research, cross-check important claims, and synthesize a visible answer.\n- Use evidence internally; do not dump file-path lists in the bubble. Separate verified facts from inference, preserve session context, and self-check that every part of the question was answered.\n\n",
+        "investigate" => "=== CAPABILITY: INVESTIGATE ===\n- Deep multi-file research with list_dir/glob/grep/read_file/web_search/browse_page.\n- Use the evidence, then synthesize findings into a visible answer in plain language. Do not dump file-path lists unless the user asked where a file is.\n\n",
         "brief" => "=== CAPABILITY: BRIEF ===\n- Short answers. Few tool loops. Grab key paths, then answer.\n\n",
         "autonomous" => "=== CAPABILITY: AUTONOMOUS ===\n- Full tool access. Finish end-to-end; verify with build/test when possible.\n\n",
         "max" => "=== CAPABILITY: MAX ===\n- Maximum agentic power. Use every relevant tool including web_search/browse_page.\n- Prefer complete delivery: scaffold â†’ implement â†’ verify â†’ self-heal â†’ done.\n\n",
@@ -3009,7 +3235,9 @@ TOOL REFERENCE: read_file, write_file, edit_file, list_dir, glob, grep, run_comm
 (3) you MUST call the ask_user tool with options: string[] (2–6 choices) and allow_other=true, \
 including whether to Apply this plan and implement now vs keep planning without file changes. \
 Writing \"choose one\" in text alone does NOT show UI buttons — only the ask_user tool does. \
-Do not write, edit, or create files until I confirm Apply (then Multi-Agent implements). Stack/scope answers are not Apply."
+Do not write, edit, or create files until I confirm Apply (then Multi-Agent implements). \
+Never write that I already confirmed Apply. Never start implementing in this reply. \
+Stack/scope answers are not Apply. After the plan is on screen, stop and wait — the host shows a Plan ready card."
         )
     } else if mode == "plan" {
         format!(
@@ -3072,6 +3300,7 @@ The tool entries are historical summaries; use fresh tools for the current works
     let mut total_tokens: u64 = 0;
     // How many times we've forced plan-mode models to call ask_user after text-only replies.
     let mut plan_ask_nudges: u8 = 0;
+    let mut plan_ready_emitted = false;
     // Only repeated replies with no tool action are considered stalled. The
     // count resets after every tool turn; it is not an iteration limit.
     let mut consecutive_stalled_recoveries: u8 = 0;
@@ -3583,7 +3812,7 @@ The tool entries are historical summaries; use fresh tools for the current works
                 Some(AutomaticContinuationReason::CompletionCheck)
             } else if !has_visible_answer && !auth_request_routed {
                 Some(AutomaticContinuationReason::EmptyAnswer)
-            } else if announced && !auth_request_routed && mode != "plan" {
+            } else if announced && !auth_request_routed && mode != "plan" && mode != "ask" {
                 Some(AutomaticContinuationReason::AnnouncedAction)
             } else {
                 None
@@ -3695,6 +3924,9 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 );
             }
 
+            if mode == "plan" && !run.plan_implementation_unlocked() && !plan_ready_emitted {
+                emit_plan_ready_card(&app, &session_id, total_tokens, "");
+            }
             emit(
                 &app,
                 &session_id,
@@ -3906,6 +4138,15 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 let (tx, rx) = tokio::sync::oneshot::channel::<String>();
                 *run.question_tx.lock().unwrap() = Some(tx);
 
+                if mode == "plan"
+                    && !task_profile.is_design_edit()
+                    && !run.plan_implementation_unlocked()
+                    && !plan_ready_emitted
+                {
+                    emit_plan_ready_card(&app, &session_id, total_tokens, "");
+                    plan_ready_emitted = true;
+                }
+
                 emit(
                     &app,
                     &session_id,
@@ -3945,6 +4186,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     if ask_user_confirms_plan_implementation(&response, &question) {
                         run.set_plan_implementation_unlocked(true);
                         mode = "multi_agent".into();
+                        smart_agent.promote_to_change(&app, &session_id);
                         response.push_str(
                             "\n\n[System] The user confirmed Apply. Switched to Multi-Agent. You may now write, edit, and run commands to implement the agreed plan.",
                         );
@@ -4083,6 +4325,46 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
             };
 
             if content.starts_with("__DONE__") {
+                if mode == "plan" && !run.plan_implementation_unlocked() {
+                    let summary = content.trim_start_matches("__DONE__").trim();
+                    let title = tc
+                        .arguments
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    let description = tc
+                        .arguments
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    let visible = [summary, description, title]
+                        .into_iter()
+                        .find(|text| !text.is_empty())
+                        .unwrap_or(
+                            "The plan is ready. Choose an option to apply it or keep planning.",
+                        )
+                        .to_string();
+                    flavour.record_tool_result(&tc.id, &tc.name, &tc.arguments, true, &visible);
+                    messages.push(ChatMessage::tool(&tc.id, &tc.name, &visible));
+                    emit(
+                        &app,
+                        &session_id,
+                        "tool_result",
+                        json!({
+                            "id": tc.id,
+                            "name": tc.name,
+                            "ok": true,
+                            "content": visible,
+                        }),
+                    );
+                    if !plan_ready_emitted {
+                        emit_plan_ready_card(&app, &session_id, total_tokens, &visible);
+                        plan_ready_emitted = true;
+                    }
+                    continue;
+                }
                 if !smart_agent.allows_done() {
                     let summary = content.trim_start_matches("__DONE__").trim();
                     let title = tc
@@ -4344,7 +4626,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     }),
                 );
                 messages.push(ChatMessage::user(
-                    "[Host instruction — Ask mode] You have enough workspace evidence. Do not call any more tools. Synthesize the complete user-facing answer now. Follow the requested headings, cite specific project-relative file paths, prioritize findings, distinguish evidence from inference, and do not narrate your process.",
+                    "[Host instruction — Ask mode] You have enough workspace evidence. Do not call any more tools. Synthesize the complete user-facing answer now. Follow the requested headings, explain findings in plain language without dumping file-path lists, prioritize findings, distinguish evidence from inference, and do not narrate your process.",
                 ));
             }
         }
@@ -5234,11 +5516,72 @@ mod tests {
             Some("ask")
         );
         assert_eq!(
-            infer_permission_mode(
-                "[Attached image: a.png]\n[Attached image: b.png]\n[Attached image: c.png]\ncan you describe what this images are"
-            )
+            infer_permission_mode("[Attached image: a.png]\n[Attached image: b.png]\n[Attached image: c.png]\ncan you describe what this images are")
             .as_deref(),
             Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode("change this to atindans").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("can you change this heading to atindans?").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("[Attached image: a.png]\nchange this to atindans").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("please update the heading").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("make this heading atindans").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("turn this into a submit button").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("rename this button to Submit").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("do it").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("how do I change the title?").as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode("what's the latest change").as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode(
+                "im plannign to add sms & message feature when employee is approved or disapproved but be mindfull that this is just a proposal yet"
+            )
+            .as_deref(),
+            Some("plan")
+        );
+        assert_eq!(
+            infer_permission_mode("I'm planning to add a login page").as_deref(),
+            Some("plan")
+        );
+        assert_eq!(
+            infer_permission_mode("can you simply explain your suggestions and give examples")
+                .as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode(
+                "okay apply all your suggestions except '2. Make SMS actually send.'"
+            )
+            .as_deref(),
+            Some("multi_agent")
         );
     }
 

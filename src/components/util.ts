@@ -578,13 +578,121 @@ function dropOrphanContinuations(text: string, dropLowercase = false): string {
   return remaining.trim();
 }
 
+const PROJECT_PATH_ROOT =
+  "(?:src|app|apps|lib|libs|website|web|server|client|components|pages|hooks|utils|api|public|static|tests?|spec|scripts?|src-tauri|crates|packages?|modules?|config|configs|types|styles)";
+const PROJECT_PATH_EXT =
+  "(?:ts|tsx|js|jsx|mjs|cjs|cts|mts|css|scss|sass|less|html|htm|md|mdx|json|jsonc|rs|py|vue|svelte|go|java|kt|kts|sql|toml|yml|yaml|xml|sh|bash|ps1|svg|png|jpe?g|gif|webp|ico|txt|env)";
+function projectFilePathPattern(global = false): RegExp {
+  return new RegExp(
+    `(?:\\.?[/\\\\])?(?:${PROJECT_PATH_ROOT})(?:[/\\\\][^/\\\\\\s\`'"\\]]+)+\\.${PROJECT_PATH_EXT}`,
+    global ? "gi" : "i",
+  );
+}
+const ABSOLUTE_FILE_PATH_RE =
+  /(?:[a-zA-Z]:[\\/]|\\\\|\/(?:Users|home|var|opt|tmp|usr)\/)\S+/;
+
+function mapOutsideFences(text: string, transform: (segment: string) => string): string {
+  return String(text || "")
+    .split(/(```[\s\S]*?```)/g)
+    .map((segment, index) => (index % 2 === 1 ? segment : transform(segment)))
+    .join("");
+}
+
+function looksLikeAbsoluteFilePath(value: string): boolean {
+  return ABSOLUTE_FILE_PATH_RE.test(String(value || "").trim());
+}
+
+export function looksLikeProjectFilePath(value: string): boolean {
+  const text = String(value || "").trim().replace(/^[`'"]+|[`'"]+$/g, "");
+  if (!text || looksLikeAbsoluteFilePath(text)) return false;
+  const pattern = projectFilePathPattern();
+  return pattern.test(text.replace(/\\/g, "/")) || pattern.test(text);
+}
+
+function isParentheticalPathCitation(inner: string): boolean {
+  const plain = String(inner || "").replace(/[`*]/g, "").trim();
+  if (!plain || looksLikeAbsoluteFilePath(plain)) return false;
+  const paths = plain.match(projectFilePathPattern(true));
+  if (!paths?.length) return false;
+  const leftover = plain
+    .replace(projectFilePathPattern(true), " ")
+    .replace(/\b(in|see|from|and|or|at|of|the|a|an|type|file|files|via|inside|within|for)\b/gi, " ")
+    .replace(/[\\/,;:|()[\]]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return leftover.length <= 4;
+}
+
+/** Drop `(src/app/.../page.tsx / src/lib/nav.ts)` citations that break reply layout. */
+export function stripParentheticalPathCitations(text: string): string {
+  const source = String(text || "");
+  let out = "";
+  for (let index = 0; index < source.length;) {
+    const char = source[index];
+    if (char === "(" && source[index - 1] !== "]") {
+      let depth = 1;
+      let cursor = index + 1;
+      while (cursor < source.length && depth > 0) {
+        if (source[cursor] === "(") depth += 1;
+        else if (source[cursor] === ")") depth -= 1;
+        cursor += 1;
+      }
+      if (depth === 0 && isParentheticalPathCitation(source.slice(index + 1, cursor - 1))) {
+        out = out.replace(/[ \t]+$/, "");
+        index = cursor;
+        while (index < source.length && source[index] === " ") index += 1;
+        if (out && index < source.length && /[A-Za-z0-9]/.test(source[index]) && !/\s$/.test(out)) {
+          out += " ";
+        }
+        continue;
+      }
+    }
+    out += char;
+    index += 1;
+  }
+  return out
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/ +\(/g, " (")
+    .replace(/\(\s+\)/g, "")
+    .replace(/ +([.,;:!?])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ");
+}
+
+/** Keep short names in the bubble; hide long `src/app/.../file.tsx` chips. */
+export function shortenInlineFilePaths(text: string): string {
+  return String(text || "")
+    .replace(/`([^`\n]+)`/g, (match, inner: string) => {
+      if (looksLikeAbsoluteFilePath(inner) || !looksLikeProjectFilePath(inner)) return match;
+      const short = basename(inner.trim());
+      return short ? `\`${short}\`` : match;
+    })
+    .replace(
+      new RegExp(`(?<!\\]\\()(?:${projectFilePathPattern().source})`, "gi"),
+      (path, offset, whole: string) => {
+        if (looksLikeAbsoluteFilePath(path)) return path;
+        const before = whole.slice(Math.max(0, offset - 32), offset);
+        if (/[\\/]$/.test(before) || /[A-Za-z]:[\\/][^\s]*$/.test(before)) return path;
+        return basename(path);
+      },
+    );
+}
+
+function softenVisibleFilePaths(text: string): string {
+  return mapOutsideFences(text, (segment) =>
+    shortenInlineFilePaths(stripParentheticalPathCitations(segment)),
+  );
+}
+
 /** Drop mid-reply "Let me verify…" progress lines so the bubble stays the answer. */
 export function compactVisibleReply(text: string): string {
   const repaired = repairGluedProse(String(text || ""));
   const stripped = stripProcessPreamble(repaired);
+  const afterLeak = stripLeakedPlanApplyNarration(stripped);
+  const afterPaths = softenVisibleFilePaths(afterLeak);
   const afterOrphans = dropOrphanContinuations(
-    stripped,
-    stripped !== repaired.trimStart(),
+    afterPaths,
+    afterPaths !== repaired.trimStart(),
   );
   const prepared = stripTrailingPendingAction(afterOrphans);
   return prepared
@@ -592,6 +700,17 @@ export function compactVisibleReply(text: string): string {
     .map((block) => stripTrailingPendingAction(block.trim()))
     .filter((block) => block && !isProgressOnlyBlock(block))
     .join("\n\n")
+    .trim();
+}
+
+/** Drop model text that pretends Apply already happened while Plan is still waiting. */
+export function stripLeakedPlanApplyNarration(text: string): string {
+  return String(text || "")
+    .replace(/\bthe user confirmed apply\.?[^\n]*/gi, "")
+    .replace(/\bswitched to multi-agent\.?[^\n]*/gi, "")
+    .replace(/\bi(?:'|’)ll implement the plan as described:?[^\n]*/gi, "")
+    .replace(/\blet me set up tasks[^\n]*/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -715,8 +834,17 @@ export function renderMarkdown(src: string): string {
   // Escape remaining text
   text = escapeHtml(text);
 
-  // Inline code
-  text = text.replace(/`([^`\n]+)`/g, "<code class=\"md-inline\">$1</code>");
+  // Inline code. File paths become quiet names so they don't brick the layout.
+  text = text.replace(/`([^`\n]+)`/g, (_match, inner: string) => {
+    if (looksLikeAbsoluteFilePath(inner)) {
+      return `<code class="md-inline md-path">${inner}</code>`;
+    }
+    if (looksLikeProjectFilePath(inner)) {
+      const short = basename(inner) || inner;
+      return `<span class="md-file" title="${inner}">${short}</span>`;
+    }
+    return `<code class="md-inline">${inner}</code>`;
+  });
 
   // Bold / italic (order matters)
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");

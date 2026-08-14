@@ -179,16 +179,44 @@ test("client intent auto-switches Ask, Plan, and Multi-Agent", async () => {
     infer("[Attached image: a.png]\ncan you describe what this images are"),
     "ask",
   );
+  assert.equal(infer("change this to atindans"), "multi_agent");
+  assert.equal(infer("can you change this heading to atindans?"), "multi_agent");
+  assert.equal(
+    infer("[Attached image: a.png]\nchange this to atindans"),
+    "multi_agent",
+  );
+  assert.equal(infer("please update the heading"), "multi_agent");
+  assert.equal(infer("make this heading atindans"), "multi_agent");
+  assert.equal(infer("turn this into a submit button"), "multi_agent");
+  assert.equal(infer("rename this button to Submit"), "multi_agent");
+  assert.equal(infer("do it"), "multi_agent");
+  assert.equal(
+    infer("can you simply explain your suggestions and give examples"),
+    "ask",
+  );
+  assert.equal(
+    infer("okay apply all your suggestions except '2. Make SMS actually send.'"),
+    "multi_agent",
+  );
+  assert.equal(infer("how do I change the title?"), "ask");
+  assert.equal(infer("what's the latest change"), "ask");
+  assert.equal(
+    infer("im plannign to add sms & message feature when employee is approved or disapproved but be mindfull that this is just a proposal yet"),
+    "plan",
+  );
+  assert.equal(infer("I'm planning to add a login page"), "plan");
 });
 
 test("all modes share a visible-reply contract and chat last-resort", async () => {
-  const [agent, director, chat, bridge] = await Promise.all([
+  const [agent, director, chat, bridge, util] = await Promise.all([
     read("src-tauri/src/agent.rs"),
     read("src-tauri/src/smart_agent.rs"),
     read("src/components/chat.ts"),
     read("scripts/cursor-bridge.mjs"),
+    read("src/components/util.ts"),
   ]);
   assert.match(agent, /VISIBLE REPLY \(all modes\)/);
+  assert.match(agent, /do not paste project paths/);
   assert.match(agent, /\[Ask mode active\]/);
   assert.match(agent, /\[Plan mode active\]/);
   assert.match(agent, /\[Auto mode active\]/);
@@ -198,6 +226,12 @@ test("all modes share a visible-reply contract and chat last-resort", async () =
   assert.match(chat, /visibleAnswerFromThought/);
   assert.match(chat, /latestSealedThoughtAfterLastUser/);
   assert.match(chat, /ensureVisibleReplyAfterEnd/);
+  assert.match(chat, /plan-ready-card/);
+  assert.match(chat, /hasQuestionCardThisTurn/);
+  assert.match(util, /stripParentheticalPathCitations/);
+  assert.match(util, /softenVisibleFilePaths/);
+  assert.match(agent, /emit_plan_ready_card/);
+  assert.match(agent, /promote_to_change/);
   assert.match(chat, /question-card/);
   assert.doesNotMatch(chat, /thinking-done\[data-thought\]:last-of-type/);
   assert.match(bridge, /conclusionFromReasoning\(thinkingSeen\)/);

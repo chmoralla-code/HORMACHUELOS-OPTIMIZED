@@ -1598,11 +1598,15 @@
   font-weight: 650;
 }
 #chat.chat-sol .msg.sol-reply .msg-body.md code.md-inline {
-  background: var(--surface-inset);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 0.12em 0.4em;
-  font-size: 0.9em;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  font-size: inherit;
+}
+#chat.chat-sol .msg.sol-reply .msg-body.md .md-file {
+  font: inherit;
+  color: inherit;
 }
 #chat.chat-sol .msg.sol-reply .msg-body.md pre.md-code {
   margin: 0.75em 0 1em;
@@ -1960,13 +1964,28 @@
 }
 .msg-body.md li { margin: 0.28em 0; padding-left: 0.1em; }
 .msg-body.md code.md-inline {
+  font-family: inherit;
+  font-size: 0.97em;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.msg-body.md code.md-inline.md-path {
   font-family: var(--font-mono);
   font-size: 0.86em;
-  background: var(--surface-inset);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.12em 0.42em;
-  color: var(--text);
+  color: var(--text-muted);
+}
+.msg-body.md .md-file {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
 }
 .msg-body.md pre.md-code {
   font-family: var(--font-mono);
@@ -4319,6 +4338,13 @@
   line-height: 1;
   text-transform: uppercase;
 }
+.summary-status.is-plan {
+  color: #ffd089;
+  border-color: rgba(255, 182, 77, 0.38);
+}
+.plan-ready-card::before {
+  background: linear-gradient(180deg, #ffb64d, rgba(255, 182, 77, 0.16));
+}
 .summary-title {
   margin: 0;
   font-size: 15px;
@@ -4403,12 +4429,20 @@
 /* ===== Question card (Plan mode chooser) ===== */
 .question-card {
   max-width: 880px;
-  margin: 14px auto 18px;
+  margin: 14px auto 10px;
   background: var(--bg-2);
   border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.16));
   border-radius: var(--radius, 10px);
   padding: 16px 18px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
+.question-card + .thinking-wrap,
+.question-card + .tool-batch-wrap,
+.question-card + .thinking-running {
+  margin-top: 2px;
+}
+.thinking-running.post-plan-activity {
+  margin: 8px auto 18px;
 }
 .question-label {
   font-size: 10px;
