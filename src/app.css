@@ -1463,7 +1463,13 @@
   padding: 2px 0 4px;
   backdrop-filter: none;
 }
-.msg.assistant .msg-body.md { white-space: normal; color: var(--text); font-size: 13.5px; line-height: 1.6; }
+.msg.assistant .msg-body.md {
+  white-space: normal;
+  color: var(--text);
+  font-size: 14.25px;
+  line-height: 1.7;
+  letter-spacing: 0.002em;
+}
 .msg.assistant .msg-body.md,
 .msg.assistant .msg-body.md p,
 .msg.assistant .msg-body.md li,
@@ -1918,6 +1924,8 @@
   text-wrap: pretty;
   overflow-wrap: anywhere;
 }
+.msg.assistant.structured-reply { margin-bottom: 20px; }
+.msg.assistant.structured-reply .msg-body.md { padding-top: 4px; }
 .msg-body.md p { margin: 0 0 0.72em; }
 .msg-body.md p:last-child { margin-bottom: 0; }
 .msg-body.md h1, .msg-body.md h2, .msg-body.md h3,
@@ -1929,18 +1937,22 @@
 }
 .msg-body.md h1 { font-size: 1.25em; }
 .msg-body.md h2 {
-  font-size: 1.12em;
-  padding: 0.55em 0 0.38em;
-  border-bottom: 1px solid var(--line-subtle);
+  display: table;
+  width: fit-content;
+  max-width: 100%;
+  font-size: 1.08em;
+  padding: 0;
+  margin: 1.15em 0 0.45em;
+  border-bottom: none;
   letter-spacing: 0.01em;
 }
 .msg-body.md h2:first-child { margin-top: 0; }
 .msg-body.md h3 {
-  font-size: 0.82em;
-  margin-top: 1.25em;
-  color: var(--info);
-  letter-spacing: 0.075em;
-  text-transform: uppercase;
+  font-size: 1.02em;
+  margin-top: 1.18em;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  text-transform: none;
 }
 .msg-body.md ul.md-list, .msg-body.md ol.md-list {
   margin: 0.5em 0 0.9em;
@@ -2222,6 +2234,14 @@
 }
 
 /* Thinking — Cursor-style muted activity row */
+#chat > .thinking-wrap + .thinking-wrap,
+#chat > .thinking-wrap + .tool-batch-wrap,
+#chat > .tool-batch-wrap + .thinking-wrap,
+#chat > .tool-batch-wrap + .tool-batch-wrap,
+#chat > .multi-agent-batch + .thinking-wrap {
+  margin-top: 0;
+}
+
 .thinking-wrap {
   display: flex;
   flex-direction: column;
@@ -2628,8 +2648,8 @@
 }
 
 .tool-card-wrap {
-  max-width: 760px;
-  margin: 2px auto;
+  max-width: 880px;
+  margin: 0 auto;
   width: 100%;
   opacity: 1;
 }
@@ -2640,7 +2660,7 @@
 
 /* Cursor-style command batch header */
 .tool-batch-wrap {
-  max-width: 760px;
+  max-width: 880px;
   margin: 6px auto 2px;
   width: 100%;
 }
@@ -2748,13 +2768,14 @@
   opacity: 0.78;
 }
 
-/* Tool call rows — Cursor flat activity lines (no bordered cards) */
+/* Tool call rows — Cursor flat activity lines (no bordered cards).
+   Do not use `.collapsed ~ .tool-card-wrap`: that hides later turns too. */
 .tool-card {
   border-radius: 0;
   border: none;
   margin: 0;
   overflow: visible;
-  max-width: 760px;
+  max-width: 880px;
   transform-origin: top center;
   background: transparent;
 }
@@ -2829,34 +2850,26 @@
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  max-width: 760px;
+  max-width: 880px;
   width: 100%;
-  margin: 10px auto 5px;
-  padding: 12px;
-  border: 1px solid rgba(151, 179, 255, 0.38);
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(22, 27, 50, 0.94), rgba(38, 24, 67, 0.9));
-  box-shadow: 0 12px 32px rgba(28, 16, 74, 0.25), inset 0 0 0 1px rgba(83, 218, 255, 0.06);
+  margin: 6px auto 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--surface-hover), var(--surface-inset));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14), inset 0 1px 0 var(--surface-soft);
 }
 .multi-agent-batch::before {
   content: "";
   position: absolute;
-  inset: -75%;
+  inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.24;
-  background: conic-gradient(
-    rgba(89, 222, 255, 0.92),
-    rgba(129, 112, 255, 0.84),
-    rgba(247, 96, 240, 0.76),
-    rgba(255, 198, 98, 0.72),
-    rgba(101, 241, 190, 0.86),
-    rgba(89, 222, 255, 0.92)
-  );
-  transform: rotate(0deg) scale(1.05);
-  transform-origin: center;
-  animation: multiAgentSpectrumOrbit 10s linear infinite;
-  will-change: transform;
+  opacity: 0.14;
+  background: linear-gradient(90deg, rgba(89, 222, 255, 0.48), rgba(129, 112, 255, 0.18) 34%, transparent 72%);
+  transform: none;
+  animation: none;
+  will-change: auto;
 }
 .multi-agent-batch > * {
   position: relative;
@@ -2865,19 +2878,20 @@
 .multi-agent-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
 }
 .multi-agent-mark {
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  border: 1px solid rgba(192, 223, 255, 0.48);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.09);
-  box-shadow: 0 0 18px rgba(116, 181, 255, 0.26);
-  font-size: 16px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  box-shadow: none;
+  color: var(--info);
+  font-size: 12px;
 }
 .multi-agent-copy {
   display: grid;
@@ -2885,17 +2899,17 @@
   gap: 2px;
 }
 .multi-agent-copy strong {
-  color: rgba(245, 247, 255, 0.98);
-  font-size: 13px;
+  color: var(--text);
+  font-size: 12px;
   letter-spacing: 0.015em;
 }
 .multi-agent-copy span {
-  color: rgba(214, 224, 255, 0.78);
-  font-size: 11px;
+  color: var(--text-muted);
+  font-size: 10px;
 }
 .multi-agent-live {
   margin-left: auto;
-  padding: 3px 6px;
+  padding: 2px 5px;
   border: 1px solid rgba(124, 239, 194, 0.42);
   border-radius: 999px;
   color: rgba(186, 255, 218, 0.96);
@@ -2905,6 +2919,12 @@
   font-weight: 700;
   letter-spacing: 0.08em;
 }
+.multi-agent-batch.complete {
+  cursor: pointer;
+}
+.multi-agent-batch.complete:not(.is-open) .multi-agent-tools {
+  display: none;
+}
 .multi-agent-batch.complete .multi-agent-live {
   border-color: rgba(141, 234, 184, 0.52);
   background: rgba(58, 196, 130, 0.2);
@@ -2912,7 +2932,7 @@
 .multi-agent-batch.complete::before {
   animation: none;
   will-change: auto;
-  transform: rotate(0deg) scale(1.05);
+  transform: none;
 }
 .multi-agent-batch.complete.stopped .multi-agent-live {
   border-color: rgba(205, 214, 232, 0.42);
@@ -2926,9 +2946,15 @@
 }
 .multi-agent-tools {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
-  gap: 7px;
-  margin-top: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 5px;
+  margin-top: 7px;
+}
+.multi-agent-batch:not(.is-open) .multi-agent-tool:not(.working):not(.failed) {
+  display: none;
+}
+.multi-agent-batch:not(.is-open) .multi-agent-tools:not(:has(.multi-agent-tool.working, .multi-agent-tool.failed)) {
+  display: none;
 }
 .multi-agent-tool {
   display: grid;
@@ -2936,12 +2962,12 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  min-height: 52px;
-  padding: 8px 9px;
-  border: 1px solid rgba(185, 206, 255, 0.22);
-  border-radius: 10px;
-  background: rgba(12, 16, 34, 0.47);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+  min-height: 42px;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  box-shadow: inset 0 1px 0 var(--surface-soft);
   opacity: 0;
   transform: translateY(7px) scale(0.985);
   animation: multiAgentToolEnter 360ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -2954,7 +2980,7 @@
   width: 24px;
   height: 24px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--surface-hover);
   font-size: 13px;
 }
 .multi-agent-tool-copy {
@@ -2969,12 +2995,12 @@
   white-space: nowrap;
 }
 .multi-agent-tool-copy strong {
-  color: rgba(244, 246, 255, 0.94);
+  color: var(--text);
   font-size: 11px;
   font-weight: 650;
 }
 .multi-agent-tool-copy span {
-  color: rgba(195, 207, 236, 0.7);
+  color: var(--text-muted);
   font-size: 10px;
 }
 .multi-agent-tool-pulse {

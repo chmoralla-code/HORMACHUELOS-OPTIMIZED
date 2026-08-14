@@ -29,6 +29,8 @@ def main() -> None:
         assert completed["perLetterNodes"] == 0, completed
         assert completed["stopVisible"] is False, completed
         assert set(completed["liveBadges"]) == {"DONE"}, completed
+        assert completed["multiAgentBatches"] == 1, completed
+        assert completed["multiAgentRows"] == 60, completed
         assert completed["historyVisibility"] == "auto", completed
         assert completed["runningAnimations"] == 0, completed
 
@@ -58,12 +60,26 @@ def main() -> None:
         assert active["shimmerLabels"] <= 2, active
         assert active["perLetterNodes"] == 0, active
         assert active["stopVisible"] is True, active
+
+        reply = page.evaluate("() => window.__sessionLifecycleHarness.loadReplyLayout()")
+        assert reply["assistantCount"] == 1, reply
+        assert reply["emptyAssistantCount"] == 0, reply
+        assert "Executive summary" in reply["assistantText"], reply
+        assert "Let me inspect" not in reply["assistantText"], reply
+        assert reply["structured"] is True, reply
+        assert reply["fontSize"] >= 14.0, reply
+        assert reply["lineHeight"] / reply["fontSize"] >= 1.65, reply
+        assert 500 <= reply["bodyWidth"] <= 900, reply
+        assert reply["headingTransform"] == "none", reply
+        assert reply["headingFontSize"] >= reply["fontSize"], reply
+        assert reply["multiAgentMode"] is False, reply
         assert not page_errors, f"browser errors: {page_errors}"
         browser.close()
 
     print(
         "Session lifecycle/FPS checks passed: completed and interrupted history seals, "
-        f"active state stays live, 60-batch p95={frame_sample['p95Ms']:.2f}ms, "
+        f"active state stays live, reply typography {reply['fontSize']:.2f}px/"
+        f"{reply['lineHeight']:.2f}px, 60-batch p95={frame_sample['p95Ms']:.2f}ms, "
         f"live-label animations {animation_model['legacyAnimations']} -> "
         f"{animation_model['currentAnimations']}"
     )

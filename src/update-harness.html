@@ -92,20 +92,16 @@
           });
         }
         const available = window.__updateMode === "available";
-        return new Response(JSON.stringify({
-          updateAvailable: available,
-          forceUpdate: false,
-          currentVersion: "0.1.4",
-          latest: available ? {
+        return new Response(JSON.stringify(available ? {
             version: "0.1.5",
             title: "Hormachuelos 0.1.5",
             whatsNew: "Added the in-app Update button.",
+            forceUpdate: false,
             msiUrl: "https://hormachuelos.vercel.app/downloads/Hormachuelos_0.1.5_x64_en-US.msi",
             exeUrl: "https://hormachuelos.vercel.app/downloads/Hormachuelos_0.1.5_x64-setup.exe",
             msiSha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             exeSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          } : null,
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+          } : {}), { status: 200, headers: { "Content-Type": "application/json" } });
       };
 
       const noop = () => {};

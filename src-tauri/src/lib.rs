@@ -75,6 +75,16 @@ fn get_project_root(state: tauri::State<'_, state::AppState>) -> Option<String> 
 }
 
 #[tauri::command]
+async fn ensure_project_dev_server(project_root: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::tools::ensure_project_dev_server(std::path::Path::new(&project_root))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn set_project_root(path: String, state: tauri::State<'_, state::AppState>) -> Result<(), String> {
     let selected = workspace::canonical_project_root(std::path::Path::new(&path))
         .map_err(|error| error.to_string())?;
@@ -513,14 +523,28 @@ async fn list_provider_models(
             .collect());
     }
     let license = license::LicenseStatus::load().unwrap_or_default();
-    let use_hosted = license::should_use_hosted_for_provider(&license, &provider);
-    if config::is_custom_hosted_provider_alias(&provider) && !use_hosted {
+    let gemini_byok = if provider.eq_ignore_ascii_case("gemini") {
+        config::load_provider_api_key("gemini")
+            .ok()
+            .filter(|key| !key.trim().is_empty())
+    } else {
+        None
+    };
+    let use_hosted =
+        gemini_byok.is_none() && license::should_use_hosted_for_provider(&license, &provider);
+    if config::is_custom_hosted_provider_alias(&provider) && !use_hosted && gemini_byok.is_none() {
         return Err(
             "This provider alias is managed by the Hormachuelos server. Sign in with an active hosted plan to load its models."
                 .into(),
         );
     }
-    let (key, base_url) = if use_hosted {
+    let (key, base_url) = if let Some(key) = gemini_byok {
+        if llm::gemini::is_command_code_api_key(&key) {
+            (key, llm::gemini::COMMAND_CODE_PROVIDER_API.to_string())
+        } else {
+            (key, "https://generativelanguage.googleapis.com".to_string())
+        }
+    } else if use_hosted {
         (license.license_key.clone(), license::hosted_chat_base_url())
     } else {
         let base_url = base_url
@@ -540,6 +564,11 @@ async fn list_provider_models(
     };
     match provider.to_lowercase().as_str() {
         "anthropic" => llm::anthropic::fetch_model_ids(&key, &base_url).await,
+        "gemini"
+            if llm::gemini::is_command_code_api_key(&key) || base_url.contains("hormachuelos") =>
+        {
+            llm::openai::fetch_model_ids("gemini", &key, &base_url).await
+        }
         "gemini" => llm::gemini::fetch_model_ids(&key, &base_url).await,
         _ => llm::openai::fetch_model_ids(&provider, &key, &base_url).await,
     }
@@ -1522,6 +1551,7 @@ pub fn run() {
         .manage(design_source::DesignSourceState::default())
         .invoke_handler(tauri::generate_handler![
             get_project_root,
+            ensure_project_dev_server,
             app_updater::save_update_backup,
             app_updater::load_update_backup,
             app_updater::clear_update_backup,

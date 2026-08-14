@@ -21,7 +21,8 @@ export type ProviderDef = {
     | "openai"
     | "grok"
     | "hormachuelos"
-    | "commandcode";
+    | "commandcode"
+    | "gemini";
   logoSrc: string;
   defaultModel: string;
   defaultBaseUrl: string;
@@ -133,6 +134,25 @@ export const PROVIDERS: ProviderDef[] = [
     // plan is active. A local key is optional BYOK only.
     keyRequired: false,
     models: ["openrouter/free"],
+  },
+  {
+    id: "gemini",
+    label: "Gemini",
+    logoKey: "gemini",
+    logoSrc: "./logos/gemini.svg",
+    defaultModel: "gemini-3.7-flash",
+    defaultBaseUrl: "https://hormachuelos.vercel.app/api/v1",
+    keyUrl: "https://commandcode.ai/docs/studio/api-keys",
+    keyRequired: false,
+    hostedManaged: true,
+    models: [
+      "gemini-3.7-flash",
+      "gemini-3.5-flash",
+      "gemini-3.1-pro",
+      "gemini-3-flash",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+    ],
   },
   {
     id: "glm",
@@ -286,7 +306,7 @@ function providerFromHostedCatalog(entry: HostedProviderCatalogEntry): ProviderD
   // under an admin allowlist, in which case the server list is exclusive.
   const approvedModels = hostedCatalogRestricted
     ? models
-    : id === "hormachuelos_free"
+    : id === "hormachuelos_free" || id === "gemini"
       ? uniqueModels([...builtin.models, ...models])
       : id === "openrouter"
         ? ["openrouter/free"]
@@ -414,6 +434,9 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   "claude-4.5-opus": "Claude 4.5 Opus",
   "claude-4-sonnet": "Claude 4 Sonnet",
   "claude-opus-4": "Claude Opus 4",
+  "gemini-3.7-flash": "Gemini 3.7 Flash",
+  "gemini-3-7-flash": "Gemini 3.7 Flash",
+  "google/gemini-3.7-flash": "Gemini 3.7 Flash",
   "gemini-3.5-flash": "Gemini 3.5 Flash",
   "gemini-3.1-pro": "Gemini 3.1 Pro",
   "gemini-3-flash": "Gemini 3 Flash",
@@ -496,6 +519,7 @@ export function mergeProviderModelCatalog(providerId: string, models: readonly s
   const configured =
     providerId === "hormachuelos_free" ||
     providerId === "openrouter" ||
+    providerId === "gemini" ||
     meta?.hostedManaged
       ? meta?.models ?? []
       : [];
@@ -735,7 +759,7 @@ export function normalizeSettings(s: Settings): Settings {
   s.desktop_computer_use_allowed_apps = normalizeAllowedApps(
     s.desktop_computer_use_allowed_apps,
   );
-  // Missing on older desktop settings means enabled: Smart Agent is a safe,
+  // Missing on older desktop settings means enabled: Director is a safe,
   // provider-neutral orchestration layer and does not change credentials.
   s.smart_agent_enabled = s.smart_agent_enabled !== false;
   // Flavour is local, provider-neutral memory. Missing on older settings means
@@ -1358,7 +1382,7 @@ export class SettingsModal {
       return inp;
     }));
 
-    body.appendChild(this.field("Smart Agent", () => {
+    body.appendChild(this.field("Director", () => {
       const wrap = el("label", { class: "set-check", style: "display:flex;align-items:center;gap:8px;cursor:pointer" });
       const inp = el("input", { type: "checkbox" }) as HTMLInputElement;
       inp.checked = this.settings.smart_agent_enabled !== false;
@@ -1366,11 +1390,11 @@ export class SettingsModal {
         this.settings.smart_agent_enabled = inp.checked;
       });
       wrap.appendChild(inp);
-      wrap.appendChild(document.createTextNode("Keep task plans, automatic recovery, and a final verification check"));
+      wrap.appendChild(document.createTextNode("Keep host-owned Answer / Change / Ship / Operate jobs, automatic recovery, and a verification check for mutating work"));
       return wrap;
     }));
     body.appendChild(el("div", { class: "set-hint", style: "margin-top:-6px;margin-bottom:12px" }, [
-      "For build, fix, app, website, software, APK, and release work: keeps the same session moving and checks evidence before the AI says it is done. It never changes your selected provider, model, or API key.",
+      "Questions and simplify requests stay in Answer: a short visible reply, no delivery card. Build, fix, app, website, software, APK, and release work use Ship or Change and check evidence before the AI says it is done. It never changes your selected provider, model, or API key.",
     ]));
 
     body.appendChild(this.field("Flavour memory", () => {

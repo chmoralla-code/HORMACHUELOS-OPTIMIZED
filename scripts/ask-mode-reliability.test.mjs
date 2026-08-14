@@ -30,12 +30,23 @@ test("Ask mode defaults to Answer Max and requires a visible response", async ()
   assert.match(tools, /commandcode\/grok/);
   assert.match(agent, /Keep image answers short/);
   assert.match(agent, /Do not call done for a description-only/);
+  assert.match(agent, /full path \/ full directory/);
+  assert.match(agent, /asks_for_file_location/);
+  assert.match(agent, /asks_to_simplify_or_rephrase/);
+  assert.match(agent, /2-5 short everyday sentences/);
+  assert.match(agent, /host Completed card is the delivery layout/);
+  assert.match(agent, /1-2 short sentences/);
+  assert.match(agent, /absolute filesystem path/);
   assert.doesNotMatch(agent, /You may retry with view_image/);
   assert.match(agent, /fn infer_permission_mode/);
+  assert.match(agent, /ask_research_should_synthesize/);
+  assert.match(agent, /Evidence gathered — composing the final answer/);
   assert.match(config, /"ask" \| "research" => "answer_max"/);
   assert.match(modelbar, /id: "answer_max"/);
   assert.match(modelbar, /applyIntentMode/);
   assert.match(settings, /ask: \["answer_max", "investigate", "brief"\]/);
+  assert.match(agent, /call start_dev_server and open it in Preview/);
+  assert.match(tools, /pub fn ensure_project_dev_server/);
 });
 
 test("Cursor bridge reports and recovers blank assistant completions", async () => {
@@ -148,14 +159,32 @@ test("client intent auto-switches Ask, Plan, and Multi-Agent", async () => {
   assert.equal(infer("how do I add a form?"), "ask");
   assert.equal(infer("can you describe what this images are"), "ask");
   assert.equal(
+    infer("can you simplify your explanation regarding back to work process"),
+    "ask",
+  );
+  assert.equal(infer("can you make it simpler"), "ask");
+  assert.equal(infer("analyze the architecture and report the main risks"), "ask");
+  assert.equal(infer("review the architecture and provide a security assessment"), "ask");
+  assert.equal(infer("review the architecture and fix the login bug"), "multi_agent");
+  assert.equal(infer("make a responsive dashboard"), "multi_agent");
+  assert.equal(
+    infer(
+      "Analyze this Crispy King project in read-only mode. Do not change any files. " +
+      "Inspect the architecture, security, and tests. Give a thorough final report, " +
+      "make reasonable assumptions, and finish with a complete answer.",
+    ),
+    "ask",
+  );
+  assert.equal(
     infer("[Attached image: a.png]\ncan you describe what this images are"),
     "ask",
   );
 });
 
 test("all modes share a visible-reply contract and chat last-resort", async () => {
-  const [agent, chat, bridge] = await Promise.all([
+  const [agent, director, chat, bridge] = await Promise.all([
     read("src-tauri/src/agent.rs"),
+    read("src-tauri/src/smart_agent.rs"),
     read("src/components/chat.ts"),
     read("scripts/cursor-bridge.mjs"),
   ]);
@@ -166,9 +195,12 @@ test("all modes share a visible-reply contract and chat last-resort", async () =
   assert.match(agent, /\[Full mode active\]/);
   assert.match(agent, /\[Multi-Agent mode active\]/);
   assert.match(agent, /never thinking only/i);
+  assert.match(chat, /visibleAnswerFromThought/);
   assert.match(chat, /latestSealedThoughtAfterLastUser/);
   assert.match(chat, /ensureVisibleReplyAfterEnd/);
   assert.match(chat, /question-card/);
   assert.doesNotMatch(chat, /thinking-done\[data-thought\]:last-of-type/);
   assert.match(bridge, /conclusionFromReasoning\(thinkingSeen\)/);
+  assert.match(director, /DIRECTOR JOB: ANSWER/);
+  assert.match(agent, /infer_director_job/);
 });

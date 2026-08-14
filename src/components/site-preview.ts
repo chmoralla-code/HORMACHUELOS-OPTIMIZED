@@ -37,10 +37,14 @@ import {
   previewTabKindForEntry,
 } from "./preview-url-policy";
 import { normalizeAllowedApps } from "./settings";
+import { previewBrowserBoundsFromRect } from "./preview-resize";
+
+export { PREVIEW_RESIZE_GUTTER, previewBrowserBoundsFromRect } from "./preview-resize";
 
 export {
   extractPreviewBrowserUrlFromPrompt,
   isExternalPreviewUrl,
+  promptWantsLocalWebsite,
 } from "./preview-url-policy";
 
 export type PreviewComputerUseMode = "off" | "auto" | "on";
@@ -1248,7 +1252,10 @@ export class SitePreview {
 
     this.root.append(resizeHandle, chrome, this.statusEl, this.viewport, this.editBar);
     this.applySavedPreviewSize();
-    this.browserResizeObserver = new ResizeObserver(() => this.scheduleBrowserBoundsSync());
+    this.browserResizeObserver = new ResizeObserver(() => {
+      if (this.resizing) return;
+      this.scheduleBrowserBoundsSync();
+    });
     this.browserResizeObserver.observe(this.frameHost);
     void this.bindBrowserEvents();
 
@@ -1280,10 +1287,9 @@ export class SitePreview {
       }
     });
     window.addEventListener("resize", () => {
-      if (this.isOpen) {
-        this.applySavedPreviewSize();
-        this.scheduleBrowserBoundsSync();
-      }
+      if (!this.isOpen || this.resizing) return;
+      this.applySavedPreviewSize();
+      this.scheduleBrowserBoundsSync();
     });
   }
 
@@ -1344,6 +1350,7 @@ export class SitePreview {
     handle.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 || this.root.hidden) return;
       e.preventDefault();
+      e.stopPropagation();
       const wb = this.workbench();
       if (!wb) return;
 
@@ -1351,10 +1358,17 @@ export class SitePreview {
       this.resizing = true;
       wb.classList.add("is-resizing");
       document.body.style.cursor = isStackedPreview() ? "row-resize" : "col-resize";
-      handle.setPointerCapture(e.pointerId);
+      this.syncBrowserSurfaces(false);
+      try {
+        handle.setPointerCapture(e.pointerId);
+      } catch {
+        /* capture can fail if the native Preview Browser already owns the pointer */
+      }
 
       const stacked = isStackedPreview();
+      let finished = false;
       const onMove = (ev: PointerEvent) => {
+        if (finished || ev.pointerId !== e.pointerId) return;
         const rect = wb.getBoundingClientRect();
         if (stacked) {
           const fromBottom = rect.bottom - ev.clientY;
@@ -1370,6 +1384,9 @@ export class SitePreview {
       };
 
       const onUp = (ev: PointerEvent) => {
+        if (finished) return;
+        if (ev.pointerId !== e.pointerId && ev !== e) return;
+        finished = true;
         if (handle.hasPointerCapture(ev.pointerId)) {
           handle.releasePointerCapture(ev.pointerId);
         }
@@ -1382,15 +1399,23 @@ export class SitePreview {
         if (Number.isFinite(size) && size > 0) {
           writeStoredSize(stacked ? PREVIEW_H_KEY : PREVIEW_W_KEY, size);
         }
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        window.removeEventListener("pointercancel", onUp);
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onUp);
+        handle.removeEventListener("pointercancel", onUp);
+        window.removeEventListener("pointermove", onMove, true);
+        window.removeEventListener("pointerup", onUp, true);
+        window.removeEventListener("pointercancel", onUp, true);
         this.resizeCleanup = null;
+        this.syncBrowserSurfaces(true);
+        this.scheduleBrowserBoundsSync();
       };
 
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-      window.addEventListener("pointercancel", onUp);
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onUp);
+      handle.addEventListener("pointercancel", onUp);
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onUp, true);
+      window.addEventListener("pointercancel", onUp, true);
       this.resizeCleanup = () => onUp(e);
       onMove(e);
     });
@@ -2946,22 +2971,17 @@ export class SitePreview {
   }
 
   private browserBounds(): PreviewBrowserBounds | null {
-    const rect = this.frameHost.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2 || rect.left < 0 || rect.top < 0) return null;
-    const bounds = {
-      x: rect.left,
-      y: rect.top,
-      width: rect.width,
-      height: rect.height,
-    };
-    this.lastBrowserBounds = bounds;
+    const bounds = previewBrowserBoundsFromRect(this.frameHost.getBoundingClientRect(), isStackedPreview());
+    if (bounds) this.lastBrowserBounds = bounds;
     return bounds;
   }
 
   private scheduleBrowserBoundsSync() {
+    if (this.resizing) return;
     if (this.browserBoundsFrame) window.cancelAnimationFrame(this.browserBoundsFrame);
     this.browserBoundsFrame = window.requestAnimationFrame(() => {
       this.browserBoundsFrame = 0;
+      if (this.resizing) return;
       this.syncBrowserSurfaces();
     });
   }
@@ -2977,7 +2997,7 @@ export class SitePreview {
   private syncBrowserSurfaces(allowActive = true) {
     const bounds = this.browserBounds() || this.lastBrowserBounds;
     if (!bounds) return;
-    const activeAllowed = allowActive && this.browserSurfaceAllowed();
+    const activeAllowed = allowActive && this.browserSurfaceAllowed() && !this.resizing;
     for (const tab of this.tabs) {
       if (tab.kind !== "browser" || !tab.browserReady) continue;
       const visible = activeAllowed && tab.id === this.activeTabId;

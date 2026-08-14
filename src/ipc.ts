@@ -515,6 +515,8 @@ export const api = {
   activeAgentSessions: (): Promise<string[]> => invoke("active_agent_sessions"),
   openProjectInExplorer: (relativePath: string | null = null): Promise<void> =>
     invoke("open_project_in_explorer", { relativePath }),
+  ensureProjectDevServer: (projectRoot: string): Promise<string> =>
+    invoke("ensure_project_dev_server", { projectRoot }),
   appVersion: (): Promise<string> => invoke("app_version"),
   /** Match in-app updates to the installer family already present on Windows. */
   appInstallKind: (): Promise<"msi" | "nsis" | "unknown"> => invoke("app_install_kind"),

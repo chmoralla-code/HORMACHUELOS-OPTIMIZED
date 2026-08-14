@@ -1114,10 +1114,10 @@ pub async fn preview_browser_computer(
                 .unwrap_or("Preview Browser action failed.");
             return Err(message.chars().take(1_000).collect());
         }
-        return response
+        response
             .pointer("/result/value")
             .cloned()
-            .ok_or_else(|| "Preview Browser action returned no result.".to_string());
+            .ok_or_else(|| "Preview Browser action returned no result.".to_string())
     }
 
     #[cfg(not(windows))]

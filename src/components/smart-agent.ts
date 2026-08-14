@@ -19,6 +19,8 @@ const FALLBACK_STEPS = [
 
 /** Map verbose/legacy step labels to short UI words. */
 function shortStepLabel(id: string, label: string): string {
+  const supplied = label.trim();
+  if (supplied && supplied.length <= 14 && !supplied.includes(" ")) return supplied;
   const byId: Record<string, string> = {
     scope: "Scope",
     inspect: "Inspect",
@@ -67,7 +69,7 @@ function makePlan(payload: Record<string, unknown>): SmartAgentTaskState {
   const activeStep = Math.max(0, Math.min(steps.length - 1, Math.floor(Number(payload.active_step) || 0)));
   return sanitizeSmartAgentTaskState({
     version: 1,
-    title: cleanText(payload.title, "Smart Agent"),
+    title: cleanText(payload.title, "Director"),
     summary: cleanText(payload.summary),
     steps,
     activeStep,
@@ -76,7 +78,7 @@ function makePlan(payload: Record<string, unknown>): SmartAgentTaskState {
     updatedAt: Date.now(),
   }) || {
     version: 1,
-    title: "Smart Agent",
+    title: "Director",
     summary: "Keeping this task focused and verified.",
     steps: FALLBACK_STEPS.map(([id, label], index) => ({
       id,
@@ -223,7 +225,7 @@ export class SmartAgentPanel {
     clear(this.node);
     const card = div(`smart-agent-card smart-agent-${state.status}`);
     const head = div("smart-agent-head");
-    head.appendChild(el("span", { class: "smart-agent-title" }, ["Smart Agent"]));
+    head.appendChild(el("span", { class: "smart-agent-title" }, [state.title || "Director"]));
     head.appendChild(el("span", { class: `smart-agent-badge ${state.status}`, role: "status" }, [
       statusLabel(state.status),
     ]));

@@ -137,7 +137,11 @@ Never finish with only thinking/reasoning, a status line, or an announced next s
 If the user attached an image or asked a question, write the answer in visible text. \
 Keep image answers short: one or two sentences per image, or a few bullets total. \
 Never mention auto-view, view_image, timeouts, HTTP, providers, paste paths, or restating \"the user wants…\" — start with the answer. \
-Do not call done for a description-only or question-only turn.";
+If the user asks where a file is, or for its full path / full directory, the visible reply MUST include the absolute filesystem path (project root joined with the relative path). Do not only cite docs/file.md. Do not list the whole project. \
+If the user asks to simplify, shorten, or re-explain, rewrite the previous answer in 2-5 short everyday sentences. No Result heading, no Recommended next step, no tools, no done. \
+For ordinary explanations, lead with the plain-language answer; use a numbered process only when they asked for steps. \
+Do not call done for a description-only, location-only, simplify-only, or question-only turn. \
+When you will call done, the desktop host already shows a Completed card — visible chat is 1-2 short sentences only. Do not write Result, Highlights, Files, Technology, or Recommended next step in the bubble.";
 
 const LAST_RESORT_VISIBLE_REPLY: &str =
     "I couldn't produce a visible answer for that request. Please try sending it again, or switch model.";
@@ -182,6 +186,34 @@ fn is_process_sentence(sentence: &str) -> bool {
         "i will describe",
         "let me call",
         "let me look",
+        "let me explore",
+        "i'll explore",
+        "i will explore",
+        "let me inspect",
+        "i'll look",
+        "i will look",
+        "let and explore",
+        "let me also",
+        "i'll also",
+        "next i'll",
+        "now i'll",
+        "let me simplify",
+        "i'll simplify",
+        "let me rephrase",
+        "let me shorten",
+        "let me give",
+        "let me write",
+        "i'll write",
+        "i will write",
+        "let me provide",
+        "i'll provide",
+        "let me compose",
+        "let me verify",
+        "let me check",
+        "let me start",
+        "let me dig",
+        "i'll dig",
+        "i will dig",
         "okay, the user",
         "ok, the user",
     ]
@@ -220,29 +252,70 @@ fn next_leading_sentence(text: &str) -> (&str, &str) {
     (&text[..end], &text[end..])
 }
 
+fn contains_filesystem_path(text: &str) -> bool {
+    text.contains(":\\")
+        || text.contains("\\\\")
+        || text.contains("/Users/")
+        || text.contains("/home/")
+}
+
+fn strip_trailing_pending_action(text: &str) -> String {
+    let mut out = text.trim().to_string();
+    for marker in [
+        " Let me ",
+        "\nLet me ",
+        " I'll ",
+        "\nI'll ",
+        " I will ",
+        "\nI will ",
+    ] {
+        if let Some(index) = out.rfind(marker) {
+            let before = out[..index].trim();
+            if before.chars().count() >= 24 {
+                out = before.to_string();
+            }
+        }
+    }
+    out
+}
+
+fn reasoning_has_user_facing_content(text: &str) -> bool {
+    contains_filesystem_path(text)
+        || text.contains("1.")
+        || text.contains("1)")
+        || text.contains("Back to Work")
+        || text.contains(" = ")
+}
+
 fn conclusion_from_reasoning(reasoning: &str) -> Option<String> {
     let trimmed = strip_process_preamble(reasoning);
     if trimmed.chars().count() < 24 {
         return None;
     }
-    if reply_announces_pending_action(&trimmed) || reasoning_is_meta_narration(&trimmed) {
+    let focused = strip_trailing_pending_action(&trimmed);
+    if focused.chars().count() < 24 {
         return None;
     }
-    let ends_cleanly = trimmed
+    if (reply_announces_pending_action(&focused) || reasoning_is_meta_narration(&focused))
+        && !reasoning_has_user_facing_content(&focused)
+    {
+        return None;
+    }
+    let ends_cleanly = focused
         .chars()
         .last()
         .map(|c| matches!(c, '.' | '!' | '?' | '…' | ':' | ';' | ')' | ']' | '}' | '`'))
         .unwrap_or(false)
-        || trimmed.ends_with("```");
-    if !ends_cleanly && trimmed.chars().count() < 40 {
+        || focused.ends_with("```");
+    if !ends_cleanly && focused.chars().count() < 40 {
         return None;
     }
     const MAX_VISIBLE: usize = 4_000;
-    if trimmed.len() <= MAX_VISIBLE {
-        return Some(trimmed);
+    if focused.len() <= MAX_VISIBLE {
+        return Some(focused);
     }
-    let start = trimmed.len().saturating_sub(MAX_VISIBLE);
-    let sliced = trimmed.get(start..).unwrap_or(trimmed.as_str());
+    let start = focused.len().saturating_sub(MAX_VISIBLE);
+    let sliced = focused.get(start..).unwrap_or(focused.as_str());
     let from_break = sliced
         .find("\n\n")
         .map(|index| sliced[index + 2..].trim())
@@ -263,10 +336,12 @@ fn promote_reasoning_to_visible_answer(resp: &mut LlmResponse) -> bool {
     }
     let reasoning = resp.reasoning_content.as_deref().unwrap_or("");
     let visible = conclusion_from_reasoning(reasoning).or_else(|| {
-        let trimmed = strip_process_preamble(reasoning);
+        let trimmed = strip_trailing_pending_action(&strip_process_preamble(reasoning));
         if trimmed.chars().count() < 24
-            || reply_announces_pending_action(&trimmed)
-            || reasoning_is_meta_narration(&trimmed)
+            || (reply_announces_pending_action(&trimmed)
+                && !reasoning_has_user_facing_content(&trimmed))
+            || (reasoning_is_meta_narration(&trimmed)
+                && !reasoning_has_user_facing_content(&trimmed))
         {
             None
         } else {
@@ -439,6 +514,8 @@ Retry with corrected arguments, a narrower query, or a different registered insp
                 "[System - Empty answer recovery]\n\
 The previous model turn ended without any visible answer or executable tool call. Answer the ORIGINAL user question now. \n\
 If they attached images or asked you to describe them, write the description in visible reply text — not only in thinking. \n\
+If they asked where a file is or for its full path/directory, write the absolute filesystem path in visible text now. Do not list the whole project tree. \n\
+If they asked to simplify or shorten an explanation, rewrite the previous answer in 2-5 short everyday sentences now. Do not call tools or done. \n\
 If evidence is needed, use the allowed read/search tools and then synthesize the result. If no inspection is needed, answer directly. \n\
 Always finish with a substantive user-visible answer; never end with only reasoning, a status update, or tool output. Do not apologize for or mention this automatic retry."
             }
@@ -728,6 +805,9 @@ fn contains_task_term(text: &str, term: &str) -> bool {
 /// Questions about a workflow must still receive a normal answer rather than
 /// being treated as an instruction to execute that workflow.
 fn starts_as_explanatory_request(text: &str) -> bool {
+    if asks_for_file_location(text) || asks_to_simplify_or_rephrase(text) {
+        return true;
+    }
     [
         "what is",
         "what are",
@@ -739,9 +819,58 @@ fn starts_as_explanatory_request(text: &str) -> bool {
         "describe ",
         "describe this",
         "describe these",
+        "where is",
+        "where's",
+        "where did",
+        "where was",
+        "where do",
     ]
     .iter()
     .any(|prefix| text.starts_with(prefix))
+}
+
+fn asks_for_file_location(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.starts_with("where is")
+        || t.starts_with("where's")
+        || t.starts_with("where did")
+        || t.starts_with("where was")
+        || t.starts_with("where do")
+        || t.contains("full path")
+        || t.contains("full directory")
+        || t.contains("full file directory")
+        || t.contains("full file path")
+        || t.contains("where did you save")
+        || t.contains("where did you put")
+        || t.contains("where did you create")
+        || t.contains("where is the file")
+        || t.contains("where's the file")
+        || t.contains("where is the md")
+        || t.contains("where is the markdown")
+}
+
+fn asks_to_simplify_or_rephrase(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.contains("simplif")
+        || t.contains("in simple terms")
+        || t.contains("in plain english")
+        || t.contains("in plain language")
+        || t.contains("eli5")
+        || t.contains("make it shorter")
+        || t.contains("make it simpler")
+        || t.contains("make this simpler")
+        || t.contains("make this shorter")
+        || t.contains("shorter explanation")
+        || t.contains("shorter version")
+        || t.contains("less technical")
+        || t.contains("explain it simply")
+        || t.contains("explain simply")
+        || t.contains("simpler explanation")
+        || t.contains("simplify your")
+        || t.contains("simplify the")
+        || t.contains("simplify this")
+        || t.contains("simplify that")
+        || t.starts_with("simplify ")
 }
 
 /// Treat only clear implementation-oriented requests as tasks that need an
@@ -1321,6 +1450,21 @@ fn parallel_readonly_batch_len(tool_calls: &[ToolCall], mode: &str) -> usize {
     }
 }
 
+const MAX_ASK_INSPECTION_ITERATIONS: u32 = 4;
+const MAX_ASK_INSPECTION_TOOLS: usize = 20;
+
+/// Ask mode is research followed by an answer, never an open-ended crawler.
+/// Multi-Agent implementation runs remain uncapped by this guard.
+fn ask_research_should_synthesize(
+    mode: &str,
+    inspection_iterations: u32,
+    successful_inspection_tools: usize,
+) -> bool {
+    mode == "ask"
+        && (inspection_iterations >= MAX_ASK_INSPECTION_ITERATIONS
+            || successful_inspection_tools >= MAX_ASK_INSPECTION_TOOLS)
+}
+
 fn is_private_typing_tool(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("computer_type_text")
 }
@@ -1402,7 +1546,7 @@ fn orphaned_tool_previews(
 }
 
 /// Normalize provider tool names and safe in-project inspection paths before
-/// they reach history, permission checks, UI events, Smart Agent state, or the
+/// they reach history, permission checks, UI events, Director state, or the
 /// dispatcher. This keeps a harmless provider typo from becoming a visible
 /// failed command and ensures aliases for commands receive the real command's
 /// approval policy.
@@ -1633,6 +1777,7 @@ fn is_bare_plan_confirmation(lower: &str, char_count: usize) -> bool {
 
 /// True when a new user message is confirming the current plan should be implemented.
 /// Short yes/apply answers unlock. New work requests stay locked.
+#[cfg(test)]
 pub(crate) fn user_confirms_plan_implementation(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -1671,6 +1816,7 @@ pub(crate) fn ask_user_confirms_plan_implementation(answer: &str, question: &str
 }
 
 /// First-turn unlock only for an explicit "implement this plan" opener, not new work.
+#[cfg(test)]
 pub(crate) fn prompt_unlocks_plan_implementation(prompt: &str) -> bool {
     let trimmed = prompt.trim();
     if trimmed.chars().count() > 220 {
@@ -1742,6 +1888,10 @@ fn request_looks_like_question(text: &str) -> bool {
         || text.contains("can you describe")
         || text.contains("can you explain")
         || text.contains("can you look")
+        || text.contains("can you simplif")
+        || text.contains("could you simplif")
+        || text.contains("please simplif")
+        || asks_to_simplify_or_rephrase(text)
         || text.contains("could you describe")
         || text.contains("please describe")
         || text.contains("describe this")
@@ -1759,17 +1909,85 @@ fn request_looks_like_question(text: &str) -> bool {
 }
 
 fn request_looks_like_plan(text: &str) -> bool {
-    if rejects_plan_implementation(text) {
-        return true;
-    }
     text.contains("make a plan")
         || text.contains("draft a plan")
         || text.contains("propose a plan")
         || text.contains("write a plan")
         || text.contains("planning first")
-        || text.contains("without changing files")
         || ((text.contains(" plan") || text.starts_with("plan ") || text == "plan")
             && !matches_plan_apply_phrase(text, text.chars().count()))
+}
+
+/// Explicit non-mutation language is an Answer/Ask contract. It must outrank
+/// generic verbs such as `make`, otherwise harmless phrases like "make
+/// reasonable assumptions" can silently grant Multi-Agent autonomy.
+fn request_explicitly_forbids_changes(text: &str) -> bool {
+    let text = text.replace('’', "'");
+    if rejects_plan_implementation(&text)
+        || text.contains("read-only")
+        || text.contains("read only")
+        || text.contains("analysis only")
+        || text.contains("review only")
+        || text.contains("audit only")
+        || text.contains("assessment only")
+        || text.contains("report only")
+        || text.contains("without changing")
+        || text.contains("without modifying")
+        || text.contains("without editing")
+        || text.contains("without writing")
+        || text.contains("without creating")
+        || text.contains("no file changes")
+        || text.contains("no changes to files")
+        || text.contains("no edits to files")
+        || text.contains("no modifications to files")
+    {
+        return true;
+    }
+
+    ["don't", "dont", "do not"].iter().any(|negation| {
+        [
+            "changes",
+            "change",
+            "edits",
+            "edit",
+            "modifications",
+            "modification",
+        ]
+        .iter()
+        .any(|noun| text.contains(&format!("{negation} make any {noun}")))
+            || [
+                "change", "modify", "edit", "write", "create", "delete", "touch",
+            ]
+            .iter()
+            .any(|action| {
+                ["files", "any files", "the files"]
+                    .iter()
+                    .any(|target| text.contains(&format!("{negation} {action} {target}")))
+            })
+    })
+}
+
+fn request_looks_like_analysis(text: &str) -> bool {
+    [
+        "analyze ",
+        "analyse ",
+        "inspect ",
+        "review ",
+        "audit ",
+        "assess ",
+        "examine ",
+        "summarize ",
+        "understand ",
+        "report on ",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix))
+        || ["give", "provide", "write"].iter().any(|verb| {
+            text.contains(verb)
+                && ["report", "analysis", "assessment", "review", "summary"]
+                    .iter()
+                    .any(|noun| text.contains(noun))
+        })
 }
 
 fn request_looks_like_polite_build(text: &str) -> bool {
@@ -1783,9 +2001,6 @@ fn request_looks_like_polite_build(text: &str) -> bool {
         "can you build",
         "could you build",
         "please build",
-        "can you make",
-        "could you make",
-        "please make",
         "can you implement",
         "please implement",
         "can you fix",
@@ -1795,6 +2010,80 @@ fn request_looks_like_polite_build(text: &str) -> bool {
     ]
     .iter()
     .any(|needle| text.contains(needle))
+        || [
+            "can you make a ",
+            "can you make an ",
+            "can you make the ",
+            "could you make a ",
+            "could you make an ",
+            "could you make the ",
+            "please make a ",
+            "please make an ",
+            "please make the ",
+            "make me a ",
+            "make me an ",
+        ]
+        .iter()
+        .any(|needle| text.contains(needle))
+}
+
+fn request_looks_like_contextual_make(text: &str) -> bool {
+    let words = text
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let targets = [
+        "app",
+        "application",
+        "website",
+        "site",
+        "page",
+        "component",
+        "feature",
+        "form",
+        "dashboard",
+        "game",
+        "project",
+        "file",
+        "folder",
+        "module",
+        "api",
+        "database",
+        "script",
+        "button",
+    ];
+    let outcomes = [
+        "work",
+        "better",
+        "faster",
+        "responsive",
+        "accessible",
+        "production-ready",
+    ];
+
+    words.iter().enumerate().any(|(index, word)| {
+        if *word != "make" {
+            return false;
+        }
+        let mut cursor = index + 1;
+        if words.get(cursor) == Some(&"me") {
+            cursor += 1;
+        }
+        match words.get(cursor).copied() {
+            Some("a" | "an" | "the") => {
+                cursor += 1;
+                words
+                    .iter()
+                    .skip(cursor)
+                    .take(4)
+                    .any(|candidate| targets.contains(candidate))
+            }
+            Some("this" | "that" | "it") => words.get(cursor + 1).is_some_and(|candidate| {
+                outcomes.contains(candidate) || targets.contains(candidate)
+            }),
+            _ => false,
+        }
+    })
 }
 
 fn request_looks_like_build_action(text: &str) -> bool {
@@ -1802,7 +2091,6 @@ fn request_looks_like_build_action(text: &str) -> bool {
         "add",
         "create",
         "build",
-        "make",
         "implement",
         "scaffold",
         "generate",
@@ -1816,6 +2104,7 @@ fn request_looks_like_build_action(text: &str) -> bool {
     .any(|term| contains_task_term(text, term))
         || text.contains("add this")
         || text.contains("update the")
+        || request_looks_like_contextual_make(text)
 }
 
 /// Map a client request onto Ask, Plan, or Multi-Agent. Follow-ups with no
@@ -1829,6 +2118,12 @@ pub(crate) fn infer_permission_mode(prompt: &str) -> Option<String> {
     if request_looks_like_plan(&text) {
         return Some("plan".into());
     }
+    if asks_to_simplify_or_rephrase(&text) {
+        return Some("ask".into());
+    }
+    if request_explicitly_forbids_changes(&text) {
+        return Some("ask".into());
+    }
     if matches_plan_apply_phrase(&text, text.chars().count())
         || request_looks_like_polite_build(&text)
     {
@@ -1839,6 +2134,9 @@ pub(crate) fn infer_permission_mode(prompt: &str) -> Option<String> {
     }
     if request_looks_like_build_action(&text) {
         return Some("multi_agent".into());
+    }
+    if request_looks_like_analysis(&text) {
+        return Some("ask".into());
     }
     if attached {
         return Some("ask".into());
@@ -2127,11 +2425,23 @@ Describe each image briefly in the visible reply. Do not mention vision provider
             permission_mode = inferred;
         }
     }
-    let requires_project_completion = if permission_mode == "ask" || permission_mode == "plan" {
+    let mut requires_project_completion = if permission_mode == "ask" || permission_mode == "plan" {
         false
     } else {
         task_requires_project_completion(&user_request, task_profile)
     };
+    let director_job = crate::smart_agent::infer_director_job(
+        &user_request,
+        &permission_mode,
+        settings.computer_use_enabled || settings.desktop_computer_use_enabled,
+        requires_project_completion,
+        fast_execution,
+    );
+    requires_project_completion = requires_project_completion && director_job.allows_done();
+    if director_job == crate::smart_agent::DirectorJob::Answer && permission_mode != "plan" {
+        permission_mode = "ask".into();
+        requires_project_completion = false;
+    }
     if task_profile.is_design_edit() {
         run.set_plan_implementation_unlocked(true);
     }
@@ -2184,7 +2494,7 @@ Describe each image briefly in the visible reply. Do not mention vision provider
         match crate::config::load_cursor_sdk_api_key(&settings.provider) {
             Ok(key) => {
                 let smart_agent_enabled =
-                    settings.smart_agent_enabled && requires_project_completion;
+                    settings.smart_agent_enabled && director_job.uses_ledger();
                 let effort = cursor_effort_for_request(
                     &settings.model_effort,
                     &prompt,
@@ -2192,8 +2502,9 @@ Describe each image briefly in the visible reply. Do not mention vision provider
                 );
                 let model_display = display_model_name(&settings.model);
                 let provider_display = display_provider_name(&settings.provider);
-                let smart_agent_policy = crate::smart_agent::SmartAgentRun::system_instructions(
-                    smart_agent_enabled,
+                let smart_agent_policy = crate::smart_agent::SmartAgentRun::job_instructions(
+                    director_job,
+                    settings.smart_agent_enabled,
                     fast_execution,
                 );
                 let task_profile_policy = task_profile.instructions();
@@ -2209,7 +2520,7 @@ Describe each image briefly in the visible reply. Do not mention vision provider
                 let flavour_context =
                     flavour.context_block(execution_profile.context_budget().clamp(3_000, 8_000));
                 let completion_contract = if requires_project_completion
-                    && !(permission_mode == "plan" && !run.plan_implementation_unlocked())
+                    && (permission_mode != "plan" || run.plan_implementation_unlocked())
                 {
                     "\n\nAUTONOMOUS LONG-TASK CONTRACT:\n\
 - This is an implementation task. Keep using tools until the requested website, app, APK, software, or fix is actually complete and verified.\n\
@@ -2413,11 +2724,11 @@ Current user request:\n{prompt}",
         "plan" => "\
 === ACTIVE MODE: PLAN (maximize planning quality) ===\n\
 You are a product + technical planner first, implementer second.\n\
-FILE CREATE / WRITE / EDIT TOOLS ARE LOCKED. Other tools (read, search, browser, computer, ask_user) stay available.\n\
+FILE CREATE / WRITE / EDIT TOOLS ARE LOCKED. Other tools (read, search, browser, computer, ask_user, start_dev_server) stay available.\n\
 \n\
 GOAL: Understand the user, improve the request, propose a plan, ask questions, and wait for an explicit Apply confirmation.\n\
-Unavailable: write_file, edit_file, delete_file, make_dir, copy_file, move_file, run_command, start_dev_server, git_init/add/commit, download_file, export_client_pack.\n\
-Allowed: read_file, list_dir, glob, grep, git_status, web_search, browse_page, view_image, computer_observe, computer_actions, ask_user, todo_write, open_path, and similar non-file-write tools.\n\
+Unavailable: write_file, edit_file, delete_file, make_dir, copy_file, move_file, run_command, git_init/add/commit, download_file, export_client_pack.\n\
+Allowed: read_file, list_dir, glob, grep, git_status, web_search, browse_page, view_image, computer_observe, computer_actions, ask_user, todo_write, open_path, start_dev_server, and similar non-file-write tools.\n\
 \n\
 MANDATORY FIRST RESPONSE (no write/run/scaffold tools):\n\
 1. Restate the goal in one plain sentence.\n\
@@ -2455,14 +2766,17 @@ ANSWER CONTRACT:\n\
 - If the user attached an image, describe each one in 1-2 short sentences or a tight bullet list. Never end on thinking only.\n\
 - Answer straightforward questions directly from reliable context; do not force tool use when it adds no value.\n\
 - For project-specific or uncertain questions, investigate with the smallest useful set of tools: list_dir, glob, grep, read_file, file_info, git_status, web_search, browse_page, computer_observe.\n\
-- After tools return, always synthesize the evidence into an answer. If a tool fails, continue with what you have. Never quote HTTP status, provider ids, or internal paths to the user.\n\
+- After tools return, always synthesize the evidence into an answer. If a tool fails, continue with what you have. Never quote HTTP status, provider ids, or paste-temp paths to the user.\n\
+- When the user asks where a file is, or for its full path/directory, answer immediately with the absolute filesystem path. Join the project root with the relative path from write_file/file_info. Do not list_dir the whole project. Do not call done.\n\
 - Keep answers short. Do not write Result, Recommended next step, or Why I'm stopping sections unless the user asked for a report.\n\
-- Cite concrete project-relative paths and concise findings; distinguish verified facts from inference.\n\
+- If they ask to simplify or shorten, rewrite the last answer in 2-5 short everyday sentences. Do not call tools or done.\n\
+- Cite concrete project-relative paths for code discussion; give the absolute path when asked where a file lives. Distinguish verified facts from inference.\n\
 - Use session history for follow-ups and resolve words such as 'it', 'that', and 'continue' from this chat.\n\
 - Use ask_user only when a missing choice would materially change the answer.\n\
 \n\
 FILE WRITES ARE PROHIBITED:\n\
-- Do not call write_file, edit_file, delete_file, make_dir, copy_file, move_file, run_command, start_dev_server, git commit/init, or download_file.\n\
+- Do not call write_file, edit_file, delete_file, make_dir, copy_file, move_file, run_command, git commit/init, or download_file.\n\
+- If the user asks to open, show, or preview the website, call start_dev_server and open it in Preview. Do not tell them to run npm run dev themselves.\n\
 - If the user asks you to build or add something, say you need Multi-Agent / Apply to change files, then still answer any question part of the request.\n\
 - Pure Ask turns end with the answer, not a product-delivery done card.\n\
 \n\
@@ -2585,9 +2899,12 @@ BEHAVIOR:\n\
                 && crate::desktop_computer_use::status().supported
         )
     );
-    let smart_agent_enabled = settings.smart_agent_enabled && requires_project_completion;
-    let smart_agent_policy =
-        crate::smart_agent::SmartAgentRun::system_instructions(smart_agent_enabled, fast_execution);
+    let smart_agent_enabled = settings.smart_agent_enabled && director_job.uses_ledger();
+    let smart_agent_policy = crate::smart_agent::SmartAgentRun::job_instructions(
+        director_job,
+        settings.smart_agent_enabled,
+        fast_execution,
+    );
     let task_profile_policy = task_profile.instructions();
     let execution_profile_policy = execution_profile.instructions();
     let tool_scheduling_rules = if mode == "multi_agent" {
@@ -2613,7 +2930,7 @@ ACTIVE RUNTIME (report these values accurately when asked):\n\
 {task_profile_policy}\
 {execution_profile_policy}\
 CAPABILITIES:\n\
-- Workspace inspection tools — read_file, list_dir, glob, grep, git_status, and file_info — must use ONLY project-relative paths or patterns. The host already knows the root: use \".\" or \"src/main.ts\", never C:\\Users\\…. For other file tools, prefer project-relative paths and use an absolute path only when that tool explicitly permits it.\n\
+- Workspace inspection tool ARGUMENTS must use ONLY project-relative paths or patterns (`.` or `src/main.ts`), never C:\\Users\\… as a tool path. When the user asks where a file is, the VISIBLE REPLY must give the absolute filesystem path by joining the project root with the relative path (example: `{root}\\docs\\notes.md`). Do not list the whole project for a location question. Do not call done.\n\
 - run_command runs PowerShell hidden — scaffold, install, build, test, system tasks, CLIs. Use `cwd` when needed.\n\
 - start_dev_server starts a Vite/Next/npm/pnpm/yarn local server in a detached host-managed process. Give it a command plus optional `cwd` and `port`; it handles Windows `.cmd` shims, sends server output to `.hormachuelos-dev-server.log`, and returns immediately.\n\
 - NEVER use `Start-Process`, `Start-Job`, `cmd.exe`, `start /b`, `&`, or other background-shell tricks through run_command for a local server. Use start_dev_server, then continue with preview, inspection, and the requested work.\n\
@@ -2652,7 +2969,7 @@ BASE RULES (mode rules above win on conflict):\n\
 10. For an active build, fix, release, deployment, website, APK, app, or software task: keep taking concrete tool steps until all requested work is implemented and verified. Do NOT stop at a progress update, partial response, or an unfinished plan, and never ask the user to type \"continue\". If the provider reaches an output limit, the host will resume this same run automatically with its current workspace and tool history.\n\
 11. Only do what the user asked (or what they approved in Plan mode). No unrelated changes.\n\
 12. For deploy/git hosting: use connected integrations first. If missing, call connect_account (in-chat secure form + browser) — do not run interactive CLI login via run_command and do not request credentials in the chat message box.\n\
-13. Format final prose as clean Markdown: use a short Result heading followed by clear sections and bullets; use Markdown tables only for comparisons. Every table must include a header row and separator row; never use unaligned plain-text columns. Never print raw JSON, function-call syntax, tool arguments, or a literal `done` payload for the user. When work is complete, call the done tool instead of repeating its title, files, and features as loose prose.\n\
+13. Questions, explanations, and simplify/shorten requests get a short visible answer in plain language. Do not use Result, Recommended next step, or Why I'm stopping for those. When build work is complete, call the done tool; the host Completed card is the delivery layout. Visible chat before done is 1-2 short sentences (what is ready, where to open it). Never write Result, Highlights, Files, or Technology sections in the bubble, and never print raw JSON, function-call syntax, tool arguments, or a literal `done` payload. Markdown tables only for comparisons, always with a header row and separator row.\n\
 14. Never stop after only announcing the next step (e.g. \"Let me find…\", \"I'll check…\", \"Looking for…\"). If you need to act, call a tool in the SAME turn. Narration without tools is incomplete.\n\
 15. Never claim tools are missing when work can continue with available tools. If you want a task list, call todo_write — do not apologize about a missing todo tool.\n\
 {tool_scheduling_rules}\n\
@@ -2765,8 +3082,11 @@ The tool entries are historical summaries; use fresh tools for the current works
     let mut resume_assistant_next_iteration = false;
     let mut consecutive_failed_tool_iterations: u8 = 0;
     let mut previous_failed_tool_signature = String::new();
-    let mut smart_agent =
-        crate::smart_agent::SmartAgentRun::new(smart_agent_enabled, fast_execution);
+    let mut smart_agent = crate::smart_agent::SmartAgentRun::for_job(
+        director_job,
+        settings.smart_agent_enabled,
+        fast_execution,
+    );
     emit(
         &app,
         &session_id,
@@ -2802,6 +3122,9 @@ The tool entries are historical summaries; use fresh tools for the current works
     // a command/provider fails, or usage safeguards halt execution. The
     // counter is telemetry only; it no longer imposes an arbitrary ceiling.
     let mut iteration: u32 = 0;
+    let mut ask_inspection_iterations: u32 = 0;
+    let mut ask_successful_inspection_tools: usize = 0;
+    let mut ask_synthesis_forced = false;
     loop {
         if cancel.load(Ordering::SeqCst) {
             emit_cancelled(&app, &session_id, iteration);
@@ -2941,11 +3264,15 @@ The tool entries are historical summaries; use fresh tools for the current works
             // proxy timeouts so continuing a session never loops on Reconnecting….
             let mut reconnect_attempt: u32 = 0;
             let mut automatic_recovery_reason: Option<AutomaticContinuationReason> = None;
-            let turn_schemas = tools::schemas_for_permission_phase(
-                tool_schemas.clone(),
-                &mode,
-                run.plan_implementation_unlocked() || task_profile.is_design_edit(),
-            );
+            let turn_schemas = if ask_synthesis_forced {
+                Vec::new()
+            } else {
+                tools::schemas_for_permission_phase(
+                    tool_schemas.clone(),
+                    &mode,
+                    run.plan_implementation_unlocked() || task_profile.is_design_edit(),
+                )
+            };
             let response = loop {
                 let result = tokio::select! {
                     biased;
@@ -3451,6 +3778,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
         };
 
         let mut successful_tool_results = 0usize;
+        let mut successful_ask_inspections_this_iteration = 0usize;
         let mut failed_tool_results: Vec<(String, String)> = Vec::new();
         let mut final_review_instruction: Option<&'static str> = None;
         for (tool_index, tc) in resp.tool_calls.iter().enumerate() {
@@ -3755,6 +4083,57 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
             };
 
             if content.starts_with("__DONE__") {
+                if !smart_agent.allows_done() {
+                    let summary = content.trim_start_matches("__DONE__").trim();
+                    let title = tc
+                        .arguments
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    let description = tc
+                        .arguments
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    let visible = [summary, description, title]
+                        .into_iter()
+                        .find(|text| !text.is_empty())
+                        .unwrap_or("Done.")
+                        .to_string();
+                    flavour.record_tool_result(&tc.id, &tc.name, &tc.arguments, true, &visible);
+                    messages.push(ChatMessage::tool(&tc.id, &tc.name, &visible));
+                    emit(
+                        &app,
+                        &session_id,
+                        "tool_result",
+                        json!({
+                            "id": tc.id,
+                            "name": tc.name,
+                            "ok": true,
+                            "content": visible,
+                        }),
+                    );
+                    emit(
+                        &app,
+                        &session_id,
+                        "text",
+                        json!({ "text": visible, "continuation": false }),
+                    );
+                    emit(
+                        &app,
+                        &session_id,
+                        "end",
+                        json!({
+                            "reason": "no_tool_calls",
+                            "iteration": iteration,
+                            "total_tokens": total_tokens,
+                        }),
+                    );
+                    flavour.finish("finished", Some(&visible), &[]);
+                    return Ok(None);
+                }
                 if final_review_instruction.is_some() {
                     let deferred =
                         "Completion is deferred until the requested final verification pass finishes.";
@@ -3796,7 +4175,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                             "id": tc.id,
                             "name": tc.name,
                             "ok": true,
-                            "content": "Running one final Smart Agent verification pass before delivery.",
+                            "content": "Running one final Director verification pass before delivery.",
                         }),
                     );
                     emit(
@@ -3834,6 +4213,10 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|v| v.as_str().map(String::from))
+                            .map(|path| match crate::tools::resolve_path(root, &path) {
+                                Ok(full) => crate::tools::absolute_display_path(&full),
+                                Err(_) => path,
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -3894,6 +4277,10 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
 
             if ok {
                 successful_tool_results = successful_tool_results.saturating_add(1);
+                if mode == "ask" && tools::is_parallel_safe_readonly_tool(&tc.name) {
+                    successful_ask_inspections_this_iteration =
+                        successful_ask_inspections_this_iteration.saturating_add(1);
+                }
             } else {
                 failed_tool_results.push((tc.name.clone(), content.clone()));
             }
@@ -3929,6 +4316,37 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
             messages.push(ChatMessage::user(review_message));
             iteration = iteration.saturating_add(1);
             continue;
+        }
+
+        if mode == "ask"
+            && !ask_synthesis_forced
+            && resp
+                .tool_calls
+                .iter()
+                .any(|call| tools::is_parallel_safe_readonly_tool(&call.name))
+        {
+            ask_inspection_iterations = ask_inspection_iterations.saturating_add(1);
+            ask_successful_inspection_tools = ask_successful_inspection_tools
+                .saturating_add(successful_ask_inspections_this_iteration);
+            if ask_research_should_synthesize(
+                &mode,
+                ask_inspection_iterations,
+                ask_successful_inspection_tools,
+            ) {
+                ask_synthesis_forced = true;
+                emit(
+                    &app,
+                    &session_id,
+                    "status",
+                    json!({
+                        "message": "Evidence gathered — composing the final answer…",
+                        "iteration": iteration,
+                    }),
+                );
+                messages.push(ChatMessage::user(
+                    "[Host instruction — Ask mode] You have enough workspace evidence. Do not call any more tools. Synthesize the complete user-facing answer now. Follow the requested headings, cite specific project-relative file paths, prioritize findings, distinguish evidence from inference, and do not narrate your process.",
+                ));
+            }
         }
 
         if successful_tool_results > 0 {
@@ -4081,7 +4499,7 @@ fn cursor_permission_instructions(mode: &str) -> &'static str {
             "Execution mode: AUTO. Work inside the selected project directory and rely on Cursor Auto-review. If an action cannot be reviewed safely, stop and explain the limitation. If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         }
         "ask" => {
-            "Execution mode: ASK. Answer the user's question in a short visible reply. For attached images, describe each in 1-2 sentences. Do not write Result or Recommended next step sections. Do not call done. Do not mention vision providers, HTTP errors, or paste paths. You may use read, search, browser, computer, and question tools. Never create, edit, or write files, and do not run shell/scaffold commands. Never finish with only thinking/reasoning."
+            "Execution mode: ASK. Answer the user's question in a short visible reply. For attached images, describe each in 1-2 sentences. Do not write Result or Recommended next step sections. Do not call done. Do not mention vision providers, HTTP errors, or paste paths. You may use read, search, browser, computer, question tools, and start_dev_server to open the project's live website. Never create, edit, or write files, and do not run shell/scaffold commands. Never finish with only thinking/reasoning."
         }
         "plan" => {
             "Execution mode: PLAN. File create/write/edit tools are locked; other tools stay available. Restate and improve the request, present a numbered plan in visible reply text, and call ask_user (include whether to Apply/implement now, or keep planning). After they confirm Apply, the run switches to Multi-Agent to implement. Stack or scope answers are not Apply. Never finish with only thinking/reasoning."
@@ -4250,9 +4668,10 @@ fn project_context_block(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ask_user_confirms_plan_implementation, can_recover_from_provider_blip, chat_message_size,
-        compact_active_run_messages, compact_fast_design_history, compact_history_messages,
-        conclusion_from_reasoning, cursor_computer_use_instructions, cursor_effort_for_request,
+        ask_research_should_synthesize, ask_user_confirms_plan_implementation,
+        can_recover_from_provider_blip, chat_message_size, compact_active_run_messages,
+        compact_fast_design_history, compact_history_messages, conclusion_from_reasoning,
+        cursor_computer_use_instructions, cursor_effort_for_request,
         cursor_permission_instructions, cursor_resume_id_for_task,
         desktop_computer_use_instructions, desktop_control_effort, display_model_name,
         display_provider_name, ensure_plan_apply_options, identity_instructions,
@@ -4740,12 +5159,49 @@ mod tests {
             Some("ask")
         );
         assert_eq!(
+            infer_permission_mode(
+                "can you simplify your explaination regarding back to work process"
+            )
+            .as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode(
+                "can you simplify your explanation regarding back to work process"
+            )
+            .as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode("can you make it simpler").as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
             infer_permission_mode("make a plan for the HR module").as_deref(),
             Some("plan")
         );
         assert_eq!(
             infer_permission_mode("don't implement yet, just plan").as_deref(),
             Some("plan")
+        );
+        assert_eq!(
+            infer_permission_mode("analyze the architecture and report the main risks").as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode(
+                "Analyze this Crispy King project in read-only mode. Do not change any files. Inspect the architecture, security, and tests. Give a thorough final report, make reasonable assumptions, and finish with a complete answer."
+            )
+            .as_deref(),
+            Some("ask")
+        );
+        assert_eq!(
+            infer_permission_mode("review the architecture and fix the login bug").as_deref(),
+            Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("make a responsive dashboard").as_deref(),
+            Some("multi_agent")
         );
         assert_eq!(
             infer_permission_mode(
@@ -4784,6 +5240,14 @@ mod tests {
             .as_deref(),
             Some("ask")
         );
+    }
+
+    #[test]
+    fn ask_research_budget_forces_synthesis_without_capping_build_runs() {
+        assert!(!ask_research_should_synthesize("ask", 3, 19));
+        assert!(ask_research_should_synthesize("ask", 4, 8));
+        assert!(ask_research_should_synthesize("ask", 2, 20));
+        assert!(!ask_research_should_synthesize("multi_agent", 40, 200));
     }
 
     #[test]
@@ -5089,9 +5553,15 @@ Let me call view_image on the three images to get a closer look. Here's what I s
             "Here's what I see in the three images:\n\n**Image 1** — COMMAND logo."
         );
         assert!(strip_process_preamble(
-            "The user just wants a description of the images. Let me describe them."
+            "I'll explore the project structure to understand and analyze it."
         )
         .is_empty());
+        assert_eq!(
+            strip_process_preamble(
+                "Let me dig into the app structure and key libraries.\n\nHere's my analysis of your project."
+            ),
+            "Here's my analysis of your project."
+        );
     }
 
     #[test]
@@ -5164,6 +5634,49 @@ Let me call view_image on the three images to get a closer look. Here's what I s
         };
         assert!(!promote_reasoning_to_visible_answer(&mut meta_only));
         assert!(reply_was_cut_off(&meta_only));
+
+        let location_thought = "The user asks 'where is the full file directory?' The full project directory is at `C:\\Users\\Cyrhiel\\CRISPY KING DESIGN 2`. Let me give a concise answer with the top-level structure.";
+        let visible = conclusion_from_reasoning(location_thought).expect("path thought");
+        assert!(visible.contains(r"C:\Users\Cyrhiel\CRISPY KING DESIGN 2"));
+        assert!(!visible
+            .to_ascii_lowercase()
+            .contains("let me give a concise answer"));
+        let mut location_only = LlmResponse {
+            text: None,
+            tool_calls: Vec::new(),
+            reasoning_content: Some(location_thought.into()),
+            stop_reason: "stop".into(),
+            usage_tokens: 10,
+        };
+        assert!(promote_reasoning_to_visible_answer(&mut location_only));
+        assert!(location_only
+            .text
+            .as_deref()
+            .unwrap_or("")
+            .contains(r"C:\Users\Cyrhiel\CRISPY KING DESIGN 2"));
+
+        let simplify_thought = "the user wants me to simplify the back to work process explanation again. From history, the shortest version was: 'Back to Work = \"I'm back\"' 1. You say you're back 2. Your boss approves it 3. It's saved to your record Done. Let me give an even simpler version...";
+        let simplified = conclusion_from_reasoning(simplify_thought).expect("simplify thought");
+        assert!(simplified
+            .to_ascii_lowercase()
+            .contains("you say you're back"));
+        assert!(!simplified
+            .to_ascii_lowercase()
+            .contains("let me give an even simpler version"));
+        let mut simplify_only = LlmResponse {
+            text: None,
+            tool_calls: Vec::new(),
+            reasoning_content: Some(simplify_thought.into()),
+            stop_reason: "stop".into(),
+            usage_tokens: 10,
+        };
+        assert!(promote_reasoning_to_visible_answer(&mut simplify_only));
+        assert!(simplify_only
+            .text
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains("you say you're back"));
 
         // A finished answer ends cleanly and must NOT be resumed.
         let complete = LlmResponse {
@@ -5306,6 +5819,31 @@ Let me call view_image on the three images to get a closer look. Here's what I s
         assert!(!task_likely_requires_project_completion(
             "describe this images"
         ));
+        assert!(starts_as_explanatory_request(
+            "where is the full file directory?"
+        ));
+        assert!(starts_as_explanatory_request(
+            "where is the md file full directory"
+        ));
+        assert!(!task_likely_requires_project_completion(
+            "where is the full file directory?"
+        ));
+        assert_eq!(
+            infer_permission_mode("where is the full file directory?"),
+            Some("ask".into())
+        );
+        assert!(starts_as_explanatory_request(
+            "can you simplify your explanation regarding back to work process"
+        ));
+        assert!(!task_likely_requires_project_completion(
+            "can you simplify your explanation regarding back to work process"
+        ));
+        assert_eq!(
+            infer_permission_mode(
+                "can you simplify your explanation regarding back to work process"
+            ),
+            Some("ask".into())
+        );
         assert_eq!(
             infer_permission_mode(
                 "[Attached image: a.png]\n[Attached image: b.png]\n[Attached image: c.png]\ndescribe this images"

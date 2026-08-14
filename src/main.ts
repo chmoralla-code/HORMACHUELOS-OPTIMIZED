@@ -22,6 +22,7 @@ import {
   isPreviewableBuild,
   mergePreviewSessionState,
   pickPreviewEntry,
+  promptWantsLocalWebsite,
 } from "./components/site-preview";
 
 import {
@@ -52,6 +53,7 @@ import {
   deleteSession, deleteAllSessions, newSessionId, sessionTitle,
   recordAgentEvent, buildLlmHistory, redactChatCredentials, addSessionTokens, SESSION_TOKEN_BUDGET,
   rehomeSessionsToProjectRoot,
+  coalesceSessionTurnLayout,
   type Session,
 } from "./components/session";
 import { icon } from "./components/icons";
@@ -640,7 +642,7 @@ function sessionForId(id: string | null | undefined): Session | undefined {
   return sessionRegistry.get(id) || sessions.find((session) => session.id === id);
 }
 
-/** Keep the visible Smart Agent ledger scoped to the currently selected session. */
+/** Keep the visible Director ledger scoped to the currently selected session. */
 function syncSmartAgentPanel() {
   smartAgentPanel?.setSession(activeSessionId, sessionForId(activeSessionId)?.smartAgent);
 }
@@ -704,7 +706,8 @@ function persistCurrentSession(deferred = false) {
   if (!s) return;
   syncVisiblePreviewIntoSession(s);
   sessionRegistry.set(s.id, s);
-  s.messages = chat.getMessages();
+  s.messages = coalesceSessionTurnLayout(chat.getMessages());
+  chat.messages = s.messages;
   if (deferred) scheduleSessionSave(s);
   else saveSession(s);
 }
@@ -718,7 +721,8 @@ function prepareForAppUpdate(): Record<string, string> {
     if (session) {
       syncVisiblePreviewIntoSession(session);
       sessionRegistry.set(session.id, session);
-      session.messages = chat.getMessages();
+      session.messages = coalesceSessionTurnLayout(chat.getMessages());
+      chat.messages = session.messages;
       // Keep ordinary persistence best-effort. If WebView storage is full, the
       // pending queue is included in the native snapshot returned below.
       saveSession(session);
@@ -920,7 +924,10 @@ function persistSessionById(id: string, deferred = false) {
   if (!s) return;
   if (id === activeSessionId) {
     syncVisiblePreviewIntoSession(s);
-    s.messages = chat.getMessages();
+    s.messages = coalesceSessionTurnLayout(chat.getMessages());
+    chat.messages = s.messages;
+  } else {
+    s.messages = coalesceSessionTurnLayout(s.messages);
   }
   sessionRegistry.set(s.id, s);
   if (deferred) scheduleSessionSave(s);
@@ -985,7 +992,7 @@ function switchSession(id: string) {
     chat.messages = [];
     chat.renderEmpty();
   } else {
-    chat.loadSession(s.messages);
+    chat.loadSession(s.messages, { running: runningSessions.has(id) });
   }
   chat.setRunning(runningSessions.has(id));
   // Restore this conversation's model (or lock to its in-flight run profile).
@@ -1140,7 +1147,9 @@ function loadProjectSessions() {
   if (sessions.length > 0) {
     activeSessionId = sessions[0].id;
     if (sessions[0].messages.length > 0) {
-      chat.loadSession(sessions[0].messages);
+      chat.loadSession(sessions[0].messages, {
+        running: runningSessions.has(sessions[0].id),
+      });
     } else {
       chat.messages = [];
       chat.renderEmpty();
@@ -1762,42 +1771,66 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
   if (!prompt) return null;
 
   const isPlan =
-    /\b(don't|do not) implement\b/.test(prompt) ||
-    /\b(don't|do not) change files\b/.test(prompt) ||
     /\bkeep planning\b/.test(prompt) ||
     /\bjust the plan\b/.test(prompt) ||
     /\bplan only\b/.test(prompt) ||
-    /\bwithout changing files\b/.test(prompt) ||
     /\b(make|draft|propose|write) a plan\b/.test(prompt) ||
     /\bplanning first\b/.test(prompt) ||
     (/\bplan\b/.test(prompt) && !/\b(implement|apply) (this|the) plan\b/.test(prompt));
   if (isPlan) return "plan";
+
+  const isSimplify =
+    /\bsimplif/i.test(prompt) ||
+    /\b(in simple terms|in plain english|in plain language|eli5|make it shorter|make it simpler|make this simpler|make this shorter|shorter explanation|shorter version|less technical|explain it simply|explain simply|simpler explanation)\b/.test(
+      prompt,
+    );
+  if (isSimplify) return "ask";
+
+  // A non-mutating constraint is an Answer/Ask contract, not a planning
+  // request. Keep this ahead of generic build verbs: phrases such as
+  // "make reasonable assumptions" must never grant write-level autonomy.
+  const isExplicitReadOnly =
+    /\bread[- ]only\b/.test(prompt) ||
+    /\b(analysis|review|audit|assessment|report)[- ]only\b/.test(prompt) ||
+    /\b(don't|don’t|dont|do not)\s+(make\s+)?(any\s+)?(changes?|edits?|modifications?)\b/.test(prompt) ||
+    /\b(don't|don’t|dont|do not)\s+(change|modify|edit|write|create|delete|touch)\s+(any\s+|the\s+)?files?\b/.test(prompt) ||
+    /\bwithout\s+(changing|modifying|editing|writing|creating)\b/.test(prompt) ||
+    /\bno\s+(file\s+)?(changes?|edits?|modifications?)\b/.test(prompt);
+  if (isExplicitReadOnly) return "ask";
 
   const isImplementPlan =
     /\b(apply|implement|execute) (this|the) plan\b/.test(prompt) ||
     /\bgo ahead and (implement|apply)\b/.test(prompt) ||
     /\bstart implementing\b/.test(prompt);
   const isPoliteBuild =
-    /\b(can|could) you (add|create|build|make|implement|fix|scaffold|generate)\b/.test(prompt) ||
-    /\bplease (add|create|build|make|implement|fix)\b/.test(prompt);
-  if (isImplementPlan || isPoliteBuild) return "multi_agent";
+    /\b(can|could) you (add|create|build|implement|fix|scaffold|generate|repair|refactor)\b/.test(prompt) ||
+    /\bplease (add|create|build|implement|fix|repair|refactor)\b/.test(prompt);
+  const isContextualMake =
+    /\bmake\s+(a|an|the)\s+((new|responsive|polished|modern|simple|production[- ]ready)\s+){0,3}(app|application|website|site|page|component|feature|form|dashboard|game|project|file|folder|module|api|database|script|button)\b/.test(prompt) ||
+    /\bmake\s+(this|that|it)\s+(work|better|faster|responsive|accessible|production[- ]ready)\b/.test(prompt) ||
+    /\bmake\s+me\s+(a|an|the)\s+((new|responsive|polished|modern|simple)\s+){0,3}(app|application|website|site|page|component|feature|form|dashboard|game|project|file|folder|module|api|database|script|button)\b/.test(prompt);
+  if (isImplementPlan || isPoliteBuild || isContextualMake) return "multi_agent";
 
   const isQuestion =
     prompt.includes("?") ||
     /^(what|why|who|where|which|how|is|are|does|do|explain|tell me)\b/.test(prompt) ||
-    /\b(can|could) you (see|read|tell|describe|explain|look)\b/.test(prompt) ||
+    /\b(can|could) you (see|read|tell|describe|explain|look|simplif)\b/.test(prompt) ||
     /\b(please describe|describe this|describe these|describe the image|describe what)\b/.test(prompt) ||
     /\b(what is this|what are these|what this image|what these image|what's in this|whats in this)\b/.test(prompt) ||
     /\b(look at this|what does this)\b/.test(prompt);
   if (isQuestion) return "ask";
 
-  if (
-    /\b(add|create|build|make|implement|scaffold|generate|fix|debug|repair|refactor|upgrade)\b/.test(
-      prompt,
-    )
-  ) {
-    return "multi_agent";
-  }
+  const isAnalysisRequest =
+    /^(analyze|analyse|inspect|review|audit|assess|examine|summarize|understand|report on)\b/.test(prompt) ||
+    /\b(give|provide|write)\b.{0,56}\b(report|analysis|assessment|review|summary)\b/.test(prompt);
+
+  const isBuildAction =
+    /\b(add|create|build|implement|scaffold|generate|fix|debug|repair|refactor|upgrade)\b/.test(prompt);
+  // "Review and fix" is implementation; a plain architecture/security review
+  // is an answer. Evaluate the explicit mutation before the analysis fallback.
+  if (isBuildAction) return "multi_agent";
+  if (isAnalysisRequest) return "ask";
+
   if (/\[attached (?:image|video):/i.test(String(value || ""))) return "ask";
   return null;
 }
@@ -1981,13 +2014,17 @@ async function sendPrompt(submission: ChatPromptSubmission) {
     if (isUsageExhausted()) throw new Error(usageBlockMessage());
 
     if (
-      (computerUseIntent === "enable" || computerUseIntent === "auto")
+      (computerUseIntent === "enable" || computerUseIntent === "auto" || promptWantsLocalWebsite(visiblePrompt))
       && sameProjectPath(projectRoot, currentProjectPath)
     ) {
       try {
+        let previewUrl = extractPreviewBrowserUrlFromPrompt(visiblePrompt);
+        if (!previewUrl && promptWantsLocalWebsite(visiblePrompt)) {
+          previewUrl = await api.ensureProjectDevServer(projectRoot);
+        }
         await sitePreview.openForComputerUse({
           projectRoot,
-          url: extractPreviewBrowserUrlFromPrompt(visiblePrompt),
+          url: previewUrl,
         });
         persistPreviewForSession(sessionId, sitePreview.captureSessionState());
       } catch (error) {

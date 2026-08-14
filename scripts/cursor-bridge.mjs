@@ -1112,6 +1112,22 @@ function createTextCoalescer(onFlush) {
   };
 }
 
+function stripTrailingPendingAction(text) {
+  let out = String(text || "").trim();
+  for (const marker of [" Let me ", "\nLet me ", " I'll ", "\nI'll ", " I will ", "\nI will "]) {
+    const index = out.lastIndexOf(marker);
+    if (index >= 0) {
+      const before = out.slice(0, index).trim();
+      if ([...before].length >= 24) out = before;
+    }
+  }
+  return out;
+}
+
+function hasUserFacingContent(text) {
+  return /:\\|\\\\|\/Users\/|\/home\/|1\.|1\)|Back to Work| = /.test(String(text || ""));
+}
+
 /**
  * Reasoning models (and Cursor thinking events) sometimes put the entire
  * answer in thinking and finish with empty assistant text. Promote a finished
@@ -1142,6 +1158,8 @@ function conclusionFromReasoning(reasoning) {
       "i will describe",
       "let me call",
       "let me look",
+      "let me simplify",
+      "let me give",
     ].some((prefix) => lower.startsWith(prefix));
   };
   while (remaining) {
@@ -1154,8 +1172,14 @@ function conclusionFromReasoning(reasoning) {
     if (!isProcess(sentence)) break;
     remaining = remaining.slice(sentence.length).trimStart();
   }
-  const visible = remaining.trim();
+  const visible = stripTrailingPendingAction(remaining);
   if ([...visible].length < 24) return "";
+  const lower = visible.toLowerCase();
+  const pendingOrMeta =
+    lower.startsWith("let me ") ||
+    lower.includes("the user wants") ||
+    lower.includes("let me describe");
+  if (pendingOrMeta && !hasUserFacingContent(visible)) return "";
   const last = visible.slice(-1);
   const endsCleanly = ".!?…:;)]}`".includes(last) || visible.endsWith("```");
   if (!endsCleanly && [...visible].length < 40) return "";

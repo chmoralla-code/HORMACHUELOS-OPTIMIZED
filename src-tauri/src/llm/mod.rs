@@ -218,7 +218,36 @@ pub fn build_provider_with_effort(
             ))
         }
         "anthropic" => Ok(Box::new(anthropic::Anthropic::new(api_key, base, model))),
-        "gemini" | "google" => Ok(Box::new(gemini::Gemini::new(api_key, base, model))),
+        "gemini" | "google" => {
+            // Command Code Studio keys (`user_…`) speak the OpenAI-compatible
+            // Provider API, including google/gemini-3.7-flash. Google AI Studio
+            // keys stay on generateContent. Hosted Hormachuelos aliases use the
+            // OpenAI-compatible proxy so admin-added models do not need a
+            // native Gemini client.
+            if gemini::uses_command_code_provider_api(&key, base) {
+                Ok(Box::new(
+                    openai::OpenAi::new(
+                        &key,
+                        Some(gemini::COMMAND_CODE_PROVIDER_API),
+                        &gemini::command_code_gemini_model(model),
+                        "gemini",
+                    )
+                    .with_reasoning_effort(model_effort),
+                ))
+            } else if gemini::uses_hosted_gemini_proxy(&key, base) {
+                Ok(Box::new(
+                    openai::OpenAi::new(&key, base, model, "gemini")
+                        .with_reasoning_effort(model_effort),
+                ))
+            } else {
+                let native_base = if gemini::is_google_gemini_api_key(&key) {
+                    Some("https://generativelanguage.googleapis.com")
+                } else {
+                    base
+                };
+                Ok(Box::new(gemini::Gemini::new(&key, native_base, model)))
+            }
+        }
         "commandcode" => {
             // Through the Hormachuelos hosted proxy the OpenAI-compatible
             // chat/completions endpoint is used (the proxy translates to the

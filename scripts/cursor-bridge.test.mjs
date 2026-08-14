@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
+import ts from "typescript";
 
 import {
   COMPUTER_PAUSE_SENTINEL_ENV,
@@ -18,7 +21,37 @@ import {
   sanitizeComputerToolArguments,
   summarizeTodoWrite,
 } from "./cursor-bridge.mjs";
-import { redactToolArguments } from "../src/components/session.ts";
+
+function transpile(path) {
+  return ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+    },
+  }).outputText;
+}
+
+function loadRedactToolArguments() {
+  const utilSandbox = { module: { exports: {} }, exports: null };
+  utilSandbox.exports = utilSandbox.module.exports;
+  vm.runInNewContext(transpile("../src/components/util.ts"), utilSandbox, { filename: "util.ts" });
+
+  const sessionSandbox = {
+    module: { exports: {} },
+    exports: null,
+    require: (specifier) => {
+      if (specifier === "./util") return utilSandbox.module.exports;
+      throw new Error(`Unexpected session dependency: ${specifier}`);
+    },
+  };
+  sessionSandbox.exports = sessionSandbox.module.exports;
+  vm.runInNewContext(transpile("../src/components/session.ts"), sessionSandbox, {
+    filename: "session.ts",
+  });
+  return sessionSandbox.module.exports.redactToolArguments;
+}
+
+const redactToolArguments = loadRedactToolArguments();
 
 test("model selections preserve the configured provider model id", () => {
   assert.equal(resolveModelSelection("default", "high"), undefined);

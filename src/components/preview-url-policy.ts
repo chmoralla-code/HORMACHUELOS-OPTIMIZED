@@ -39,6 +39,23 @@ export function extractPreviewBrowserUrlFromPrompt(value: string): string | null
   return safeHttpUrl(`https://${domain[0].replace(/[.,;:!?]+$/g, "")}`);
 }
 
+/** “Open the website” means the local project preview, not a public URL. */
+export function promptWantsLocalWebsite(value: string): boolean {
+  const prompt = String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!prompt) return false;
+  if (/https?:\/\//.test(prompt) && !/\blocalhost\b|\b127\.0\.0\.1\b/.test(prompt)) {
+    return false;
+  }
+  return (
+    /\b(open|show|launch|start|preview|view|load|bring up)\b.{0,48}\b(the\s+)?(website|web site|webapp|web app|site|preview)\b/.test(
+      prompt,
+    ) || /\b(open|show|go to|visit)\b.{0,24}\blocalhost\b/.test(prompt)
+  );
+}
+
 /**
  * Keep project files in a same-origin iframe, but route every localhost server
  * through the native Preview Browser where bounded Computer Use is available.

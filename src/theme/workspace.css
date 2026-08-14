@@ -36,11 +36,14 @@
 .workbench.preview-open {
   grid-template-columns: minmax(240px, 1fr) minmax(280px, var(--preview-w));
 }
+/* #app .workbench in app.css also sets a column transition — beat that ID. */
+#app .workbench.preview-open.is-resizing,
 .workbench.preview-open.is-resizing {
   transition: none;
   user-select: none;
 }
-.workbench.preview-open.is-resizing .site-preview-frame {
+.workbench.preview-open.is-resizing .site-preview-frame,
+.workbench.preview-open.is-resizing .site-preview-frame-host {
   pointer-events: none;
 }
 .workbench.preview-open .inspector {
@@ -64,12 +67,12 @@
 }
 .site-preview-resize {
   position: absolute;
-  z-index: 8;
+  z-index: 40;
   top: 0;
   left: 0;
-  width: 6px;
+  width: 12px;
   height: 100%;
-  margin-left: -3px;
+  margin-left: 0;
   border: 0;
   padding: 0;
   background: transparent;
@@ -1276,6 +1279,9 @@
 #app.right-drawer-closed .workbench.preview-open {
   grid-template-columns: minmax(240px, 1fr) minmax(280px, var(--preview-w));
 }
+#app.right-drawer-closed .workbench.preview-open.is-resizing {
+  transition: none;
+}
 #app.right-drawer-closed .workbench.preview-open .site-preview.is-open {
   display: flex;
 }
@@ -1293,9 +1299,9 @@
 .chat {
   min-width: 0;
   min-height: 0;
-  padding: 28px clamp(24px, 5vw, 72px) 36px;
+  padding: 28px clamp(24px, 5vw, 72px) 32px;
   overflow: auto;
-  scroll-padding-bottom: 28px;
+  scroll-padding-bottom: 32px;
   background: var(--canvas);
 }
 
@@ -1307,18 +1313,18 @@
   align-items: center;
   gap: 8px;
   padding: 12px clamp(16px, 4vw, 48px) 20px;
-  background: linear-gradient(to top, var(--canvas) 55%, transparent);
+  background: var(--canvas);
 }
 
 .chat-jump-latest {
-  position: absolute;
-  top: -28px;
-  left: 50%;
+  position: relative;
   z-index: 8;
   display: grid;
   width: 34px;
-  height: 34px;
+  height: 0;
+  margin: 0 auto;
   padding: 0;
+  overflow: hidden;
   place-items: center;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 999px;
@@ -1329,18 +1335,22 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, 8px) scale(0.92);
+  transform: scale(0.92);
   transition:
     opacity 150ms var(--ease),
     transform 180ms var(--ease),
+    height 180ms var(--ease),
+    margin 180ms var(--ease),
     color 150ms var(--ease),
     border-color 150ms var(--ease),
     background 150ms var(--ease);
 }
 .chat-jump-latest.is-visible {
   opacity: 1;
+  height: 34px;
+  margin: 0 auto 4px;
   pointer-events: auto;
-  transform: translate(-50%, 0) scale(1);
+  transform: scale(1);
 }
 .chat-jump-latest:hover {
   color: #fff;
@@ -1619,7 +1629,7 @@
 .msg { max-width: 880px; margin: 0 auto 22px; padding: 0; }
 .msg-role { color: var(--text-faint); font-family: var(--font-display); font-size: 9px; font-weight: 800; letter-spacing: 0.1em; }
 
-.tool-card, .done-card, .thinking { max-width: 880px; margin-left: auto; margin-right: auto; }
+.tool-card, .done-card, .thinking, .thinking-wrap, .tool-batch-wrap { max-width: 880px; margin-left: auto; margin-right: auto; }
 .tool-card { border-radius: var(--radius-sm); }
 .tool-card.ok { border-color: rgba(242, 240, 232, 0.08); }
 .tool-card.err { border-color: rgba(255, 120, 108, 0.28); }
@@ -1713,9 +1723,9 @@
     top: 0;
     left: 0;
     width: 100%;
-    height: 6px;
+    height: 12px;
     margin-left: 0;
-    margin-top: -3px;
+    margin-top: 0;
     cursor: row-resize;
   }
   .site-preview-resize::after {

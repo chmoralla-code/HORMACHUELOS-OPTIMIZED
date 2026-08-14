@@ -229,7 +229,7 @@ fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "getenvvars" | "environmentvariables" => Some("env_vars"),
         "getfileinfo" => Some("file_info"),
 
-        // These shell aliases are already recognized by the Smart Agent
+        // These shell aliases are already recognized by the Director
         // ledger. Normalize them before permission checks so they receive the
         // same approval policy as run_command.
         "runterminal" | "runterminalcmd" | "executecommand" | "shell" => Some("run_command"),
@@ -321,7 +321,6 @@ pub fn is_file_mutating_tool(name: &str) -> bool {
             | "git_commit"
             | "download_file"
             | "run_command"
-            | "start_dev_server"
             | "export_client_pack"
     )
 }
@@ -614,6 +613,7 @@ mod permission_mode_tests {
         assert!(is_file_mutating_tool("edit_file"));
         assert!(is_file_mutating_tool("run_command"));
         assert!(is_file_mutating_tool("delete_file"));
+        assert!(!is_file_mutating_tool("start_dev_server"));
         assert!(is_file_mutating_tool("export_client_pack"));
         assert!(!is_file_mutating_tool("computer_actions"));
         assert!(!is_file_mutating_tool("read_file"));
@@ -654,6 +654,7 @@ mod permission_mode_tests {
         assert!(ask_names.contains(&"computer_actions".into()));
         assert!(!ask_names.contains(&"write_file".into()));
         assert!(!ask_names.contains(&"run_command".into()));
+        assert!(ask_names.contains(&"start_dev_server".into()));
         let unlocked = schemas_for_permission_phase(schemas(true), "plan", true);
         assert!(unlocked
             .iter()
@@ -1204,7 +1205,7 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Write text contents to a file. Creates parent directories. Overwrites if exists. Accepts absolute paths or relative to project root.",
+                "description": "Write text contents to a file. Creates parent directories. Overwrites if exists. Accepts absolute paths or relative to project root. The result includes the full filesystem path so you can tell the user where the file is.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1235,7 +1236,7 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "list_dir",
-                "description": "List a directory inside the active project. Returns file/folder names, sizes, and whether they are directories.",
+                "description": "List a directory inside the active project. Returns the absolute directory path plus file/folder names. For 'where is this file' questions, prefer the write_file/file_info full path instead of listing the whole project.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1680,7 +1681,7 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
                         "files": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Only the most important paths."
+                            "description": "Only the most important paths. Prefer the full filesystem path when known (C:\\…\\file.md), otherwise the project-relative path."
                         },
                         "tech": {
                             "type": "array",
@@ -1978,6 +1979,28 @@ pub fn resolve_path(root: &Path, rel: &str) -> Result<PathBuf> {
     };
     let canon = std::fs::canonicalize(&abs).unwrap_or_else(|_| abs.clone());
     Ok(canon)
+}
+
+/// User-facing absolute path without the Windows `\\?\` prefix.
+pub fn absolute_display_path(path: &Path) -> String {
+    let displayed = path.display().to_string();
+    displayed
+        .strip_prefix(r"\\?\")
+        .map(|rest| rest.strip_prefix(r"UNC\").unwrap_or(rest).to_string())
+        .unwrap_or(displayed)
+}
+
+fn path_result_with_full(message: String, requested: &str, full: &Path) -> String {
+    let abs = absolute_display_path(full);
+    if requested.replace('/', "\\").eq_ignore_ascii_case(&abs)
+        || requested
+            .replace('\\', "/")
+            .eq_ignore_ascii_case(&abs.replace('\\', "/"))
+    {
+        message
+    } else {
+        format!("{message} (full path: {abs})")
+    }
 }
 
 fn http_client(timeout_secs: u64) -> Result<reqwest::blocking::Client> {
@@ -3558,7 +3581,11 @@ pub fn execute(
                     std::fs::create_dir_all(parent)?;
                 }
                 std::fs::write(&full, content)?;
-                Ok(format!("Wrote {} bytes to {}", content.len(), p))
+                Ok(path_result_with_full(
+                    format!("Wrote {} bytes to {p}", content.len()),
+                    p,
+                    &full,
+                ))
             }
             "edit_file" => {
                 let p = args
@@ -3578,7 +3605,7 @@ pub fn execute(
                 let out = apply_edit_file(&src, old, new)
                     .map_err(|detail| anyhow::anyhow!("old_string edit failed in {p}: {detail}"))?;
                 std::fs::write(&full, out)?;
-                Ok(format!("Edited {p}"))
+                Ok(path_result_with_full(format!("Edited {p}"), p, &full))
             }
             "list_dir" => {
                 let rel = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
@@ -3624,7 +3651,11 @@ pub fn execute(
                         "truncated": true,
                     }));
                 }
-                Ok(serde_json::to_string_pretty(&entries)?)
+                let listing = serde_json::to_string_pretty(&entries)?;
+                Ok(format!(
+                    "Listed {rel} at {} (project-relative: {rel})\n{listing}",
+                    absolute_display_path(&full)
+                ))
             }
             "glob" => {
                 let pat = args
@@ -3965,7 +3996,11 @@ pub fn execute(
                     std::fs::create_dir_all(parent)?;
                 }
                 std::fs::rename(&src_full, &dst_full)?;
-                Ok(format!("Moved {src} → {dst}"))
+                Ok(path_result_with_full(
+                    format!("Moved {src} → {dst}"),
+                    dst,
+                    &dst_full,
+                ))
             }
             "copy_file" => {
                 let src = args
@@ -3983,10 +4018,18 @@ pub fn execute(
                 }
                 if src_full.is_dir() {
                     copy_dir_recursive(&src_full, &dst_full)?;
-                    Ok(format!("Copied dir {src} → {dst}"))
+                    Ok(path_result_with_full(
+                        format!("Copied dir {src} → {dst}"),
+                        dst,
+                        &dst_full,
+                    ))
                 } else {
                     std::fs::copy(&src_full, &dst_full)?;
-                    Ok(format!("Copied {src} → {dst}"))
+                    Ok(path_result_with_full(
+                        format!("Copied {src} → {dst}"),
+                        dst,
+                        &dst_full,
+                    ))
                 }
             }
             "delete_file" => {
@@ -4009,7 +4052,7 @@ pub fn execute(
                     .ok_or_else(|| anyhow::anyhow!("missing path"))?;
                 let full = resolve_path(root, p)?;
                 std::fs::create_dir_all(&full)?;
-                Ok(format!("Created dir {p}"))
+                Ok(path_result_with_full(format!("Created dir {p}"), p, &full))
             }
             "file_info" => {
                 let p = args
@@ -4020,6 +4063,7 @@ pub fn execute(
                 let meta = std::fs::metadata(&full)?;
                 let info = json!({
                     "path": p,
+                    "full_path": absolute_display_path(&full),
                     "exists": true,
                     "is_dir": meta.is_dir(),
                     "is_file": meta.is_file(),
@@ -4405,6 +4449,57 @@ fn start_detached_command(
 fn local_port_is_open(port: u16) -> bool {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(150)).is_ok()
+}
+
+const PREVIEW_DEV_PORTS: [u16; 5] = [3000, 3001, 5173, 4173, 8080];
+
+fn preview_dev_command(root: &Path) -> String {
+    let Ok(raw) = std::fs::read_to_string(root.join("package.json")) else {
+        return "npm run dev".into();
+    };
+    let Ok(pkg) = serde_json::from_str::<Value>(&raw) else {
+        return "npm run dev".into();
+    };
+    let scripts = pkg.get("scripts").and_then(Value::as_object);
+    if scripts.is_some_and(|scripts| scripts.contains_key("dev")) {
+        return "npm run dev".into();
+    }
+    if scripts.is_some_and(|scripts| scripts.contains_key("start")) {
+        return "npm start".into();
+    }
+    "npm run dev".into()
+}
+
+/// Start or reuse the project's local website so Preview can open it from Ask.
+pub fn ensure_project_dev_server(root: &Path) -> Result<String> {
+    if let Some(port) = PREVIEW_DEV_PORTS
+        .into_iter()
+        .find(|&port| local_port_is_open(port))
+    {
+        return Ok(format!("http://127.0.0.1:{port}/"));
+    }
+    if !root.is_dir() {
+        anyhow::bail!("Open a project before starting the local website.");
+    }
+    let command = preview_dev_command(root);
+    start_detached_command(
+        root,
+        &command,
+        ".hormachuelos-dev-server.log",
+        true,
+        &ToolRunContext::noop(),
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if let Some(port) = PREVIEW_DEV_PORTS
+            .into_iter()
+            .find(|&port| local_port_is_open(port))
+        {
+            return Ok(format!("http://127.0.0.1:{port}/"));
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    Ok("http://127.0.0.1:3000/".into())
 }
 
 fn run_hidden(
@@ -4867,6 +4962,10 @@ mod security_tests {
         let listed = execute("list_dir", &json!({ "path": "" }), &tree.root, 5, &context)
             .expect("empty directory roots should mean the active project");
         assert!(listed.contains("inside.txt"));
+        assert!(
+            listed.contains("full path:") || listed.contains("Listed"),
+            "list_dir should name the absolute directory: {listed}"
+        );
 
         let searched = execute(
             "grep",
@@ -4878,6 +4977,37 @@ mod security_tests {
         .expect("plain text with an unmatched bracket should use literal search");
         assert!(searched.contains("brackets.txt"));
         assert!(searched.contains("[literal"));
+    }
+
+    #[test]
+    fn write_file_and_file_info_report_the_absolute_path() {
+        let tree = TempTree::new();
+        let context = ToolRunContext::noop();
+        let written = execute(
+            "write_file",
+            &json!({ "path": "docs/conversation.md", "content": "# log\n" }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("write_file should create the markdown file");
+        assert!(written.contains("docs/conversation.md"), "{written}");
+        assert!(written.contains("full path:"), "{written}");
+        assert!(
+            written.contains("conversation.md"),
+            "absolute path missing: {written}"
+        );
+
+        let info = execute(
+            "file_info",
+            &json!({ "path": "docs/conversation.md" }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("file_info should read the new file");
+        assert!(info.contains("full_path"), "{info}");
+        assert!(info.contains("conversation.md"), "{info}");
     }
 
     #[test]
@@ -5279,7 +5409,14 @@ mod edit_file_tests {
             &ToolRunContext::noop(),
         )
         .expect("edit_file should succeed");
-        assert_eq!(output, "Edited print-pdf-docs.ts");
+        assert!(
+            output.starts_with("Edited print-pdf-docs.ts"),
+            "edit_file should confirm the file: {output}"
+        );
+        assert!(
+            output.contains("full path:"),
+            "edit_file should include the absolute path: {output}"
+        );
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.starts_with('\u{FEFF}'));
         assert!(written.contains("Manual"));

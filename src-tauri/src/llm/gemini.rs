@@ -6,6 +6,48 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+pub use crate::config::COMMANDCODE_PROVIDER_API_BASE_URL as COMMAND_CODE_PROVIDER_API;
+
+/// Command Code Studio keys look like `user_` plus a long token. Google AI
+/// Studio keys start with `AIza`.
+pub fn is_command_code_api_key(key: &str) -> bool {
+    let key = key.trim();
+    key.starts_with("user_")
+        && (48..=200).contains(&key.len())
+        && key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+pub fn is_google_gemini_api_key(key: &str) -> bool {
+    key.trim().starts_with("AIza")
+}
+
+pub fn uses_command_code_provider_api(api_key: &str, base_url: Option<&str>) -> bool {
+    is_command_code_api_key(api_key) || base_url.is_some_and(|url| url.contains("commandcode.ai"))
+}
+
+pub fn uses_hosted_gemini_proxy(api_key: &str, base_url: Option<&str>) -> bool {
+    !uses_command_code_provider_api(api_key, base_url)
+        && !is_google_gemini_api_key(api_key)
+        && base_url.is_some_and(|url| url.contains("hormachuelos.vercel.app"))
+}
+
+/// Map picker aliases such as `gemini-3.7-flash` to Command Code / OpenRouter ids.
+pub fn command_code_gemini_model(model: &str) -> String {
+    let model = model.trim();
+    if model.is_empty() {
+        return "google/gemini-3.7-flash".into();
+    }
+    if model.contains('/') {
+        return model.to_string();
+    }
+    match model {
+        "gemini-3-7-flash" => "google/gemini-3.7-flash".into(),
+        other => format!("google/{other}"),
+    }
+}
+
 fn parse_model_page(text: &str) -> Result<(Vec<String>, Option<String>)> {
     let value: Value = serde_json::from_str(text)
         .map_err(|_| anyhow!("invalid_response: Gemini returned malformed model data."))?;
@@ -314,7 +356,43 @@ impl LlmProvider for Gemini {
 
 #[cfg(test)]
 mod model_tests {
-    use super::parse_model_page;
+    use super::{
+        command_code_gemini_model, is_command_code_api_key, is_google_gemini_api_key,
+        parse_model_page, uses_command_code_provider_api, uses_hosted_gemini_proxy,
+    };
+
+    #[test]
+    fn routes_command_code_keys_to_provider_gemini_ids() {
+        let command_code_key = format!("user_{}", "a".repeat(60));
+        assert!(is_command_code_api_key(&command_code_key));
+        assert!(!is_command_code_api_key("user_short"));
+        assert!(!is_command_code_api_key("AIzaSyDummyGoogleKeyValue"));
+        assert!(is_google_gemini_api_key("AIzaSyDummyGoogleKeyValue"));
+        assert!(uses_command_code_provider_api(
+            &command_code_key,
+            Some("https://hormachuelos.vercel.app/api/v1")
+        ));
+        assert!(uses_hosted_gemini_proxy(
+            "HORMA-TEST",
+            Some("https://hormachuelos.vercel.app/api/v1")
+        ));
+        assert!(!uses_hosted_gemini_proxy(
+            &command_code_key,
+            Some("https://hormachuelos.vercel.app/api/v1")
+        ));
+        assert_eq!(
+            command_code_gemini_model("gemini-3.7-flash"),
+            "google/gemini-3.7-flash"
+        );
+        assert_eq!(
+            command_code_gemini_model("gemini-3-7-flash"),
+            "google/gemini-3.7-flash"
+        );
+        assert_eq!(
+            command_code_gemini_model("google/gemini-3.7-flash"),
+            "google/gemini-3.7-flash"
+        );
+    }
 
     #[test]
     fn keeps_only_generate_content_models_and_page_token() {

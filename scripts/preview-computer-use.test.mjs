@@ -5,6 +5,7 @@ import {
   extractPreviewBrowserUrlFromPrompt,
   isExternalPreviewUrl,
   previewTabKindForEntry,
+  promptWantsLocalWebsite,
 } from "../src/components/preview-url-policy.ts";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -102,6 +103,10 @@ test("Computer Use opens Preview and a Browser tab from a prompt", () => {
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
   );
   assert.equal(extractPreviewBrowserUrlFromPrompt("describe this screenshot"), null);
+  assert.equal(promptWantsLocalWebsite("open the website"), true);
+  assert.equal(promptWantsLocalWebsite("show the site"), true);
+  assert.equal(promptWantsLocalWebsite("build a marketing website"), false);
+  assert.equal(promptWantsLocalWebsite("open https://youtube.com"), false);
   assert.match(preview, /async openForComputerUse/);
   assert.match(preview, /ensureOpenForComputerUse/);
   assert.match(preview, /this\.showShell\("Preview"\)/);
@@ -110,7 +115,9 @@ test("Computer Use opens Preview and a Browser tab from a prompt", () => {
   assert.doesNotMatch(preview, /Open the Preview window before using the AI cursor/);
   assert.match(main, /openForComputerUse/);
   assert.match(main, /extractPreviewBrowserUrlFromPrompt\(visiblePrompt\)/);
-  assert.match(main, /computerUseIntent === "enable" \|\| computerUseIntent === "auto"/);
+  assert.match(main, /promptWantsLocalWebsite\(visiblePrompt\)/);
+  assert.match(main, /ensureProjectDevServer\(projectRoot\)/);
+  assert.match(main, /computerUseIntent === "enable" \|\| computerUseIntent === "auto" \|\| promptWantsLocalWebsite\(visiblePrompt\)/);
   assert.match(tools, /If Preview is closed, the host opens the Preview window/);
 });
 

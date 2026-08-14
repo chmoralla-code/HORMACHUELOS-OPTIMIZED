@@ -53,4 +53,9 @@ test("conclusionFromReasoning promotes a finished thought and skips meta narrati
     ),
     /auto-view timed out/i,
   );
+  const simplified = conclusionFromReasoning(
+    "the user wants me to simplify the back to work process explanation again. From history, the shortest version was: 'Back to Work = \"I'm back\"' 1. You say you're back 2. Your boss approves it 3. It's saved to your record Done. Let me give an even simpler version...",
+  );
+  assert.match(simplified, /You say you're back/);
+  assert.doesNotMatch(simplified, /Let me give an even simpler version/i);
 });

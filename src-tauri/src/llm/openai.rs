@@ -95,15 +95,24 @@ fn build_request_body(
         || provider_kind.eq_ignore_ascii_case("hormachuelos_free")
         || provider_kind.eq_ignore_ascii_case("openai")
         || provider_kind.eq_ignore_ascii_case("cursor");
+    let is_gemini =
+        provider_kind.eq_ignore_ascii_case("gemini") || normalized_model.contains("gemini");
     let is_reasoning_model = normalized_model.starts_with("gpt-5")
         || normalized_model.starts_with("o1")
         || normalized_model.starts_with("o3")
         || normalized_model.starts_with("o4")
         || is_xai_grok
         || normalized_model.starts_with("deepseek-v4")
-        || normalized_model.starts_with("glm-5");
+        || normalized_model.starts_with("glm-5")
+        || is_gemini;
     if !is_reasoning_model {
         body["temperature"] = json!(0.2);
+    }
+    // Command Code / OpenRouter Gemini thinking passes need a real output
+    // budget. The agent system prompt plus tools otherwise fills a tiny
+    // default cap with reasoning and the visible answer stays empty.
+    if is_gemini {
+        body["max_tokens"] = json!(16384);
     }
     if supports_reasoning_effort {
         body["reasoning_effort"] =
@@ -1291,6 +1300,12 @@ mod tests {
             name: None,
             reasoning_content: Some("I should inspect the file first.".into()),
         }];
+
+        let gemini_body =
+            build_request_body("google/gemini-3.7-flash", &[], &[], "gemini", Some("high"));
+        assert_eq!(gemini_body["max_tokens"], 16384);
+        assert_eq!(gemini_body["temperature"], Value::Null);
+        assert_eq!(gemini_body["reasoning_effort"], Value::Null);
 
         let body = build_request_body("deepseek-v4-pro", &messages, &[], "deepseek", None);
         let assistant = &body["messages"][0];

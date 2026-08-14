@@ -62,6 +62,7 @@ const tauriMock = `
     if (cmd === "has_api_key") return false;
     if (cmd === "get_project_root") return null;
     if (cmd === "list_project_files") return { nodes: [], truncated: false };
+    if (cmd === "active_agent_sessions") return [];
     return null;
   };
   window.__TAURI_INTERNALS__ = {
@@ -125,10 +126,8 @@ async function main() {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        updateAvailable: false,
+        version: "0.1.5",
         forceUpdate: false,
-        currentVersion: "0.1.5",
-        latest: null,
       }),
     }),
   );

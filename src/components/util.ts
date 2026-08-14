@@ -394,7 +394,9 @@ function normalizePlainAssistantMarkdown(src: string): string {
   const withoutToolMarkup = src
     .replace(/<\s*(?:tool_call|function_call|tool_use)\b[^>]*>[\s\S]*?<\/\s*(?:tool_call|function_call|tool_use)\s*>/gi, "")
     .replace(/^\s*<\/?\s*(?:tool_call|function_call|tool_use)\b[^>]*>\s*$/gim, "");
-  const lines = repairFragmentedPaths(withoutToolMarkup.split("\n"));
+  const repaired = promoteStandaloneBoldHeadings(repairGluedProse(withoutToolMarkup))
+    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, "");
+  const lines = repairFragmentedPaths(repaired.split("\n"));
   return normalizeCompletionBlock(lines).join("\n");
 }
 
@@ -422,9 +424,242 @@ function isProcessSentence(sentence: string): boolean {
     "i will describe",
     "let me call",
     "let me look",
+    "let me explore",
+    "i'll explore",
+    "i will explore",
+    "let me inspect",
+    "i'll look",
+    "i will look",
+    "let and explore",
+    "let me also",
+    "i'll also",
+    "next i'll",
+    "now i'll",
+    "let me simplify",
+    "let me give",
+    "let me write",
+    "i'll write",
+    "i will write",
+    "let me provide",
+    "i'll provide",
+    "i will provide",
+    "let me compose",
+    "let me verify",
+    "let me check",
+    "let me start",
+    "let me dig",
+    "i'll dig",
+    "i will dig",
     "okay, the user",
     "ok, the user",
   ].some((prefix) => lower.startsWith(prefix));
+}
+
+/** Drop a trailing "Let me…" / "I'll…" promise so the visible bubble keeps the answer. */
+export function stripTrailingPendingAction(text: string): string {
+  let out = String(text || "").trim();
+  const pending = out.match(
+    /(?:\s+|[—–;:]\s*)(?:let me|i(?:'|’)ll|i will)\s+(?:verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|explore|analy[sz]e|examine|review|investigate|search|scan|dig)\b[\s\S]*$/i,
+  );
+  if (pending?.index != null) {
+    const before = out.slice(0, pending.index).trim();
+    if ([...before].length >= 12) out = before;
+  }
+  return out;
+}
+
+/** Turn a sealed thought into the user-facing reply when the model never posted one. */
+export function visibleAnswerFromThought(thought: string): string {
+  const stripped = compactVisibleReply(thought);
+  return [...stripped].length >= 12 ? stripped : "";
+}
+
+const PROGRESS_ACTION =
+  /\blet me (verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|explore|analyze|dig)\b/i;
+
+function isProgressOnlyBlock(block: string): boolean {
+  const trimmed = block.trim();
+  if (!trimmed) return true;
+  const sentences = trimmed.split(/(?<=[.!?…])\s+/).map((part) => part.trim()).filter(Boolean);
+  if (!sentences.length) return true;
+  return sentences.every((sentence) => {
+    const lower = sentence.toLowerCase();
+    return (
+      /^(let me (verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|call|describe|explore|analyze|dig|write|provide|compose)\b)/i.test(sentence) ||
+      /^(let and explore\b)/i.test(sentence) ||
+      /^(i'll |i will |next i'll |now i'll )(verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|call|explore|analyze|dig)\b/i.test(sentence) ||
+      (PROGRESS_ACTION.test(lower) && sentence.length < 180 && /^(let me |i'll |i will )/i.test(sentence))
+    );
+  });
+}
+
+/** Insert a missing space when stream chunks glue "word.Word" or "**bold**Next". */
+export function repairGluedProse(text: string): string {
+  return String(text || "")
+    .split(/(```[\s\S]*?```)/g)
+    .map((segment, index) => {
+      if (index % 2 === 1) return segment;
+      return segment
+        .replace(/([a-z0-9])([.!?…])([A-Z])/g, "$1$2 $3")
+        .replace(/(\*\*[^*]+?\*\*)(?=[A-Za-z(])/g, "$1 ");
+    })
+    .join("");
+}
+
+function streamJoinGap(left: string, right: string): string {
+  if (/\s$/.test(left) || /^\s/.test(right)) return "";
+  const a = left.slice(-1);
+  const b = right.charAt(0);
+  if (!a || !b) return "";
+  if (/[.!?…]/.test(a) && /[A-Za-z]/.test(b)) return " ";
+  if (/[a-z0-9*]/.test(a) && /[A-Z]/.test(b)) return " ";
+  return "";
+}
+
+/** Merge a reasoning/prose delta without duplicating a full snapshot. */
+export function joinStreamChunks(left: string, right: string): string {
+  if (!right) return left || "";
+  if (!left) return right;
+  if (right.startsWith(left)) return right;
+  if (left.startsWith(right)) return left;
+  if (left.endsWith(right)) return left;
+  const max = Math.min(left.length, right.length, 240);
+  for (let n = max; n >= 12; n -= 1) {
+    if (left.slice(-n) === right.slice(0, n)) return left + right.slice(n);
+  }
+  return left + streamJoinGap(left, right) + right;
+}
+
+/** Cut a reasoning loop that reprints its opening paragraph. */
+export function dedupeLoopedReasoning(text: string): string {
+  const src = String(text || "");
+  if (src.length < 80) return src;
+  const probeLen = Math.min(140, Math.floor(src.length / 2));
+  const probe = src.slice(0, probeLen);
+  const second = src.indexOf(probe, Math.max(24, probeLen - 16));
+  if (second >= probeLen - 16) return src.slice(0, second).trimEnd();
+  return src;
+}
+
+export function mergeReasoningStream(existing: string, chunk: string): string {
+  return dedupeLoopedReasoning(repairGluedProse(joinStreamChunks(String(existing || ""), String(chunk || ""))));
+}
+
+function promoteStandaloneBoldHeadings(src: string): string {
+  return String(src || "").replace(
+    /^(?:\*\*|__)([^\n*.]{2,56}?)(?:-)?(?:\*\*|__)\s*-{0,3}\s*$/gm,
+    "### $1",
+  );
+}
+
+function dropOrphanContinuations(text: string, dropLowercase = false): string {
+  let remaining = String(text || "").trimStart();
+  while (remaining) {
+    const match = remaining.match(/^[\s\S]*?(?:[.!?…]|\n|$)/);
+    const sentence = match?.[0] || remaining;
+    if (!sentence) break;
+    if (!sentence.trim()) {
+      remaining = remaining.slice(sentence.length);
+      continue;
+    }
+    const trimmed = sentence.trim();
+    const danglingLead = /^-based\b|^based answer\.?$/i.test(trimmed);
+    const lowercaseFragment =
+      dropLowercase &&
+      /^[a-z]/.test(trimmed) &&
+      trimmed.length < 140 &&
+      !/^`|^[-*] |^#{1,3}\s/.test(trimmed);
+    if (danglingLead || lowercaseFragment) {
+      remaining = remaining.slice(sentence.length);
+      continue;
+    }
+    break;
+  }
+  return remaining.trim();
+}
+
+/** Drop mid-reply "Let me verify…" progress lines so the bubble stays the answer. */
+export function compactVisibleReply(text: string): string {
+  const repaired = repairGluedProse(String(text || ""));
+  const stripped = stripProcessPreamble(repaired);
+  const afterOrphans = dropOrphanContinuations(
+    stripped,
+    stripped !== repaired.trimStart(),
+  );
+  const prepared = stripTrailingPendingAction(afterOrphans);
+  return prepared
+    .split(/\n{2,}/)
+    .map((block) => stripTrailingPendingAction(block.trim()))
+    .filter((block) => block && !isProgressOnlyBlock(block))
+    .join("\n\n")
+    .trim();
+}
+
+/**
+ * Accumulate provider deltas without ever replacing the lossless source with a
+ * presentation-cleaned snapshot. Streaming cleanup can temporarily hide an
+ * unfinished preamble; retaining `source` guarantees later chunks can restore
+ * the complete answer instead of continuing from a truncated rendering.
+ */
+export function appendVisibleAssistantChunk(
+  source: string,
+  chunk: string,
+): { source: string; visible: string } {
+  const nextSource = String(source || "") + String(chunk || "");
+  return {
+    source: nextSource,
+    visible: compactVisibleReply(nextSource),
+  };
+}
+
+/**
+ * Tool-call responses often contain short process narration rather than the
+ * answer. Preserve structured plans and substantive prose, but suppress the
+ * "let me inspect…" fragments that would otherwise become permanent bubbles.
+ */
+export function looksLikeProvisionalToolNarration(text: string): boolean {
+  const raw = repairGluedProse(String(text || "")).trim();
+  const visible = compactVisibleReply(raw);
+  if (!visible) return true;
+  if (
+    visible.length >= 420 ||
+    /(?:^|\n)#{1,3}\s+/.test(visible) ||
+    /(?:^|\n)\s*(?:[-*]|\d+[.)])\s+/.test(visible) ||
+    /\|[^\n]+\|/.test(visible) ||
+    /```/.test(visible)
+  ) {
+    return false;
+  }
+  if (/^[a-z]/.test(visible)) return true;
+  return /(?:^|[\s—–;:])(?:let me|i(?:'|’)ll|i will)\s+(?:verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|explore|analy[sz]e|examine|review|investigate|search|scan|dig)\b/i
+    .test(raw);
+}
+
+export function looksLikeDeliveryEssay(text: string): boolean {
+  const src = String(text || "");
+  if (/(?:^|\n)#{1,3}\s*result\b/i.test(src)) return true;
+  if (/(?:^|\n)result\s*[—–-]/i.test(src)) return true;
+  const labels = src.match(/(?:^|\n)\s*(?:title|description|summary|features|tech|files)\s*:/gim);
+  return (labels?.length || 0) >= 2;
+}
+
+/** Keep one or two lead sentences when the host Completed card owns the result. */
+export function deliveryLeadFromReply(text: string): string {
+  const compact = compactVisibleReply(text)
+    .split(/\n(?=#{1,3}\s*result\b|(?:\*\*)?result\s*[—–-])/i)[0]
+    .replace(/\n#{1,3}\s*(highlights|technology|files|next steps)\b[\s\S]*$/i, "")
+    .replace(/^#{1,3}\s*result\b[^\n]*\n?/i, "")
+    .replace(/^(?:\*\*)?result\s*[—–-][^\n]*\n?/i, "")
+    .trim();
+  if (!compact || looksLikeDeliveryEssay(compact)) return "";
+  const sentences = compact.split(/(?<=[.!?…])\s+/).filter((part) => {
+    const trimmed = part.trim();
+    return trimmed && !/^[-*]\s/.test(trimmed) && !/^#{1,3}\s/.test(trimmed);
+  });
+  const lead = sentences.slice(0, 2).join(" ").trim();
+  if (!lead || looksLikeDeliveryEssay(lead)) return "";
+  if ([...lead].length <= 280) return lead;
+  return `${lead.slice(0, 277).replace(/\s+\S*$/, "")}…`;
 }
 
 /** Drop leading thought/tool narration so the bubble starts on the real answer. */
@@ -451,7 +686,7 @@ export function stripProcessPreamble(text: string): string {
  */
 export function normalizeAssistantMarkdown(src: string): string {
   if (!src) return "";
-  const stripped = stripProcessPreamble(src);
+  const stripped = compactVisibleReply(src);
   const normalized = stripped.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
   return normalized
     .split(/(```[\s\S]*?```)/g)
@@ -496,6 +731,13 @@ export function renderMarkdown(src: string): string {
   text = text.replace(/^###\s+(.+)$/gm, "<h3>$1</h3>");
   text = text.replace(/^##\s+(.+)$/gm, "<h2>$1</h2>");
   text = text.replace(/^#\s+(.+)$/gm, "<h1>$1</h1>");
+
+  // Models commonly put a blank line between Markdown list items. Collapse
+  // only gaps whose next non-empty line is another marker of the same kind so
+  // one semantic list renders with continuous bullets/numbers.
+  text = text
+    .replace(/(^[-*+] .+)\n[\t ]*\n(?=[-*+] )/gm, "$1\n")
+    .replace(/(^\d+\. .+)\n[\t ]*\n(?=\d+\. )/gm, "$1\n");
 
   // Unordered lists (consecutive lines)
   text = text.replace(/(?:^[-*+] .+(?:\n|$))+/gm, (block) => {

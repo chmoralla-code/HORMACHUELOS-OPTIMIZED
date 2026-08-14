@@ -8,6 +8,8 @@ pub const XAI_API_BASE_URL: &str = "https://api.x.ai/v1";
 
 /// Command Code's hosted API. The chat endpoint is `/alpha/generate`.
 pub const COMMANDCODE_API_BASE_URL: &str = "https://api.commandcode.ai";
+/// OpenAI-compatible Command Code Provider API (Gemini, GPT, and other models).
+pub const COMMANDCODE_PROVIDER_API_BASE_URL: &str = "https://api.commandcode.ai/provider/v1";
 
 const BUILTIN_PROVIDER_IDS: &[&str] = &[
     "deepseek",
@@ -79,13 +81,13 @@ pub struct Settings {
     /// Optional process-name allowlist. Empty means all ordinary apps except the hard blocklist.
     #[serde(default)]
     pub desktop_computer_use_allowed_apps: Vec<String>,
-    /// Provider-neutral task planning and final verification scaffolding.
+    /// Host-owned Director jobs (Answer / Change / Ship / Operate) plus verification.
     /// Defaults on so existing installations benefit after upgrading, while the
     /// user can turn it off from Settings for a lighter direct-response flow.
     #[serde(default = "default_smart_agent_enabled")]
     pub smart_agent_enabled: bool,
     /// Provider-neutral, local-first project and session memory.
-    /// Defaults on after upgrades and can be disabled independently of Smart Agent.
+    /// Defaults on after upgrades and can be disabled independently of Director.
     #[serde(default = "default_flavour_enabled")]
     pub flavour_enabled: bool,
 }

@@ -3,7 +3,7 @@
 
 use crate::agent::HistoryTurn;
 use crate::flavour::FlavourRun;
-use crate::smart_agent::SmartAgentRun;
+use crate::smart_agent::{infer_director_job, SmartAgentRun};
 use crate::state::SessionRun;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -948,10 +948,17 @@ pub async fn run_cursor_turn(
     let mut consecutive_stalled_recoveries: u8 = 0;
     let mut current_prompt = prompt.to_string();
     let mut current_agent_id = resume_agent_id;
-    let smart_agent_active = smart_agent_enabled && requires_project_completion;
     let fast_execution = task_profile.eq_ignore_ascii_case("design_edit_fast")
         || execution_profile.eq_ignore_ascii_case("fast");
-    let mut smart_agent = SmartAgentRun::new(smart_agent_active, fast_execution);
+    let director_job = infer_director_job(
+        user_request,
+        permission_mode,
+        computer_use_enabled || desktop_computer_use_enabled,
+        requires_project_completion,
+        fast_execution,
+    );
+    let mut smart_agent = SmartAgentRun::for_job(director_job, smart_agent_enabled, fast_execution);
+    let smart_agent_active = smart_agent.is_enabled();
     let computer_use_active = computer_use_enabled && !crate::computer_use::is_paused();
     emit(
         &app,
