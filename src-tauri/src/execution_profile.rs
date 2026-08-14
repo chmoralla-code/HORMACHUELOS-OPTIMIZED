@@ -302,7 +302,7 @@ pub fn looks_like_trading_request(prompt: &str) -> bool {
 
 fn has_trading_word(text: &str, words: &[&str]) -> bool {
     text.split(|ch: char| !ch.is_ascii_alphanumeric())
-        .any(|word| words.iter().any(|needle| *needle == word))
+        .any(|word| words.contains(&word))
 }
 
 #[cfg(test)]

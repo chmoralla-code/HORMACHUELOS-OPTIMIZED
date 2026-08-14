@@ -138,10 +138,7 @@ fn extract_spreadsheet(path: &Path, display: &str, size: u64, max_bytes: usize) 
             "Could not open spreadsheet {display}. If it is encrypted or corrupt, use open_path to open it in Excel."
         )
     })?;
-    let names: Vec<String> = calamine::Reader::sheet_names(&workbook)
-        .iter()
-        .cloned()
-        .collect();
+    let names: Vec<String> = calamine::Reader::sheet_names(&workbook).to_vec();
     if names.is_empty() {
         return Ok(format!(
             "Excel workbook: {display} ({size} bytes) has no sheets. Use open_path to open it in Excel."

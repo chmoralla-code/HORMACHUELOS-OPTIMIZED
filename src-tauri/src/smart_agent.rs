@@ -69,7 +69,7 @@ pub fn infer_director_job(
     fast_execution: bool,
 ) -> DirectorJob {
     let text = prompt.trim().to_ascii_lowercase();
-    if permission_mode == "ask" || permission_mode == "plan" {
+    if matches!(permission_mode, "ask" | "research" | "plan") {
         return DirectorJob::Answer;
     }
     if is_answer_prompt(&text) && !looks_like_code_change(&text) {
@@ -84,7 +84,7 @@ pub fn infer_director_job(
     if requires_project_completion {
         return DirectorJob::Ship;
     }
-    if permission_mode == "multi_agent" || permission_mode == "auto" || permission_mode == "full" {
+    if permission_mode == "multi_agent" || permission_mode == "build" {
         return DirectorJob::Change;
     }
     DirectorJob::Answer
@@ -961,7 +961,7 @@ mod tests {
     #[test]
     fn director_maps_fast_edits_to_change_and_computer_use_to_operate() {
         assert_eq!(
-            infer_director_job("change the header color", "auto", false, true, true),
+            infer_director_job("change the header color", "build", false, true, true),
             DirectorJob::Change
         );
         assert_eq!(

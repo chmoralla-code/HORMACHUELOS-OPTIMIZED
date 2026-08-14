@@ -139,9 +139,7 @@ fn parse_version(version: &str) -> Result<Vec<u64>, String> {
     {
         return Err("The update version is invalid.".into());
     }
-    let parts: Vec<&str> = version
-        .split(|ch: char| matches!(ch, '.' | '-' | '+'))
-        .collect();
+    let parts: Vec<&str> = version.split(['.', '-', '+']).collect();
     if parts.len() < 3
         || parts
             .iter()

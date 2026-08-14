@@ -129,7 +129,7 @@ fn emit_cancelled(app: &AppHandle, session_id: &str, iteration: u32) {
 // or software task never stops merely because it has been running for a while.
 const MAX_CONSECUTIVE_STALLED_RECOVERIES: u8 = 4;
 
-/// Shared across Ask / Plan / Research / Auto / Full / Multi-Agent so a
+/// Shared across Ask / Research / Plan / Build / Parallel so a
 /// reasoning model cannot end the turn on a collapsed "Thought for …" row.
 const VISIBLE_REPLY_CONTRACT: &str = "\
 VISIBLE REPLY (all modes): Every turn that does not call a tool MUST end with user-facing reply text. \
@@ -1503,17 +1503,27 @@ fn parallel_readonly_batch_len(tool_calls: &[ToolCall], mode: &str) -> usize {
 
 const MAX_ASK_INSPECTION_ITERATIONS: u32 = 4;
 const MAX_ASK_INSPECTION_TOOLS: usize = 20;
+const MAX_RESEARCH_INSPECTION_ITERATIONS: u32 = 8;
+const MAX_RESEARCH_INSPECTION_TOOLS: usize = 40;
 
-/// Ask mode is research followed by an answer, never an open-ended crawler.
-/// Multi-Agent implementation runs remain uncapped by this guard.
+/// Answer modes gather bounded evidence and then synthesize. Research gets a
+/// larger budget than Ask, but neither can become an open-ended crawler.
 fn ask_research_should_synthesize(
     mode: &str,
     inspection_iterations: u32,
     successful_inspection_tools: usize,
 ) -> bool {
-    mode == "ask"
-        && (inspection_iterations >= MAX_ASK_INSPECTION_ITERATIONS
-            || successful_inspection_tools >= MAX_ASK_INSPECTION_TOOLS)
+    match mode {
+        "ask" => {
+            inspection_iterations >= MAX_ASK_INSPECTION_ITERATIONS
+                || successful_inspection_tools >= MAX_ASK_INSPECTION_TOOLS
+        }
+        "research" => {
+            inspection_iterations >= MAX_RESEARCH_INSPECTION_ITERATIONS
+                || successful_inspection_tools >= MAX_RESEARCH_INSPECTION_TOOLS
+        }
+        _ => false,
+    }
 }
 
 fn is_private_typing_tool(name: &str) -> bool {
@@ -1986,7 +1996,7 @@ fn request_looks_like_plan(text: &str) -> bool {
 
 /// Explicit non-mutation language is an Answer/Ask contract. It must outrank
 /// generic verbs such as `make`, otherwise harmless phrases like "make
-/// reasonable assumptions" can silently grant Multi-Agent autonomy.
+/// reasonable assumptions" can silently grant Build or Parallel autonomy.
 fn request_explicitly_forbids_changes(text: &str) -> bool {
     let text = text.replace('’', "'");
     if rejects_plan_implementation(&text)
@@ -2384,47 +2394,277 @@ fn request_looks_like_file_write(text: &str) -> bool {
     has_verb && has_artifact
 }
 
-/// Map a client request onto Ask, Plan, or Multi-Agent. Follow-ups with no
-/// clear intent keep the current mode.
-pub(crate) fn infer_permission_mode(prompt: &str) -> Option<String> {
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+struct AdaptiveRoute {
+    mode: &'static str,
+    reason: &'static str,
+    complexity: &'static str,
+    risk: &'static str,
+}
+
+fn request_wants_deep_evidence(text: &str) -> bool {
+    [
+        "deep research",
+        "deep analysis",
+        "deep review",
+        "deep audit",
+        "thorough research",
+        "thorough analysis",
+        "thorough review",
+        "comprehensive analysis",
+        "comprehensive review",
+        "exhaustive",
+        "in-depth",
+        "investigate",
+        "benchmark",
+        "cross-check",
+        "cross check",
+        "fact-check",
+        "fact check",
+        "compare alternatives",
+        "compare options",
+        "multiple sources",
+        "cite sources",
+        "security audit",
+        "architecture audit",
+        "performance audit",
+        "dependency audit",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+        || (request_looks_like_analysis(text)
+            && [
+                "architecture",
+                "security",
+                "tests",
+                "risks",
+                "performance",
+                "dependencies",
+                "entire",
+                "whole",
+                "project",
+                "codebase",
+            ]
+            .iter()
+            .any(|needle| contains_task_term(text, needle)))
+}
+
+fn request_explicitly_wants_parallel(text: &str) -> bool {
+    [
+        "multi-agent",
+        "multi agent",
+        "in parallel",
+        "parallelize",
+        "parallelise",
+        "parallel work",
+        "concurrently",
+        "multiple agents",
+        "agent team",
+        "independent workstream",
+        "independent workstreams",
+        "split the work",
+        "split this into",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+fn request_is_broad_change(text: &str) -> bool {
+    [
+        "entire app",
+        "entire application",
+        "entire project",
+        "entire codebase",
+        "whole app",
+        "whole project",
+        "every screen",
+        "every flow",
+        "all major modules",
+        "end-to-end overhaul",
+        "end to end overhaul",
+        "full-stack rewrite",
+        "full stack rewrite",
+        "from scratch",
+        "large-scale refactor",
+        "large scale refactor",
+        "major migration",
+        "across the frontend",
+        "across frontend",
+        "across the backend",
+        "across backend",
+        "across the codebase",
+        "across the project",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+fn request_work_area_count(text: &str) -> usize {
+    [
+        ["frontend", " ui ", " ux ", "layout", "style", " css "].as_slice(),
+        ["backend", "server", " api ", "tauri", "rust"].as_slice(),
+        ["database", "schema", "migration", " sql "].as_slice(),
+        ["test", " qa ", "playwright", "verification"].as_slice(),
+        ["auth", "security", "permission"].as_slice(),
+        ["build", "release", "deploy", " ci ", "installer"].as_slice(),
+    ]
+    .iter()
+    .filter(|needles| needles.iter().any(|needle| text.contains(needle)))
+    .count()
+}
+
+fn request_has_high_risk_terms(text: &str) -> bool {
+    [
+        "delete",
+        "migration",
+        "auth",
+        "authentication",
+        "authorization",
+        "security",
+        "payment",
+        "payments",
+        "production",
+        "deploy",
+        "deployment",
+    ]
+    .iter()
+    .any(|needle| contains_task_term(text, needle))
+}
+
+/// Host-owned Adaptive Director. Explicit modes bypass this classifier.
+fn infer_adaptive_route(prompt: &str) -> Option<AdaptiveRoute> {
     let attached = prompt.contains("[Attached image:") || prompt.contains("[Attached video:");
     let text = classify_request_text(prompt);
     if text.is_empty() {
-        return attached.then(|| "ask".into());
+        return attached.then_some(AdaptiveRoute {
+            mode: "ask",
+            reason: "attached media question",
+            complexity: "low",
+            risk: "low",
+        });
     }
     if request_looks_like_plan(&text) {
-        return Some("plan".into());
+        return Some(AdaptiveRoute {
+            mode: "plan",
+            reason: "planning requested without implementation",
+            complexity: "medium",
+            risk: "low",
+        });
     }
     if asks_to_simplify_or_rephrase(&text) {
-        return Some("ask".into());
-    }
-    if request_explicitly_forbids_changes(&text) {
-        return Some("ask".into());
+        return Some(AdaptiveRoute {
+            mode: "ask",
+            reason: "direct explanation or rewrite",
+            complexity: "low",
+            risk: "low",
+        });
     }
     if request_looks_like_how_to(&text) {
-        return Some("ask".into());
+        return Some(AdaptiveRoute {
+            mode: "ask",
+            reason: "how-to question",
+            complexity: "low",
+            risk: "low",
+        });
     }
-    if matches_plan_apply_phrase(&text, text.chars().count())
+    let deep_evidence = request_wants_deep_evidence(&text);
+    if request_explicitly_forbids_changes(&text) {
+        return Some(AdaptiveRoute {
+            mode: if deep_evidence { "research" } else { "ask" },
+            reason: if deep_evidence {
+                "deep read-only evidence requested"
+            } else {
+                "read-only answer requested"
+            },
+            complexity: if deep_evidence { "high" } else { "medium" },
+            risk: "low",
+        });
+    }
+    let mutates_project = matches_plan_apply_phrase(&text, text.chars().count())
         || request_looks_like_polite_build(&text)
         || request_looks_like_edit_action(&text)
         || request_looks_like_apply_now(&text)
-        || request_looks_like_file_write(&text)
-    {
-        return Some("multi_agent".into());
+        || request_looks_like_file_write(&text);
+    let explicitly_parallel = request_explicitly_wants_parallel(&text);
+    let broad_change = request_is_broad_change(&text);
+    let work_areas = request_work_area_count(&text);
+    if mutates_project {
+        let parallel = explicitly_parallel || broad_change || work_areas >= 3;
+        return Some(AdaptiveRoute {
+            mode: if parallel { "multi_agent" } else { "build" },
+            reason: if explicitly_parallel {
+                "parallel work explicitly requested"
+            } else if parallel {
+                "several independent workstreams detected"
+            } else {
+                "focused implementation request"
+            },
+            complexity: if parallel {
+                "high"
+            } else if work_areas >= 2 {
+                "medium"
+            } else {
+                "low"
+            },
+            risk: if request_has_high_risk_terms(&text) {
+                "high"
+            } else {
+                "guarded"
+            },
+        });
     }
     if request_looks_like_question(&text) {
-        return Some("ask".into());
+        return Some(AdaptiveRoute {
+            mode: "ask",
+            reason: "direct question",
+            complexity: "low",
+            risk: "low",
+        });
     }
     if request_looks_like_build_action(&text) {
-        return Some("multi_agent".into());
+        let parallel = explicitly_parallel || broad_change || work_areas >= 3;
+        return Some(AdaptiveRoute {
+            mode: if parallel { "multi_agent" } else { "build" },
+            reason: if parallel {
+                "broad implementation with independent workstreams"
+            } else {
+                "focused implementation request"
+            },
+            complexity: if parallel { "high" } else { "medium" },
+            risk: if request_has_high_risk_terms(&text) {
+                "high"
+            } else {
+                "guarded"
+            },
+        });
     }
     if request_looks_like_analysis(&text) {
-        return Some("ask".into());
+        return Some(AdaptiveRoute {
+            mode: if deep_evidence { "research" } else { "ask" },
+            reason: if deep_evidence {
+                "deep analysis needs evidence gathering"
+            } else {
+                "bounded analysis request"
+            },
+            complexity: if deep_evidence { "high" } else { "medium" },
+            risk: "low",
+        });
     }
     if attached {
-        return Some("ask".into());
+        return Some(AdaptiveRoute {
+            mode: "ask",
+            reason: "attached media question",
+            complexity: "low",
+            risk: "low",
+        });
     }
     None
+}
+
+/// Backward-compatible mode-only view for tests and legacy call sites.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn infer_permission_mode(prompt: &str) -> Option<String> {
+    infer_adaptive_route(prompt).map(|route| route.mode.into())
 }
 
 pub(crate) fn tool_confirm_summary(name: &str, args: &Value) -> String {
@@ -2580,6 +2820,7 @@ pub async fn run_loop(
     cursor_resume_agent_id: Option<String>,
     task_profile: Option<String>,
     execution_profile: Option<String>,
+    requested_permission_mode: Option<String>,
 ) -> Result<Option<String>> {
     let root = Path::new(&project_root);
     let execution_profile = crate::execution_profile::ExecutionProfile::resolve(
@@ -2702,17 +2943,64 @@ Describe each image briefly in the visible reply. Do not mention vision provider
             prompt = note;
         }
     }
-    let mut permission_mode = normalized_permission_mode(&settings.permission_mode);
-    if !task_profile.is_design_edit() {
-        if let Some(inferred) = infer_permission_mode(&user_request) {
-            permission_mode = inferred;
+    let captured_effective_mode = normalized_permission_mode(&settings.permission_mode);
+    let requested_mode = normalized_permission_mode(
+        requested_permission_mode
+            .as_deref()
+            .unwrap_or(&settings.permission_mode),
+    );
+    let mut adaptive_route = None;
+    let mut permission_mode = if task_profile.is_design_edit() {
+        if requested_mode == "adaptive" {
+            adaptive_route = Some(AdaptiveRoute {
+                mode: "build",
+                reason: "focused design edit",
+                complexity: "low",
+                risk: "guarded",
+            });
         }
-    }
-    let mut requires_project_completion = if permission_mode == "ask" || permission_mode == "plan" {
-        false
+        "build".into()
+    } else if requested_mode == "adaptive" {
+        adaptive_route = infer_adaptive_route(&user_request).or_else(|| {
+            let fallback = match captured_effective_mode.as_str() {
+                "ask" | "research" | "plan" | "build" | "multi_agent" => {
+                    captured_effective_mode.as_str()
+                }
+                _ => "ask",
+            };
+            Some(AdaptiveRoute {
+                mode: match fallback {
+                    "research" => "research",
+                    "plan" => "plan",
+                    "build" => "build",
+                    "multi_agent" => "multi_agent",
+                    _ => "ask",
+                },
+                reason: if fallback == "ask" {
+                    "ambiguous request; safest useful route"
+                } else {
+                    "continuing the active workflow"
+                },
+                complexity: "medium",
+                risk: if matches!(fallback, "build" | "multi_agent") {
+                    "guarded"
+                } else {
+                    "low"
+                },
+            })
+        });
+        adaptive_route
+            .map(|route| route.mode.to_string())
+            .unwrap_or_else(|| "ask".into())
     } else {
-        task_requires_project_completion(&user_request, task_profile)
+        requested_mode.clone()
     };
+    let mut requires_project_completion =
+        if matches!(permission_mode.as_str(), "ask" | "research" | "plan") {
+            false
+        } else {
+            task_requires_project_completion(&user_request, task_profile)
+        };
     let director_job = crate::smart_agent::infer_director_job(
         &user_request,
         &permission_mode,
@@ -2723,9 +3011,9 @@ Describe each image briefly in the visible reply. Do not mention vision provider
     requires_project_completion = requires_project_completion && director_job.allows_done();
     if director_job == crate::smart_agent::DirectorJob::Answer
         && permission_mode != "plan"
+        && permission_mode != "research"
         && permission_mode != "multi_agent"
-        && permission_mode != "auto"
-        && permission_mode != "full"
+        && permission_mode != "build"
     {
         permission_mode = "ask".into();
         requires_project_completion = false;
@@ -2870,6 +3158,10 @@ Current user request:\n{prompt}",
                     smart_agent_enabled,
                     task_profile.wire_name(),
                     execution_profile.wire_name(),
+                    &requested_mode,
+                    adaptive_route.map(|route| route.reason),
+                    adaptive_route.map(|route| route.complexity),
+                    adaptive_route.map(|route| route.risk),
                     &mut flavour,
                 )
                 .await;
@@ -3036,7 +3328,7 @@ ANSWERS THAT ARE NOT APPLY:\n\
 - A new request such as \"build a website\" or \"add a dashboard\" is not confirmation. Plan again. Do not write files.\n\
 \n\
 ONLY AFTER the user confirms Apply (clicks Apply, or clearly says \"apply this plan\" / \"implement the plan\" / \"go ahead\"):\n\
-- The run switches to Multi-Agent and implements the agreed plan.\n\
+- The run switches to Build and implements the agreed plan with one focused owner.\n\
 - Prefer read_file / list_dir / glob / grep first if you need project context.\n\
 - If the user rejects the plan or asks to change it, adapt and stay locked; do not write files yet.\n\
 \n\
@@ -3049,15 +3341,15 @@ PLAN MODE RULES:\n\
 - Pure questions still get direct answers with no tools.\n\
 - Keep language simple and human. No marketing fluff.",
         "ask" => "\
-=== ACTIVE MODE: ASK (maximum answer reliability) ===\n\
-You are an evidence-first research analyst and code archaeologist. Your primary job is to ANSWER the user's question clearly and completely.\n\
+=== ACTIVE MODE: ASK (direct, bounded answer) ===\n\
+Your primary job is to ANSWER the user's question clearly and completely with the minimum useful investigation.\n\
 FILE CREATE / WRITE / EDIT TOOLS ARE LOCKED. You may use every other tool, including search, browser, computer, and agents.\n\
 \n\
 ANSWER CONTRACT:\n\
 - Every turn must end with a substantive visible answer. Never finish with only thinking, a status line, raw tool output, or an announced next step.\n\
 - If the user attached an image, describe each one in 1-2 short sentences or a tight bullet list. Never end on thinking only.\n\
 - Answer straightforward questions directly from reliable context; do not force tool use when it adds no value.\n\
-- For project-specific or uncertain questions, investigate with the smallest useful set of tools: list_dir, glob, grep, read_file, file_info, git_status, web_search, browse_page, computer_observe.\n\
+- For project-specific or uncertain questions, investigate with the smallest useful set of tools. Stop gathering as soon as the answer is supported.\n\
 - After tools return, always synthesize the evidence into an answer. If a tool fails, continue with what you have. Never quote HTTP status, provider ids, or paste-temp paths to the user.\n\
 - When the user asks where a project file is, or for its full path/directory, answer with the absolute filesystem path by joining the project root with the relative path from write_file/file_info. Do not list_dir the whole project. Do not call done.\n\
 - When the user names an absolute folder or file (for example C:\\Users\\…\\Music\\BEDYUS), inspect it with list_dir / read_file / grep / file_info / view_image / view_video using that exact path. Do not refuse, do not say tools are locked to the project, and do not only offer Explorer.\n\
@@ -3071,58 +3363,68 @@ ANSWER CONTRACT:\n\
 FILE WRITES ARE PROHIBITED:\n\
 - Do not call write_file, edit_file, delete_file, make_dir, copy_file, move_file, run_command, git commit/init, or download_file.\n\
 - If the user asks to open, show, or preview the website, call start_dev_server and open it in Preview. Do not tell them to run npm run dev themselves.\n\
-- If the user asks you to build or add something, say you need Multi-Agent / Apply to change files, then still answer any question part of the request.\n\
+- If the user asks you to build or add something, say they can choose Build (or confirm Apply from Plan); use Parallel only for independent workstreams. Still answer any question part of the request.\n\
 - Pure Ask turns end with the answer, not a product-delivery done card.\n\
 \n\
-Keep language precise, organized, and human. No filler or marketing fluff.",        "auto" => "\
-=== ACTIVE MODE: AUTO (balanced builder) ===\n\
-You implement efficiently inside the project with smart defaults.\n\
+Keep language precise, organized, and human. No filler or marketing fluff.",
+        "research" => "\
+=== ACTIVE MODE: RESEARCH (deep read-only evidence) ===\n\
+You are a rigorous research analyst and code archaeologist. Investigate broadly enough to answer the requested scope, then synthesize one clear report.\n\
+FILE CREATE / WRITE / EDIT / DELETE / SHELL TOOLS ARE LOCKED. Do not change the workspace or external systems.\n\
+\n\
+RESEARCH CONTRACT:\n\
+- Start with the user's exact questions and define a small evidence checklist.\n\
+- Use local project evidence first. Use web_search/browse_page only when current public facts or external documentation are necessary.\n\
+- Cross-check important claims, distinguish verified facts from inference, and call out meaningful uncertainty.\n\
+- Prefer representative evidence over dumping every file. Stop after the scope is covered or the host research budget is reached.\n\
+- End with one substantive visible synthesis. Never end on thinking, raw tool output, or a promise to continue.\n\
+- Never call done; Research is an answer workflow, not a delivery card.\n\
+- Do not ask the user to switch modes unless they also requested implementation.\n\
+\n\
+Keep the report answer-first, prioritized, and readable. Use headings only when they improve a long response.",
+        "build" => "\
+=== ACTIVE MODE: BUILD (focused implementation) ===\n\
+You own one coherent implementation from inspection through verification.\n\
 \n\
 BEHAVIOR:\n\
 - Act on clear build/fix requests without a long planning essay.\n\
 - Use sensible defaults for stack, structure, and naming unless the user specified them.\n\
 - In-project writes, edits, scaffolds, and build/test commands run without approval prompts.\n\
 - You WILL still be prompted for high-risk actions: delete_file, kill_process, and anything outside the project root.\n\
-- Prefer ask_user only when a real fork exists (e.g. React vs plain HTML) and defaults would be wrong.\n\
+- Keep one owner and ordered dependent actions. Use parallel read-only inspection only when those reads are genuinely independent.\n\
+- Prefer ask_user only when a real fork exists (e.g. React vs plain HTML) and defaults would materially change the result.\n\
 - After scaffolding: read generated files, then edit; verify with build/test when possible.\n\
 - Keep text short. Prefer doing over narrating.\n\
 - On tool failure: fix root cause and retry once or twice, then report clearly.",
         "multi_agent" => "\
-=== ACTIVE MODE: MULTI-AGENT (parallel discovery, full autonomy) ===\n\
-You have the same full-permission policy as Ship. Move quickly, but coordinate independent work safely.\n\
+=== ACTIVE MODE: PARALLEL / MULTI-AGENT (coordinated workstreams) ===\n\
+Use parallelism only for independent discovery or separable workstreams. One Director owns scope, ordering, integration, verification, and the final answer.\n\
 \n\
 BEHAVIOR:\n\
 - For each workspace discovery step, issue all independent local inspection tools in the SAME tool response before any command or edit. Good examples: list_dir + glob + grep + read_file + git_status. Each call must use one exact snake_case tool name and its own arguments; never merge tool names into a single call.\n\
-- The host starts that independent inspection pack together and preserves the results in the order you requested.\n\
+- The host starts that independent inspection pack together and preserves results in request order.\n\
+- Give every workstream a distinct responsibility. Never have two workstreams edit the same file or depend on an unseen result.\n\
 - Do NOT assume one tool's result while creating another call in that same pack.\n\
 - Keep writes, edits, shell commands, git mutations, browser actions, account flows, approvals, and computer actions strictly ordered after the information they need.\n\
 - Immediately implement clear requests. Skip long planning essays; a one-line status is enough.\n\
 - Choose practical defaults, verify with build/test when possible, and self-heal failures before giving up.\n\
-- Never invent unrelated work. Stay on the user goal and call done only after the result is verified.",
+- Merge findings once, resolve conflicts centrally, run integrated verification, and call done only after the whole result is verified.\n\
+- Never invent unrelated work or multiply agents for a small localized edit.",
         _ => "\
-=== ACTIVE MODE: FULL (maximum autonomy) ===\n\
-The user granted full permission. Move fast end-to-end with zero approval prompts.\n\
-\n\
-BEHAVIOR:\n\
-- Immediately implement clear requests. No approval dialogs will appear for tools.\n\
-- Skip long planning essays; a one-line status is enough before tool use.\n\
-- Choose best-practice stack and structure yourself. Do not ask unless blocked by missing credentials/API keys.\n\
-- You may install packages, run builds, edit any path the tools allow, manage git, and use system tools as needed for the task.\n\
-- Prefer run_command for scaffolding (create-vite, cargo init, etc.), then edit_file/write_file.\n\
-- Verify with build/test when possible; self-heal failures before giving up.\n\
-- Never invent unrelated features. Stay on the user goal.\n\
-- When finished, call done with a short plain summary.",
+=== ACTIVE MODE: SAFE FALLBACK ===\n\
+The mode was not recognized. Do not mutate files or systems. Give a direct visible answer and explain that the user can choose Adaptive, Ask, Research, Plan, Build, or Parallel.",
     };
     let mode_rules = format!("{mode_specific}\n\n{VISIBLE_REPLY_CONTRACT}");
 
     let execution_style = match mode.as_str() {
-        "plan" => "7. In PLAN mode: present the plan and questions first. Do not create or write files until the user confirms Apply (then Multi-Agent implements). Clarifying answers are not Apply.\n",
+        "plan" => "7. In PLAN mode: present the plan and questions first. Do not create or write files until the user confirms Apply (then Build implements). Clarifying answers are not Apply.\n",
         "ask" => "7. In ASK mode: short evidence-first answers. Never create or write files. Never call done. For images, describe them and stop.\n",
-        "auto" => "7. In AUTO mode: keep responses concise. Prefer doing work over long preambles.\n",
-        "multi_agent" => "7. In MULTI-AGENT mode: start independent local inspection tools together, then keep dependent actions ordered.\n",
-        _ => "7. In FULL mode: keep responses very short. Don't explain what you are about to do — do it.\n",
+        "research" => "7. In RESEARCH mode: gather and cross-check bounded read-only evidence, then write one prioritized synthesis. Never mutate files or call done.\n",
+        "build" => "7. In BUILD mode: keep responses concise, implement one coherent change, and run the most relevant check.\n",
+        "multi_agent" => "7. In PARALLEL mode: parallelize only independent work, keep dependencies ordered, integrate once, and verify the whole result.\n",
+        _ => "7. In SAFE FALLBACK: do not mutate files or systems; provide a visible answer.\n",
     };
-    let completion_rule = if mode == "ask" || mode == "plan" {
+    let completion_rule = if matches!(mode.as_str(), "ask" | "research" | "plan") {
         "8. Do not call `done`. End with a short visible answer. No delivery card and no Recommended next step heading unless the user asked for a report.\n"
     } else {
         "8. When the task is COMPLETE, call `done` with a short plain delivery summary: a 2–6 word title, one result sentence in `summary`, and only distinct supporting details in `description` and `features`. Do not repeat the same action, verification, files, or wording across fields. Leave `description` empty when it adds nothing new. Use up to 5 concise features. No hype. Pure conversation can end without done.\n"
@@ -3296,10 +3598,10 @@ TOOL REFERENCE: read_file, write_file, edit_file, list_dir, glob, grep, run_comm
     let trading_request = crate::execution_profile::looks_like_trading_request(&prompt);
     let user_content = if task_profile.is_design_edit() {
         prompt.clone()
-    } else if mode == "ask" && trading_request {
+    } else if matches!(mode.as_str(), "ask" | "research") && trading_request {
         format!(
             "{prompt}\n\n\
-[Ask mode · trading] Analyze this like a desk: instrument, timeframe, structure, invalidation, and risk. Inspect strategy/settings in the project if they exist. Do not invent prices. Never create or write files. Do not call done."
+[Read-only analysis · trading] Analyze this like a desk: instrument, timeframe, structure, invalidation, and risk. Inspect strategy/settings in the project if they exist. Do not invent prices. Never create or write files. Do not call done."
         )
     } else if mode == "ask" && !has_history {
         format!(
@@ -3313,7 +3615,7 @@ TOOL REFERENCE: read_file, write_file, edit_file, list_dir, glob, grep, run_comm
 (3) you MUST call the ask_user tool with options: string[] (2–6 choices) and allow_other=true, \
 including whether to Apply this plan and implement now vs keep planning without file changes. \
 Writing \"choose one\" in text alone does NOT show UI buttons — only the ask_user tool does. \
-Do not write, edit, or create files until I confirm Apply (then Multi-Agent implements). \
+Do not write, edit, or create files until I confirm Apply (then Build implements). \
 Never write that I already confirmed Apply. Never start implementing in this reply. \
 Stack/scope answers are not Apply. After the plan is on screen, stop and wait — the host shows a Plan ready card."
         )
@@ -3330,22 +3632,32 @@ do not only list options in text. Continue or adjust earlier plans instead of re
             "{prompt}\n\n\
 [Ask mode · continuing session] Use this session's history. Keep the visible answer short. Never create or write files. Do not call done."
         )
-    } else if mode == "full" {
+    } else if mode == "research" && !has_history {
         format!(
             "{prompt}\n\n\
-[Full mode active] Implement with full autonomy. Use session history. Stay focused on this request. \
+[Research mode active] Investigate the requested scope in read-only mode, cross-check important claims, and finish with one complete prioritized synthesis. Never change files or call done."
+        )
+    } else if mode == "research" {
+        format!(
+            "{prompt}\n\n\
+[Research mode · continuing session] Use prior evidence and decisions from this session. Gather only what remains necessary, then produce one complete read-only synthesis. Never change files or call done."
+        )
+    } else if mode == "build" {
+        format!(
+            "{prompt}\n\n\
+[Build mode active] Implement one coherent requested change, use session history, and run the most relevant verification. Stay focused on this request. \
 If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         )
     } else if mode == "multi_agent" {
         format!(
             "{prompt}\n\n\
-[Multi-Agent mode active] Implement with Ship-level autonomy. Start independent local inspection tools together, then keep all dependent actions ordered. Use session history and stay focused on this request. \
+[Parallel / Multi-Agent mode active] Coordinate only independent workstreams in parallel, keep dependent actions ordered, integrate once, and verify the whole result. Use session history and stay focused on this request. \
 If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         )
     } else {
         format!(
             "{prompt}\n\n\
-[Auto mode active] Build with sensible defaults. Use session history. High-risk / out-of-project actions may still need approval. \
+[Safe fallback active] Do not mutate files or systems. Give a direct visible answer and suggest choosing Adaptive, Ask, Research, Plan, Build, or Parallel. \
 If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         )
     };
@@ -3401,6 +3713,10 @@ The tool entries are historical summaries; use fresh tools for the current works
         json!({
             "prompt": prompt,
             "permission_mode": mode,
+            "requested_permission_mode": requested_mode,
+            "adaptive_reason": adaptive_route.map(|route| route.reason),
+            "adaptive_complexity": adaptive_route.map(|route| route.complexity),
+            "adaptive_risk": adaptive_route.map(|route| route.risk),
             "smart_agent_enabled": smart_agent_enabled,
             "flavour_enabled": flavour.is_enabled(),
             "task_profile": task_profile.wire_name(),
@@ -4064,7 +4380,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 "status",
                 json!({
                     "message": if mode == "multi_agent" {
-                        format!("Multi-Agent started {} independent workspace checks together…", parallel_calls.len())
+                        format!("Parallel mode started {} independent workspace checks together…", parallel_calls.len())
                     } else {
                         format!("Inspecting {} workspace items in parallel…", parallel_calls.len())
                     },
@@ -4263,10 +4579,10 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 if mode == "plan" && !task_profile.is_design_edit() {
                     if ask_user_confirms_plan_implementation(&response, &question) {
                         run.set_plan_implementation_unlocked(true);
-                        mode = "multi_agent".into();
+                        mode = "build".into();
                         smart_agent.promote_to_change(&app, &session_id);
                         response.push_str(
-                            "\n\n[System] The user confirmed Apply. Switched to Multi-Agent. You may now write, edit, and run commands to implement the agreed plan.",
+                            "\n\n[System] The user confirmed Apply. Switched to Build. Use one focused owner; you may now write, edit, and run commands to implement and verify the agreed plan.",
                         );
                     } else if !run.plan_implementation_unlocked() {
                         response.push_str(
@@ -4276,12 +4592,17 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 }
                 (true, response)
             } else {
-                if tools::file_writes_blocked(
+                if !tools::tool_allowed_for_permission_phase(
+                    &tc.name,
                     &mode,
                     run.plan_implementation_unlocked() || task_profile.is_design_edit(),
-                ) && tools::is_file_mutating_tool(&tc.name)
-                {
-                    let denied = tools::PLAN_LOCK_MESSAGE.to_string();
+                ) {
+                    let denied = if mode == "research" || mode == "adaptive" {
+                        "Research is strictly read-only. This tool is outside the evidence-gathering allowlist; continue with read, search, observation, or question tools and then synthesize the answer."
+                            .to_string()
+                    } else {
+                        tools::PLAN_LOCK_MESSAGE.to_string()
+                    };
                     flavour.record_tool_result(&tc.id, &tc.name, &tc.arguments, false, &denied);
                     emit(
                         &app,
@@ -4678,7 +4999,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
             continue;
         }
 
-        if mode == "ask"
+        if matches!(mode.as_str(), "ask" | "research")
             && !ask_synthesis_forced
             && resp
                 .tool_calls
@@ -4699,12 +5020,20 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     &session_id,
                     "status",
                     json!({
-                        "message": "Evidence gathered — composing the final answer…",
+                        "message": if mode == "research" {
+                            "Research evidence gathered — cross-checking and composing the report…"
+                        } else {
+                            "Evidence gathered — composing the final answer…"
+                        },
                         "iteration": iteration,
                     }),
                 );
                 messages.push(ChatMessage::user(
-                    "[Host instruction — Ask mode] You have enough workspace evidence. Do not call any more tools. Synthesize the complete user-facing answer now. Follow the requested headings, explain findings in plain language without dumping file-path lists, prioritize findings, distinguish evidence from inference, and do not narrate your process.",
+                    if mode == "research" {
+                        "[Host instruction — Research mode] The bounded evidence budget is complete. Do not call any more tools. Cross-check the evidence already gathered and synthesize one complete, prioritized user-facing report. Distinguish verified facts from inference and uncertainty, cover every requested area, avoid file-path dumps, and do not narrate your process."
+                    } else {
+                        "[Host instruction — Ask mode] You have enough workspace evidence. Do not call any more tools. Synthesize the complete user-facing answer now. Follow the requested headings, explain findings in plain language without dumping file-path lists, prioritize findings, distinguish evidence from inference, and do not narrate your process."
+                    },
                 ));
             }
         }
@@ -4752,9 +5081,11 @@ fn uses_cursor_sdk(provider: &str) -> bool {
 
 fn normalized_permission_mode(mode: &str) -> String {
     match mode.trim().to_ascii_lowercase().as_str() {
-        // Legacy "research" sessions/settings map to ask.
-        "ask" | "research" => "ask".into(),
-        "plan" | "auto" | "full" | "multi_agent" => mode.trim().to_ascii_lowercase(),
+        "auto" => "adaptive".into(),
+        "full" => "build".into(),
+        "adaptive" | "ask" | "research" | "plan" | "build" | "multi_agent" => {
+            mode.trim().to_ascii_lowercase()
+        }
         _ => "plan".into(),
     }
 }
@@ -4850,22 +5181,22 @@ fn desktop_control_effort(configured: &str, prompt: &str, desktop_enabled: bool)
 fn cursor_permission_instructions(mode: &str) -> &'static str {
     match mode {
         "multi_agent" => {
-            "Execution mode: MULTI-AGENT. Use Ship-level autonomy. Start independent local discovery tools together; keep edits, commands, browser actions, and computer control ordered. If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
+            "Execution mode: PARALLEL / MULTI-AGENT. Parallelize only independent discovery or disjoint workstreams. Give each workstream distinct ownership; keep dependent edits, commands, browser actions, and computer control ordered. Integrate once, verify the whole result, and write one final user-facing answer. Never finish with thinking only."
         }
-        "full" => {
-            "Execution mode: FULL. The user permits project work inside the selected project directory. If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
-        }
-        "auto" => {
-            "Execution mode: AUTO. Work inside the selected project directory and rely on Cursor Auto-review. If an action cannot be reviewed safely, stop and explain the limitation. If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
+        "build" => {
+            "Execution mode: BUILD. One focused owner must inspect, implement the smallest coherent change, run the most relevant verification, repair failures, and deliver. Work inside the selected project directory with Auto-review safeguards. If a turn does not call a tool, write the user-facing answer in visible reply text — never thinking only."
         }
         "ask" => {
             "Execution mode: ASK. Answer the user's question in a short visible reply. For attached images, describe each in 1-2 sentences. Do not write Result or Recommended next step sections. Do not call done. Do not mention vision providers, HTTP errors, or paste paths. You may use read, search, browser, computer, question tools, and start_dev_server to open the project's live website. Never create, edit, or write files, and do not run shell/scaffold commands. Never finish with only thinking/reasoning."
         }
+        "research" => {
+            "Execution mode: RESEARCH. Perform deep but bounded read-only investigation, cross-check important claims, distinguish evidence from inference, and finish with one prioritized synthesis. Never create, edit, delete, or write files; never run shell/scaffold commands or mutate external systems; never call done or finish with only thinking."
+        }
         "plan" => {
-            "Execution mode: PLAN. File create/write/edit tools are locked; other tools stay available. Restate and improve the request, present a numbered plan in visible reply text, and call ask_user (include whether to Apply/implement now, or keep planning). After they confirm Apply, the run switches to Multi-Agent to implement. Stack or scope answers are not Apply. Never finish with only thinking/reasoning."
+            "Execution mode: PLAN. File create/write/edit tools are locked; other tools stay available. Restate and improve the request, present a numbered plan in visible reply text, and call ask_user (include whether to Apply/implement now, or keep planning). After they confirm Apply, the run switches to Build to implement. Stack or scope answers are not Apply. Never finish with only thinking/reasoning."
         }
         _ => {
-            "Execution mode: PLAN. File create/write/edit tools are locked; other tools stay available. Restate and improve the request, present a numbered plan in visible reply text, and call ask_user (include whether to Apply/implement now, or keep planning). After they confirm Apply, the run switches to Multi-Agent to implement. Stack or scope answers are not Apply. Never finish with only thinking/reasoning."
+            "Execution mode: SAFE FALLBACK. Do not mutate files or systems. Give a direct visible answer and tell the user they can choose Adaptive, Ask, Research, Plan, Build, or Parallel."
         }
     }
 }
@@ -5451,15 +5782,18 @@ mod tests {
         assert_eq!(normalized_permission_mode("unexpected"), "plan");
         assert!(cursor_permission_instructions("plan")
             .contains("File create/write/edit tools are locked"));
-        assert!(cursor_permission_instructions("plan").contains("Multi-Agent"));
+        assert!(cursor_permission_instructions("plan").contains("Build"));
         assert!(!cursor_permission_instructions("plan").contains("Ship-level"));
-        assert_eq!(normalized_permission_mode("research"), "ask");
+        assert_eq!(normalized_permission_mode("auto"), "adaptive");
+        assert_eq!(normalized_permission_mode("full"), "build");
+        assert_eq!(normalized_permission_mode("research"), "research");
         assert_eq!(normalized_permission_mode("ask"), "ask");
         assert!(
             cursor_permission_instructions("ask").contains("Never create, edit, or write files")
         );
         assert_eq!(normalized_permission_mode("multi_agent"), "multi_agent");
         assert!(cursor_permission_instructions("multi_agent").contains("MULTI-AGENT"));
+        assert!(cursor_permission_instructions("research").contains("bounded read-only"));
     }
 
     #[test]
@@ -5546,42 +5880,42 @@ mod tests {
         );
         assert_eq!(
             infer_permission_mode("analyze the architecture and report the main risks").as_deref(),
-            Some("ask")
+            Some("research")
         );
         assert_eq!(
             infer_permission_mode(
                 "Analyze this Crispy King project in read-only mode. Do not change any files. Inspect the architecture, security, and tests. Give a thorough final report, make reasonable assumptions, and finish with a complete answer."
             )
             .as_deref(),
-            Some("ask")
+            Some("research")
         );
         assert_eq!(
             infer_permission_mode("review the architecture and fix the login bug").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("make a responsive dashboard").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode(
                 "can you add this form after the final interview if employee passed the interview"
             )
             .as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("add a login page to this app").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("implement the plan").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("[Attached image: C:\\tmp\\form.png] can you add this form")
                 .as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(infer_permission_mode("yes"), None);
         assert_eq!(infer_permission_mode("React + Vite"), None);
@@ -5600,36 +5934,33 @@ mod tests {
         );
         assert_eq!(
             infer_permission_mode("change this to atindans").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("can you change this heading to atindans?").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("[Attached image: a.png]\nchange this to atindans").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("please update the heading").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("make this heading atindans").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("turn this into a submit button").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("rename this button to Submit").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
-        assert_eq!(
-            infer_permission_mode("do it").as_deref(),
-            Some("multi_agent")
-        );
+        assert_eq!(infer_permission_mode("do it").as_deref(), Some("build"));
         assert_eq!(
             infer_permission_mode("how do I change the title?").as_deref(),
             Some("ask")
@@ -5651,19 +5982,19 @@ mod tests {
         );
         assert_eq!(
             infer_permission_mode("can you make md file for this conversation session?").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("can you make md file for this conversation session").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("save this as SESSION-NOTES.md").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("create a markdown file of this chat").as_deref(),
-            Some("multi_agent")
+            Some("build")
         );
         assert_eq!(
             infer_permission_mode("how do I make a file?").as_deref(),
@@ -5679,7 +6010,19 @@ mod tests {
                 "okay apply all your suggestions except '2. Make SMS actually send.'"
             )
             .as_deref(),
+            Some("build")
+        );
+        assert_eq!(
+            infer_permission_mode(
+                "Refactor the entire app across frontend, backend, database, and tests in parallel"
+            )
+            .as_deref(),
             Some("multi_agent")
+        );
+        assert_eq!(
+            infer_permission_mode("Deep research the security architecture; do not change files")
+                .as_deref(),
+            Some("research")
         );
     }
 
@@ -5688,6 +6031,9 @@ mod tests {
         assert!(!ask_research_should_synthesize("ask", 3, 19));
         assert!(ask_research_should_synthesize("ask", 4, 8));
         assert!(ask_research_should_synthesize("ask", 2, 20));
+        assert!(!ask_research_should_synthesize("research", 7, 39));
+        assert!(ask_research_should_synthesize("research", 8, 12));
+        assert!(ask_research_should_synthesize("research", 3, 40));
         assert!(!ask_research_should_synthesize("multi_agent", 40, 200));
     }
 

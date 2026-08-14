@@ -357,6 +357,36 @@ pub fn is_readonly_tool(name: &str) -> bool {
     )
 }
 
+/// Evidence-gathering tools allowed in Research mode. This is narrower than
+/// the historical read-only bucket: authentication, completion, process
+/// mutation, Preview actions, and external side effects are intentionally out.
+pub fn is_research_tool(name: &str) -> bool {
+    let name = canonical_tool_name(name).unwrap_or(name);
+    matches!(
+        name,
+        "read_file"
+            | "list_dir"
+            | "glob"
+            | "grep"
+            | "git_status"
+            | "list_drives"
+            | "sys_info"
+            | "env_vars"
+            | "list_processes"
+            | "file_info"
+            | "view_image"
+            | "view_video"
+            | "ask_user"
+            | "todo_write"
+            | "integration_status"
+            | "web_search"
+            | "browse_page"
+            | "computer_observe"
+            | "computer_list_windows"
+            | "computer_observe_window"
+    )
+}
+
 /// Tools that create, overwrite, move, or delete files (including shell).
 pub fn is_file_mutating_tool(name: &str) -> bool {
     let name = canonical_tool_name(name).unwrap_or(name);
@@ -377,11 +407,12 @@ pub fn is_file_mutating_tool(name: &str) -> bool {
     )
 }
 
-/// Plan / Ask / Research never write files. Other tools stay available.
+/// Adaptive must be resolved before tool selection; if it leaks through, lock
+/// it fail-safe alongside Plan / Ask / Research.
 pub fn file_writes_locked_mode(mode: &str) -> bool {
     matches!(
         mode.trim().to_ascii_lowercase().as_str(),
-        "plan" | "ask" | "research"
+        "adaptive" | "plan" | "ask" | "research"
     )
 }
 
@@ -389,12 +420,22 @@ pub fn file_writes_blocked(mode: &str, unlocked: bool) -> bool {
     file_writes_locked_mode(mode) && !unlocked
 }
 
+/// Authoritative execution-time guard. Schema filtering guides the model, but
+/// an unadvertised or malformed provider tool call must still be denied here.
+pub fn tool_allowed_for_permission_phase(name: &str, mode: &str, unlocked: bool) -> bool {
+    let mode = mode.trim().to_ascii_lowercase();
+    if matches!(mode.as_str(), "research" | "adaptive") {
+        return is_research_tool(name);
+    }
+    !(file_writes_blocked(&mode, unlocked) && is_file_mutating_tool(name))
+}
+
 /// File-write tools that Plan / Ask / Research must not run.
 pub fn is_plan_locked_tool(name: &str) -> bool {
     is_file_mutating_tool(name)
 }
 
-pub const PLAN_LOCK_MESSAGE: &str = "This mode cannot create, edit, or write files. Use read, search, browser, computer, and question tools. To implement, confirm Apply on a plan or ask to build so Multi-Agent can take over.";
+pub const PLAN_LOCK_MESSAGE: &str = "This mode cannot create, edit, or write files. Use read, search, browser, computer, and question tools. To implement, confirm Apply on a plan or choose Build; reserve Parallel for independent workstreams.";
 
 /// Hide file-write tools in Plan / Ask / Research. Plan Apply and design-edit
 /// pass `plan_unlocked` so the next turn can implement.
@@ -403,6 +444,22 @@ pub fn schemas_for_permission_phase(
     mode: &str,
     plan_unlocked: bool,
 ) -> Vec<Value> {
+    if matches!(
+        mode.trim().to_ascii_lowercase().as_str(),
+        "research" | "adaptive"
+    ) {
+        return all
+            .into_iter()
+            .filter(|schema| {
+                let name = schema
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                tool_allowed_for_permission_phase(name, mode, plan_unlocked)
+            })
+            .collect();
+    }
     if !file_writes_blocked(mode, plan_unlocked) {
         return all;
     }
@@ -514,39 +571,38 @@ fn tool_targets_outside_project(name: &str, args: &Value, root: &Path) -> bool {
 }
 
 /// Whether this tool requires user confirmation for the given permission mode.
-/// - plan / ask / research: file writes are hard-blocked (see file-write lock)
+/// - plan / ask / research: file writes are hard-blocked (Research is stricter)
 /// - ask: remaining non-read tools still need Approve
-/// - auto: auto-run in-project work; confirm high-risk + outside-project paths
-/// - full / multi_agent: follow the Ship full-permission policy
+/// - build: auto-run in-project work; confirm high-risk + outside-project paths
+/// - multi_agent: coordinated full-permission policy
 pub fn needs_tool_confirm(name: &str, args: &Value, root: &Path, mode: &str) -> bool {
     let name = canonical_tool_name(name).unwrap_or(name);
     let mode_owned = mode.trim().to_ascii_lowercase();
-    let mode = if mode_owned == "research" {
-        "ask"
-    } else {
-        mode_owned.as_str()
+    let mode = match mode_owned.as_str() {
+        "auto" | "full" => "build",
+        other => other,
     };
     // Computer Use is auto-approved because both tools are hard-scoped to the
     // active Preview tab and cannot send native desktop input.
     if is_computer_tool(name) {
         return false;
     }
-    if mode == "full" || mode == "multi_agent" {
+    if mode == "multi_agent" {
         return false;
     }
-    if mode == "plan" {
+    if mode == "plan" || mode == "adaptive" {
         // Plan never uses Approve dialogs. Writes stay blocked until Apply.
         return false;
     }
     if is_readonly_tool(name) {
         return false;
     }
-    if mode == "ask" {
+    if mode == "ask" || mode == "research" {
         // File writes are hard-blocked. Remaining high-risk process control still
         // needs Approve; everything else (reads, browser, computer, open_path) runs.
         return matches!(name, "kill_process");
     }
-    // Auto (default for any unknown mode)
+    // Build (and conservative legacy fallback)
     // Always confirm destructive / process control
     if matches!(name, "kill_process" | "delete_file") {
         return true;
@@ -555,7 +611,7 @@ pub fn needs_tool_confirm(name: &str, args: &Value, root: &Path, mode: &str) -> 
     if tool_targets_outside_project(name, args, root) {
         return true;
     }
-    // In-project write_file, edit_file, run_command, git_*, make_dir, copy/move, download → auto
+    // In-project write_file, edit_file, run_command, git_*, make_dir, copy/move, download → Build
     false
 }
 
@@ -564,15 +620,15 @@ mod permission_mode_tests {
     use super::{
         execute, file_writes_blocked, is_file_mutating_tool, is_parallel_safe_readonly_tool,
         is_plan_locked_tool, is_supported_tool_name, needs_tool_confirm, normalize_tool_arguments,
-        normalize_tool_name, schemas, schemas_for_permission_phase, schemas_with, ToolRunContext,
-        PLAN_LOCK_MESSAGE,
+        normalize_tool_name, schemas, schemas_for_permission_phase, schemas_with,
+        tool_allowed_for_permission_phase, ToolRunContext, PLAN_LOCK_MESSAGE,
     };
     use serde_json::json;
     use std::collections::BTreeSet;
     use std::path::Path;
 
     #[test]
-    fn full_never_confirms() {
+    fn legacy_full_uses_build_safeguards() {
         let root = Path::new("C:\\proj");
         assert!(!needs_tool_confirm(
             "run_command",
@@ -580,7 +636,7 @@ mod permission_mode_tests {
             root,
             "full"
         ));
-        assert!(!needs_tool_confirm(
+        assert!(needs_tool_confirm(
             "delete_file",
             &json!({ "path": "x.txt" }),
             root,
@@ -589,7 +645,7 @@ mod permission_mode_tests {
     }
 
     #[test]
-    fn multi_agent_uses_the_same_permission_policy_as_full() {
+    fn multi_agent_keeps_full_parallel_permission() {
         let root = Path::new("C:\\proj");
         assert!(!needs_tool_confirm(
             "run_command",
@@ -608,7 +664,14 @@ mod permission_mode_tests {
     #[test]
     fn preview_computer_tools_are_auto_approved_in_every_mode() {
         let root = Path::new("C:\\proj");
-        for mode in ["ask", "auto", "plan", "full", "multi_agent"] {
+        for mode in [
+            "adaptive",
+            "ask",
+            "research",
+            "plan",
+            "build",
+            "multi_agent",
+        ] {
             assert!(!needs_tool_confirm(
                 "computer_observe",
                 &json!({}),
@@ -659,7 +722,7 @@ mod permission_mode_tests {
     }
 
     #[test]
-    fn plan_and_ask_lock_file_write_tools() {
+    fn plan_ask_and_research_enforce_their_read_only_contracts() {
         let root = Path::new("C:\\proj");
         assert!(is_file_mutating_tool("write_file"));
         assert!(is_file_mutating_tool("edit_file"));
@@ -678,6 +741,7 @@ mod permission_mode_tests {
         assert!(file_writes_blocked("plan", false));
         assert!(file_writes_blocked("ask", false));
         assert!(file_writes_blocked("research", false));
+        assert!(file_writes_blocked("adaptive", false));
         assert!(!file_writes_blocked("plan", true));
         assert!(!file_writes_blocked("multi_agent", false));
         assert!(!needs_tool_confirm(
@@ -707,6 +771,33 @@ mod permission_mode_tests {
         assert!(!ask_names.contains(&"write_file".into()));
         assert!(!ask_names.contains(&"run_command".into()));
         assert!(ask_names.contains(&"start_dev_server".into()));
+        let research = schemas_for_permission_phase(schemas(true), "research", false);
+        let research_names: Vec<String> = research
+            .iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(research_names.contains(&"read_file".into()));
+        assert!(research_names.contains(&"web_search".into()));
+        assert!(research_names.contains(&"computer_observe".into()));
+        assert!(!research_names.contains(&"computer_actions".into()));
+        assert!(!research_names.contains(&"start_dev_server".into()));
+        assert!(!research_names.contains(&"connect_account".into()));
+        assert!(!research_names.contains(&"write_file".into()));
+        assert!(tool_allowed_for_permission_phase(
+            "read_file",
+            "research",
+            false
+        ));
+        assert!(!tool_allowed_for_permission_phase(
+            "computer_actions",
+            "research",
+            false
+        ));
+        assert!(!tool_allowed_for_permission_phase(
+            "run_command",
+            "research",
+            false
+        ));
         let unlocked = schemas_for_permission_phase(schemas(true), "plan", true);
         assert!(unlocked
             .iter()
@@ -912,7 +1003,7 @@ mod permission_mode_tests {
     }
 
     #[test]
-    fn ask_and_legacy_research_block_file_writes_without_approve_dialogs() {
+    fn ask_and_research_block_file_writes_without_approve_dialogs() {
         let root = Path::new("C:\\proj");
         for mode in ["ask", "research"] {
             assert!(!needs_tool_confirm(
@@ -956,31 +1047,31 @@ mod permission_mode_tests {
     }
 
     #[test]
-    fn auto_allows_in_project_write_and_command() {
+    fn build_allows_in_project_write_and_command_with_high_risk_guards() {
         let root = Path::new("C:\\proj");
         assert!(!needs_tool_confirm(
             "write_file",
             &json!({ "path": "src/a.ts", "content": "x" }),
             root,
-            "auto"
+            "build"
         ));
         assert!(!needs_tool_confirm(
             "run_command",
             &json!({ "command": "npm test" }),
             root,
-            "auto"
+            "build"
         ));
         assert!(needs_tool_confirm(
             "delete_file",
             &json!({ "path": "src/a.ts" }),
             root,
-            "auto"
+            "build"
         ));
         assert!(needs_tool_confirm(
             "kill_process",
             &json!({ "pid": 1 }),
             root,
-            "auto"
+            "build"
         ));
     }
 
@@ -5487,7 +5578,7 @@ mod security_tests {
         )
         .expect("plain text with an unmatched bracket should use literal search");
         assert!(searched.contains("brackets.txt"));
-        assert_eq!(searched.contains("[literal"), true);
+        assert!(searched.contains("[literal"));
     }
 
     #[test]

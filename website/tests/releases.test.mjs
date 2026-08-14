@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -55,4 +56,15 @@ test("bundled release never exposes a credential", () => {
     JSON.stringify(release),
     /(?:^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}/,
   );
+});
+
+test("download page advertises the independent Optimized release without replacing Standard", () => {
+  const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
+  assert.match(app, /const OPTIMIZED_DOWNLOADS = \{/);
+  assert.match(app, /version: "1\.2\.13"/);
+  assert.match(app, /HORMACHUELOS-OPTIMIZED\/releases\/download\/v1\.2\.13/);
+  assert.match(app, /Hormachuelos_Optimized_1\.2\.13_x64-setup\.exe/);
+  assert.match(app, /Hormachuelos_Optimized_1\.2\.13_x64\.msi/);
+  assert.match(app, /Standard edition/);
+  assert.match(app, /fetch\("\/api\/update"\)/);
 });

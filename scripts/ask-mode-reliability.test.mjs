@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import vm from "node:vm";
+import ts from "typescript";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
@@ -16,7 +18,7 @@ test("Ask mode defaults to Answer Max and requires a visible response", async ()
 
   assert.match(agent, /AutomaticContinuationReason::EmptyAnswer/);
   assert.match(agent, /response_has_visible_answer/);
-  assert.match(agent, /maximum answer reliability/i);
+  assert.match(agent, /direct, bounded answer/i);
   assert.match(agent, /Every turn must end with a substantive visible answer/i);
   assert.match(agent, /Never end on thinking only/);
   assert.match(agent, /VISIBLE_REPLY_CONTRACT/);
@@ -41,10 +43,12 @@ test("Ask mode defaults to Answer Max and requires a visible response", async ()
   assert.match(agent, /fn infer_permission_mode/);
   assert.match(agent, /ask_research_should_synthesize/);
   assert.match(agent, /Evidence gathered — composing the final answer/);
-  assert.match(config, /"ask" \| "research" => "answer_max"/);
+  assert.match(config, /"ask" => "answer_max"/);
+  assert.match(config, /"research" => "investigate"/);
   assert.match(modelbar, /id: "answer_max"/);
-  assert.match(modelbar, /applyIntentMode/);
-  assert.match(settings, /ask: \["answer_max", "investigate", "brief"\]/);
+  assert.match(modelbar, /showAdaptiveRoute/);
+  assert.match(settings, /ask: \["answer_max", "brief"\]/);
+  assert.match(settings, /research: \["investigate", "answer_max"\]/);
   assert.match(agent, /call start_dev_server and open it in Preview/);
   assert.match(tools, /pub fn ensure_project_dev_server/);
 });
@@ -132,28 +136,37 @@ test("Preview sandwich exposes Desktop mode next to Computer Use", async () => {
   assert.match(main, /desktop_computer_use_enabled = event\.detail\?\.enabled === true/);
 });
 
-test("client intent auto-switches Ask, Plan, and Multi-Agent", async () => {
+test("Adaptive Director routes all six workflows without overwriting explicit mode selection", async () => {
   const main = await read("src/main.ts");
+  assert.match(main, /export function inferAdaptiveRoute/);
   assert.match(main, /export function inferPermissionMode/);
-  assert.match(main, /applyIntentMode\(inferredMode\)/);
+  assert.match(main, /selectedMode === "adaptive"/);
+  assert.match(main, /modelBar\.showAdaptiveRoute\(adaptiveRoute\)/);
+  assert.doesNotMatch(main, /applyIntentMode\(inferredMode\)/);
+  assert.match(main, /runSettings,\s*selectedMode,/);
   const start = main.indexOf("export type InferredPermissionMode");
   const end = main.indexOf("async function sendPrompt", start);
   assert.ok(start >= 0 && end > start);
-  const executable = main.slice(start, end)
-    .replace(/export type InferredPermissionMode[\s\S]*?;\s*/, "")
-    .replace("export function", "function")
-    .replace("value: string", "value")
-    .replace(/\): InferredPermissionMode \| null/, ")");
-  const infer = new Function(`${executable}; return inferPermissionMode;`)();
+  const compiled = ts.transpileModule(main.slice(start, end), {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+    },
+  }).outputText;
+  const sandbox = { module: { exports: {} }, exports: null };
+  sandbox.exports = sandbox.module.exports;
+  vm.runInNewContext(compiled, sandbox, { filename: "adaptive-router.ts" });
+  const { inferAdaptiveRoute, inferPermissionMode: infer } = sandbox.module.exports;
+
   assert.equal(infer("what does this form do?"), "ask");
   assert.equal(infer("can you explain this screenshot"), "ask");
   assert.equal(infer("make a plan for the HR module"), "plan");
   assert.equal(
     infer("can you add this form after the final interview if employee passed the interview"),
-    "multi_agent",
+    "build",
   );
-  assert.equal(infer("add a login page to this app"), "multi_agent");
-  assert.equal(infer("implement the plan"), "multi_agent");
+  assert.equal(infer("add a login page to this app"), "build");
+  assert.equal(infer("implement the plan"), "build");
   assert.equal(infer("yes"), null);
   assert.equal(infer("React + Vite"), null);
   assert.equal(infer("how do I add a form?"), "ask");
@@ -163,40 +176,40 @@ test("client intent auto-switches Ask, Plan, and Multi-Agent", async () => {
     "ask",
   );
   assert.equal(infer("can you make it simpler"), "ask");
-  assert.equal(infer("analyze the architecture and report the main risks"), "ask");
-  assert.equal(infer("review the architecture and provide a security assessment"), "ask");
-  assert.equal(infer("review the architecture and fix the login bug"), "multi_agent");
-  assert.equal(infer("make a responsive dashboard"), "multi_agent");
+  assert.equal(infer("analyze the architecture and report the main risks"), "research");
+  assert.equal(infer("review the architecture and provide a security assessment"), "research");
+  assert.equal(infer("review the architecture and fix the login bug"), "build");
+  assert.equal(infer("make a responsive dashboard"), "build");
   assert.equal(
     infer(
       "Analyze this Crispy King project in read-only mode. Do not change any files. " +
       "Inspect the architecture, security, and tests. Give a thorough final report, " +
       "make reasonable assumptions, and finish with a complete answer.",
     ),
-    "ask",
+    "research",
   );
   assert.equal(
     infer("[Attached image: a.png]\ncan you describe what this images are"),
     "ask",
   );
-  assert.equal(infer("change this to atindans"), "multi_agent");
-  assert.equal(infer("can you change this heading to atindans?"), "multi_agent");
+  assert.equal(infer("change this to atindans"), "build");
+  assert.equal(infer("can you change this heading to atindans?"), "build");
   assert.equal(
     infer("[Attached image: a.png]\nchange this to atindans"),
-    "multi_agent",
+    "build",
   );
-  assert.equal(infer("please update the heading"), "multi_agent");
-  assert.equal(infer("make this heading atindans"), "multi_agent");
-  assert.equal(infer("turn this into a submit button"), "multi_agent");
-  assert.equal(infer("rename this button to Submit"), "multi_agent");
-  assert.equal(infer("do it"), "multi_agent");
+  assert.equal(infer("please update the heading"), "build");
+  assert.equal(infer("make this heading atindans"), "build");
+  assert.equal(infer("turn this into a submit button"), "build");
+  assert.equal(infer("rename this button to Submit"), "build");
+  assert.equal(infer("do it"), "build");
   assert.equal(
     infer("can you simply explain your suggestions and give examples"),
     "ask",
   );
   assert.equal(
     infer("okay apply all your suggestions except '2. Make SMS actually send.'"),
-    "multi_agent",
+    "build",
   );
   assert.equal(infer("how do I change the title?"), "ask");
   assert.equal(infer("what's the latest change"), "ask");
@@ -205,11 +218,25 @@ test("client intent auto-switches Ask, Plan, and Multi-Agent", async () => {
     "plan",
   );
   assert.equal(infer("I'm planning to add a login page"), "plan");
-  assert.equal(infer("can you make md file for this conversation session?"), "multi_agent");
-  assert.equal(infer("can you make md file for this conversation session"), "multi_agent");
-  assert.equal(infer("save this as SESSION-NOTES.md"), "multi_agent");
-  assert.equal(infer("create a markdown file of this chat"), "multi_agent");
+  assert.equal(infer("can you make md file for this conversation session?"), "build");
+  assert.equal(infer("can you make md file for this conversation session"), "build");
+  assert.equal(infer("save this as SESSION-NOTES.md"), "build");
+  assert.equal(infer("create a markdown file of this chat"), "build");
   assert.equal(infer("how do I make a file?"), "ask");
+
+  const parallel = inferAdaptiveRoute(
+    "Refactor the entire app across frontend, backend, database, and tests in parallel",
+  );
+  assert.equal(parallel.mode, "multi_agent");
+  assert.equal(parallel.complexity, "high");
+  const riskyBuild = inferAdaptiveRoute("Fix the production authentication security bug");
+  assert.equal(riskyBuild.mode, "build");
+  assert.equal(riskyBuild.risk, "high");
+  const continued = inferAdaptiveRoute("continue", "build");
+  assert.equal(continued.mode, "build");
+  assert.equal(continued.confidence, "medium");
+  const shortFollowUp = inferAdaptiveRoute("React + Vite", "plan");
+  assert.equal(shortFollowUp.mode, "plan");
 });
 
 test("all modes share a visible-reply contract and chat last-resort", async () => {
@@ -223,10 +250,10 @@ test("all modes share a visible-reply contract and chat last-resort", async () =
   assert.match(agent, /VISIBLE REPLY \(all modes\)/);
   assert.match(agent, /do not paste project paths/);
   assert.match(agent, /\[Ask mode active\]/);
+  assert.match(agent, /\[Research mode active\]/);
   assert.match(agent, /\[Plan mode active\]/);
-  assert.match(agent, /\[Auto mode active\]/);
-  assert.match(agent, /\[Full mode active\]/);
-  assert.match(agent, /\[Multi-Agent mode active\]/);
+  assert.match(agent, /\[Build mode active\]/);
+  assert.match(agent, /\[Parallel \/ Multi-Agent mode active\]/);
   assert.match(agent, /never thinking only/i);
   assert.match(chat, /visibleAnswerFromThought/);
   assert.match(chat, /latestSealedThoughtAfterLastUser/);

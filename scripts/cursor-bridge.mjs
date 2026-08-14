@@ -341,20 +341,25 @@ async function nextCursorStreamEvent(iterator, openTools) {
 
 function resolveExecutionPolicy(value) {
   const mode = String(value || "").trim().toLowerCase();
-  if (mode === "full" || mode === "multi_agent") {
-    return { requestedMode: mode, sdkMode: "agent", autoReview: false, readOnly: false };
+  if (mode === "multi_agent") {
+    return { requestedMode: "multi_agent", sdkMode: "agent", autoReview: false, readOnly: false };
   }
   if (mode === "plan") {
     // Cursor builtins stay read-only. Host mutating tools stay registered so
     // Rust can unlock them after the user confirms Apply.
     return { requestedMode: "plan", sdkMode: "plan", autoReview: false, readOnly: true };
   }
-  if (mode === "auto") {
-    return { requestedMode: "auto", sdkMode: "agent", autoReview: true, readOnly: false };
+  if (mode === "build" || mode === "auto" || mode === "full") {
+    return { requestedMode: "build", sdkMode: "agent", autoReview: true, readOnly: false };
   }
-  // "research" is a legacy alias for ask.
-  if (mode === "ask" || mode === "research") {
+  if (mode === "ask") {
     return { requestedMode: "ask", sdkMode: "plan", autoReview: false, readOnly: true };
+  }
+  if (mode === "research") {
+    return { requestedMode: "research", sdkMode: "plan", autoReview: false, readOnly: true };
+  }
+  if (mode === "adaptive") {
+    return { requestedMode: "adaptive", sdkMode: "plan", autoReview: false, readOnly: true };
   }
   // Unknown modes fail closed to read-only.
   return { requestedMode: "plan", sdkMode: "plan", autoReview: false, readOnly: true };
@@ -1131,7 +1136,7 @@ function hasUserFacingContent(text) {
 /**
  * Reasoning models (and Cursor thinking events) sometimes put the entire
  * answer in thinking and finish with empty assistant text. Promote a finished
- * thought so Ask / Plan / Auto / Full / Multi-Agent still get a visible reply.
+ * thought so Ask / Research / Plan / Build / Parallel still get a visible reply.
  */
 function conclusionFromReasoning(reasoning) {
   let remaining = String(reasoning || "").trim();

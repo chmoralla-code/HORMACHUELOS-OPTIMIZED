@@ -14,7 +14,7 @@ export type SessionMessage =
   /** Restores the visual run mode when a transcript is opened again. */
   | {
       type: "run_start";
-      permissionMode: "ask" | "plan" | "multi_agent";
+      permissionMode: "ask" | "research" | "plan" | "build" | "multi_agent";
       executionProfile?: "fast" | "balanced" | "thorough" | "safe";
       at?: number;
     }
@@ -511,10 +511,15 @@ export function appendMultiAgentBatchSnapshot(
   return true;
 }
 
-export function normalizeSessionPermissionMode(value: unknown): "ask" | "plan" | "multi_agent" {
+export function normalizeSessionPermissionMode(
+  value: unknown,
+): "ask" | "research" | "plan" | "build" | "multi_agent" {
   const mode = String(value || "").trim().toLowerCase();
-  if (mode === "ask" || mode === "research") return "ask";
-  return mode === "multi_agent" ? "multi_agent" : "plan";
+  if (mode === "research") return "research";
+  if (mode === "ask") return "ask";
+  if (mode === "build" || mode === "auto" || mode === "full") return "build";
+  if (mode === "multi_agent") return "multi_agent";
+  return "plan";
 }
 
 function redactSessionMessage(message: SessionMessage): SessionMessage {

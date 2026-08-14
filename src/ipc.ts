@@ -11,7 +11,7 @@ export type Settings = {
   max_iterations: number;
   command_timeout_secs: number;
   auto_approve: boolean;
-  /** plan | auto | ask | full | multi_agent (research is a legacy alias for ask) */
+  /** adaptive | ask | research | plan | build | multi_agent (legacy: auto/full) */
   permission_mode: string;
   /** thinking | guided | agent | balanced | investigate | brief | autonomous | max */
   capability_mode: string;
@@ -498,6 +498,7 @@ export const api = {
     taskProfile: AgentTaskProfile = "default",
     executionProfile: AgentExecutionProfile = "auto",
     runSettings?: Settings,
+    requestedPermissionMode?: string,
   ): Promise<string | null> =>
     invoke("agent_run", {
       prompt,
@@ -509,6 +510,7 @@ export const api = {
       taskProfile,
       executionProfile,
       runSettings: runSettings ?? null,
+      requestedPermissionMode: requestedPermissionMode ?? null,
     }),
   agentStop: (sessionId: string): Promise<void> => invoke("agent_stop", { sessionId }),
   /** Native source of truth for cross-project/session busy indicators. */
@@ -614,7 +616,7 @@ export type IntegrationTestResult = {
 };
 
 export type AgentEventPayload =
-  | { kind: "start"; payload: { prompt: string; permission_mode?: string; smart_agent_enabled?: boolean; flavour_enabled?: boolean; task_profile?: AgentTaskProfile; execution_profile?: Exclude<AgentExecutionProfile, "auto">; repair_budget?: number; checkpoint_id?: string | null } }
+  | { kind: "start"; payload: { prompt: string; permission_mode?: string; requested_permission_mode?: string; adaptive_reason?: string; adaptive_complexity?: "low" | "medium" | "high"; adaptive_risk?: "low" | "guarded" | "high"; smart_agent_enabled?: boolean; flavour_enabled?: boolean; task_profile?: AgentTaskProfile; execution_profile?: Exclude<AgentExecutionProfile, "auto">; repair_budget?: number; checkpoint_id?: string | null } }
   | { kind: "task_plan"; payload: { title: string; summary: string; steps: { id: string; label: string; state: string }[]; active_step: number; status: string; detail?: string } }
   | { kind: "task_progress"; payload: { step: number; phase: string; status: string; detail: string; completed_before?: number; complete_all?: boolean } }
   | { kind: "thinking"; payload: { iteration: number } }

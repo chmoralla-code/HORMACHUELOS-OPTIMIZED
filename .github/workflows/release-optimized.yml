@@ -83,15 +83,20 @@ jobs:
           tagName: v__VERSION__
           releaseName: Hormachuelos Optimized v__VERSION__ · Desktop mode
           releaseBody: |
-            Beta of the independent FPS-focused Windows edition.
+            Independent FPS-focused Windows edition.
 
-            This release (1.2.12):
-            - Ask mode auto-switches to Multi-Agent when you ask it to make or save a markdown/session file
-            - In-app Update reads GitHub Pages latest.json, cache-busts the feed, and prompts once when a newer build is live
-            - Version compare accepts 1.2.11-1 style builds so older installs can see 1.2.12
-            - Trading requests route to Thorough and follow a trading workspace policy
-            - Computer Use keeps the pointing-hand cursor through the Preview glow until the run ends
-            - Table-row clicks follow the row link instead of a nested cell
+            This release (1.2.13):
+            - Adds Adaptive Director, a stronger orchestrated mode that selects the best workflow while keeping one coherent final answer
+            - Maximizes Auto routing across Ask, Plan, Research, Multi-Agent, Adaptive Director, and Build intents
+            - Tightens Ask mode for direct, high-quality answers without accidental workspace mutation
+            - Keeps Plan mode read-only until Apply while producing clearer, implementation-ready plans
+            - Strengthens Research mode with evidence-first inspection and structured findings
+            - Improves Multi-Agent delegation, synthesis, and user-visible progress without leaking internal chatter
+            - Makes Build mode more decisive about implementing, validating, and finishing requested changes
+            - Cleans up AI reply typography, headings, lists, tables, code blocks, spacing, and long-session rendering
+            - Improves mode persistence, tool permissions, read-only project inspection, and failure recovery
+
+            Also included:
             - The agent can list and inspect a folder you name under your user profile (Music, Documents, Desktop, Downloads)
             - Excel, CSV, Word, PowerPoint, PDF, images, audio, and video show up in listings; read_file extracts Office/CSV/PDF text; write_file can create .xlsx; open_path opens the default Windows app
             - An empty project folder such as EXCELS still surfaces sibling workbooks in the parent directory
@@ -177,5 +182,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: Hormachuelos Optimized is ready to install from the in-app Update button.
+          UPDATE_WHATS_NEW: Adaptive Director, smarter automatic mode switching, maximized Ask/Plan/Research/Multi-Agent/Build behavior, and a cleaner AI reply layout.
         run: node scripts/publish-update-manifest.mjs --push-pages

@@ -89,6 +89,7 @@ def main() -> None:
             "ollama",
             "deepseek",
             "openrouter",
+            "gemini",
         ], f"unexpected visible provider catalog: {providers}"
         assert body.get_attribute("data-cursor-models") == "grok-4.5,composer-2.5"
         assert body.get_attribute("data-hormachuelos-free-models") == (

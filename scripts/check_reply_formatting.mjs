@@ -444,7 +444,10 @@ assert.equal(
   "read-1|grep-1|read-2",
 );
 assert.equal(normalizeSessionPermissionMode("ask"), "ask");
-assert.equal(normalizeSessionPermissionMode("research"), "ask");
+assert.equal(normalizeSessionPermissionMode("research"), "research");
+assert.equal(normalizeSessionPermissionMode("auto"), "build");
+assert.equal(normalizeSessionPermissionMode("full"), "build");
+assert.equal(normalizeSessionPermissionMode("multi_agent"), "multi_agent");
 
 assert.equal(
   compactVisibleReply("Let me dig into the app structure and key libraries.\n\nHere's my analysis of your project."),
@@ -501,6 +504,7 @@ assert.doesNotMatch(appCss, /#chat > \.msg,\s*\n#chat > \.thinking-wrap/);
 assert.match(appCss, /font-size:\s*14\.25px/);
 assert.match(appCss, /\.msg\.assistant\.structured-reply/);
 assert.match(appCss, /width:\s*fit-content/);
+assert.match(appCss, /\.tool-batch-head\s*\{[^}]*color:\s*var\(--text-muted\)/s);
 assert.doesNotMatch(appCss, /\.tool-batch-wrap\.collapsed\s*~\s*\.tool-card-wrap/);
 assert.match(appCss, /\.multi-agent-batch:not\(\.is-open\) \.multi-agent-tool:not\(\.working\):not\(\.failed\)/);
 

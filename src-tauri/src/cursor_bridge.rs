@@ -128,18 +128,27 @@ impl CursorPassActivity {
 
 fn cursor_host_tool_is_available(name: &str, permission_mode: &str) -> bool {
     let name = crate::tools::normalize_tool_name(name);
+    let mode = permission_mode.trim().to_ascii_lowercase();
     if matches!(name.as_str(), "done" | "todo_write") {
         return false;
     }
     if crate::tools::is_computer_tool(&name) {
+        if matches!(mode.as_str(), "research" | "adaptive") {
+            return crate::tools::is_computer_readonly_tool(&name);
+        }
         return true;
     }
     if !crate::tools::is_supported_tool_name(&name) {
         return false;
     }
-    let mode = permission_mode.trim().to_ascii_lowercase();
-    if matches!(mode.as_str(), "ask" | "research") {
+    if mode == "research" {
+        return crate::tools::is_research_tool(&name);
+    }
+    if mode == "ask" {
         return !crate::tools::is_file_mutating_tool(&name);
+    }
+    if mode == "adaptive" {
+        return crate::tools::is_research_tool(&name);
     }
     true
 }
@@ -775,8 +784,8 @@ fn bounded_cursor_history(history: &[HistoryTurn]) -> Vec<BridgeHistoryTurn> {
 
 fn cursor_permission_enforcement(mode: &str) -> &'static str {
     match mode {
-        "full" | "multi_agent" => "cursor_sdk_agent",
-        "auto" => "cursor_sdk_auto_review",
+        "multi_agent" => "cursor_sdk_agent",
+        "build" | "auto" | "full" => "cursor_sdk_auto_review",
         "plan" => "cursor_sdk_plan_read_only",
         "ask" | "research" => "cursor_sdk_plan_read_only",
         _ => "cursor_sdk_plan_read_only",
@@ -943,6 +952,10 @@ pub async fn run_cursor_turn(
     smart_agent_enabled: bool,
     task_profile: &str,
     execution_profile: &str,
+    requested_permission_mode: &str,
+    adaptive_reason: Option<&str>,
+    adaptive_complexity: Option<&str>,
+    adaptive_risk: Option<&str>,
     flavour: &mut FlavourRun,
 ) -> Result<Option<String>> {
     let mut continuation_pass: u32 = 0;
@@ -970,6 +983,10 @@ pub async fn run_cursor_turn(
             "provider": "OpenAI",
             "model": model,
             "permission_mode": permission_mode,
+            "requested_permission_mode": requested_permission_mode,
+            "adaptive_reason": adaptive_reason,
+            "adaptive_complexity": adaptive_complexity,
+            "adaptive_risk": adaptive_risk,
             "permission_enforcement": cursor_permission_enforcement(permission_mode),
             "host_approval_callbacks": false,
             "computer_use": computer_use_active,
@@ -1663,8 +1680,12 @@ mod tests {
             "cursor_sdk_plan_read_only"
         );
         assert_eq!(
-            cursor_permission_enforcement("auto"),
+            cursor_permission_enforcement("build"),
             "cursor_sdk_auto_review"
+        );
+        assert_eq!(
+            cursor_permission_enforcement("adaptive"),
+            "cursor_sdk_plan_read_only"
         );
     }
 
@@ -1715,8 +1736,8 @@ mod tests {
 
     #[test]
     fn cursor_registers_every_eligible_native_tool_with_permission_filtering() {
-        let full = cursor_host_tool_schemas("full", true, false);
-        let actual = full
+        let build = cursor_host_tool_schemas("build", true, false);
+        let actual = build
             .iter()
             .map(|schema| schema["name"].as_str().expect("host tool name").to_string())
             .collect::<BTreeSet<_>>();
@@ -1735,11 +1756,11 @@ mod tests {
         assert!(!actual.contains("done"));
         assert!(!actual.contains("todo_write"));
         assert!(!actual.contains("computer_list_windows"));
-        assert!(full.iter().all(|schema| {
+        assert!(build.iter().all(|schema| {
             schema["description"].is_string() && schema["inputSchema"]["type"] == "object"
         }));
 
-        let desktop = cursor_host_tool_schemas("full", true, true);
+        let desktop = cursor_host_tool_schemas("build", true, true);
         assert!(desktop
             .iter()
             .any(|schema| schema["name"] == "computer_list_windows"));
@@ -1759,6 +1780,19 @@ mod tests {
             .any(|schema| schema["name"] == "computer_actions"));
         assert!(!ask.iter().any(|schema| schema["name"] == "write_file"));
         assert!(!ask.iter().any(|schema| schema["name"] == "run_command"));
+
+        let research = cursor_host_tool_schemas("research", true, true);
+        assert!(research.iter().any(|schema| schema["name"] == "grep"));
+        assert!(research
+            .iter()
+            .any(|schema| schema["name"] == "computer_observe"));
+        assert!(!research
+            .iter()
+            .any(|schema| schema["name"] == "computer_actions"));
+        assert!(!research.iter().any(|schema| schema["name"] == "open_path"));
+        assert!(!research
+            .iter()
+            .any(|schema| schema["name"] == "connect_account"));
     }
 
     #[test]

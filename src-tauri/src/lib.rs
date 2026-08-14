@@ -158,11 +158,12 @@ async fn save_settings(
     // Normalize permission mode + auto_approve together
     let mode = settings.permission_mode.trim().to_ascii_lowercase();
     settings.permission_mode = match mode.as_str() {
-        "ask" | "research" => "ask".into(),
-        "plan" | "auto" | "full" | "multi_agent" => mode,
+        "auto" => "adaptive".into(),
+        "full" => "build".into(),
+        "adaptive" | "ask" | "research" | "plan" | "build" | "multi_agent" => mode,
         _ => {
             if settings.auto_approve {
-                "auto".into()
+                "adaptive".into()
             } else {
                 "plan".into()
             }
@@ -170,8 +171,10 @@ async fn save_settings(
     };
     settings.auto_approve = matches!(
         settings.permission_mode.as_str(),
-        "auto" | "full" | "multi_agent"
+        "adaptive" | "build" | "multi_agent"
     );
+    settings.capability_mode =
+        config::normalize_capability_for_mode(&settings.permission_mode, &settings.capability_mode);
     settings.validate().map_err(|e| e.to_string())?;
     settings.desktop_computer_use_allowed_apps =
         desktop_computer_use::sanitize_allowed_apps(settings.desktop_computer_use_allowed_apps);
@@ -1204,6 +1207,7 @@ async fn agent_run(
     task_profile: Option<String>,
     execution_profile: Option<String>,
     run_settings: Option<config::Settings>,
+    requested_permission_mode: Option<String>,
     app: tauri::AppHandle,
     state: tauri::State<'_, state::AppState>,
 ) -> Result<Option<String>, String> {
@@ -1326,6 +1330,7 @@ async fn agent_run(
         cursor_resume,
         task_profile,
         Some(resolved_execution_profile.wire_name().to_string()),
+        requested_permission_mode,
     )
     .await;
     checkpoint.mark_finished(if run.cancel.load(std::sync::atomic::Ordering::SeqCst) {

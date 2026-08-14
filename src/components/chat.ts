@@ -161,7 +161,7 @@ export class Chat {
   private thinkingBodyOpen = false;
   /** Live “Running · tool…” row while tools execute (separate from Thought blocks). */
   private runningIndicator: HTMLElement | null = null;
-  /** Cursor-style batch header: “Running N commands” / “Ran N commands”. */
+  /** Compact batch header: “Running N steps” / “Ran N steps”. */
   private toolBatchEl: HTMLElement | null = null;
   private toolBatchCount = 0;
   private toolBatchFailures = 0;
@@ -2249,7 +2249,16 @@ export class Chat {
 
   private setActivePermissionMode(mode: unknown) {
     const normalized = String(mode || "").trim().toLowerCase();
-    this.activePermissionMode = normalized === "multi_agent" ? "multi_agent" : "plan";
+    this.activePermissionMode =
+      normalized === "research"
+        ? "research"
+        : normalized === "ask"
+          ? "ask"
+          : normalized === "build" || normalized === "auto" || normalized === "full"
+            ? "build"
+            : normalized === "multi_agent"
+              ? "multi_agent"
+              : "plan";
     this.node.classList.toggle("chat-multi-agent", this.activePermissionMode === "multi_agent");
     if (this.activePermissionMode !== "multi_agent") this.multiAgentToolIds.clear();
   }
@@ -2693,13 +2702,9 @@ export class Chat {
     if (!this.toolBatchEl) return;
     const n = this.toolBatchCount;
     const premium = this.isPremiumReply();
-    const unit = premium
-      ? n === 1
-        ? "step"
-        : "steps"
-      : n === 1
-        ? "command"
-        : "commands";
+    // A batch can mix reads, searches, browser observations, and commands.
+    // Calling every tool a command is misleading, especially in Research mode.
+    const unit = n === 1 ? "step" : "steps";
     const label = this.toolBatchEl.querySelector(".tool-batch-label") as HTMLElement | null;
     if (!label) return;
     const multiAgent = this.isMultiAgentRun();
@@ -2728,7 +2733,7 @@ export class Chat {
     }
   }
 
-  /** Ensure a Cursor-style “Running N commands” header sits above the current tool streak. */
+  /** Ensure a compact “Running N steps” header sits above the current tool streak. */
   private ensureToolBatch() {
     if (this.toolBatchEl && this.toolBatchEl.isConnected && this.toolBatchOpen) {
       this.toolBatchCount += 1;
@@ -5660,7 +5665,9 @@ export class Chat {
     const submitAnswer = async (answer: string) => {
       if (answerAppliesPlan(answer)) {
         window.dispatchEvent(
-          new CustomEvent("horma:run-permission-mode", { detail: { mode: "multi_agent" } }),
+          new CustomEvent("horma:run-permission-mode", {
+            detail: { mode: "build", persist: true },
+          }),
         );
       }
       markQuestionAnswered(answer);
@@ -5841,7 +5848,12 @@ export class Chat {
         this.setActivePermissionMode(e.payload.permission_mode);
         window.dispatchEvent(
           new CustomEvent("horma:run-permission-mode", {
-            detail: { mode: e.payload.permission_mode },
+            detail: {
+              mode: e.payload.permission_mode,
+              reason: e.payload.adaptive_reason,
+              complexity: e.payload.adaptive_complexity,
+              risk: e.payload.adaptive_risk,
+            },
           }),
         );
         break;

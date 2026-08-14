@@ -80,13 +80,25 @@ test("execution policy maps modes to SDK permissions", () => {
     readOnly: true,
   });
   assert.deepEqual(resolveExecutionPolicy("research"), {
-    requestedMode: "ask",
+    requestedMode: "research",
     sdkMode: "plan",
     autoReview: false,
     readOnly: true,
   });
-  assert.equal(resolveExecutionPolicy("auto").autoReview, true);
-  assert.equal(resolveExecutionPolicy("full").sdkMode, "agent");
+  assert.deepEqual(resolveExecutionPolicy("adaptive"), {
+    requestedMode: "adaptive",
+    sdkMode: "plan",
+    autoReview: false,
+    readOnly: true,
+  });
+  assert.deepEqual(resolveExecutionPolicy("build"), {
+    requestedMode: "build",
+    sdkMode: "agent",
+    autoReview: true,
+    readOnly: false,
+  });
+  assert.equal(resolveExecutionPolicy("auto").requestedMode, "build");
+  assert.equal(resolveExecutionPolicy("full").requestedMode, "build");
   assert.deepEqual(resolveExecutionPolicy("multi_agent"), {
     requestedMode: "multi_agent",
     sdkMode: "agent",

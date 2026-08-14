@@ -3,7 +3,24 @@ import { PROVIDERS, effortOptionsForProvider, displayModelName, getProviderMeta,
 import { clear, el, escapeHtml } from "./util";
 import { icon, icons } from "./icons";
 
-export type PermissionMode = "plan" | "auto" | "ask" | "full" | "multi_agent";
+export type PermissionMode =
+  | "adaptive"
+  | "ask"
+  | "research"
+  | "plan"
+  | "build"
+  | "multi_agent";
+
+export type AdaptiveRouteSummary = {
+  mode: Exclude<PermissionMode, "adaptive">;
+  reason: string;
+  complexity?: "low" | "medium" | "high";
+  risk?: "low" | "guarded" | "high";
+  confidence?: "medium" | "high";
+};
+
+const modeAutoApproves = (mode: PermissionMode) =>
+  mode === "adaptive" || mode === "build" || mode === "multi_agent";
 
 /** Agent permission modes (OpenCode-style chip labels). */
 const MODES: {
@@ -14,42 +31,51 @@ const MODES: {
   capability: string;
 }[] = [
   {
-    id: "plan",
-    chip: "plan",
-    label: "Plan",
+    id: "adaptive",
+    chip: "auto",
+    label: "Adaptive",
     title:
-      "Plan — refine request, suggest options, numbered plan; file writes stay locked until Apply (then Multi-Agent implements).",
-    capability: "Thinking",
-  },
-  {
-    id: "auto",
-    chip: "build",
-    label: "Auto",
-    title:
-      "Auto — build with defaults; high-risk actions still need Approve.",
-    capability: "Agent",
+      "Adaptive Director (Auto) — routes each turn to Ask, Research, Plan, Build, or Parallel without changing your selection.",
+    capability: "Balanced",
   },
   {
     id: "ask",
     chip: "ask",
     label: "Ask",
     title:
-      "Ask — maximum answer reliability with evidence; all tools except file create/write/edit.",
+      "Ask — direct, bounded answers with evidence when needed; project writes stay locked.",
     capability: "Answer Max",
   },
   {
-    id: "full",
-    chip: "ship",
-    label: "Full",
-    title: "Full — maximum autonomy, no approval prompts.",
-    capability: "Autonomous",
+    id: "research",
+    chip: "research",
+    label: "Research",
+    title:
+      "Research — deep read-only investigation, source cross-checking, and one synthesized report.",
+    capability: "Investigate",
+  },
+  {
+    id: "plan",
+    chip: "plan",
+    label: "Plan",
+    title:
+      "Plan — clarify scope, tradeoffs, acceptance criteria, and verification; writes stay locked until Apply.",
+    capability: "Thinking",
+  },
+  {
+    id: "build",
+    chip: "build",
+    label: "Build",
+    title:
+      "Build — one focused owner implements, validates, and repairs the requested change; high-risk actions still need approval.",
+    capability: "Agent",
   },
   {
     id: "multi_agent",
-    chip: "🌈 Multi-Agent",
-    label: "Multi-Agent",
+    chip: "parallel",
+    label: "Parallel",
     title:
-      "Multi-Agent — Ship-level permission; independent workspace checks run together.",
+      "Parallel (Multi-Agent) — coordinates independent workstreams, keeps dependent edits ordered, and synthesizes one verified delivery.",
     capability: "Autonomous",
   },
 ];
@@ -59,38 +85,45 @@ const CAPABILITIES: Record<
   PermissionMode,
   { id: string; label: string; title: string }[]
 > = {
-  plan: [
-    { id: "thinking", label: "Thinking", title: "Plan first, then ask before tools" },
-    { id: "guided", label: "Guided", title: "Step-by-step with approvals" },
-  ],
-  auto: [
-    { id: "agent", label: "Agent", title: "Tools on by default; high-risk asks" },
-    { id: "balanced", label: "Balanced", title: "Build with smart defaults" },
+  adaptive: [
+    { id: "balanced", label: "Director", title: "Score intent, complexity, and risk; choose the safest effective workflow" },
+    { id: "agent", label: "Action", title: "Prefer focused implementation when intent clearly requests a change" },
   ],
   ask: [
     {
       id: "answer_max",
       label: "Answer Max",
-      title: "Reliable, complete answers with evidence and automatic recovery",
-    },
-    {
-      id: "investigate",
-      label: "Investigate",
-      title: "Deep multi-file dig — tools-heavy reads",
+      title: "Reliable, complete answers with bounded evidence and automatic recovery",
     },
     {
       id: "brief",
       label: "Brief",
-      title: "Short answer with key paths; fewer tool loops",
+      title: "Direct answer with only the minimum useful investigation",
     },
   ],
-  full: [
-    { id: "autonomous", label: "Autonomous", title: "Full tools, no prompts" },
-    { id: "max", label: "Max", title: "Maximum autonomy" },
+  research: [
+    {
+      id: "investigate",
+      label: "Deep Research",
+      title: "Broader read-only evidence gathering with cross-checks and a synthesized report",
+    },
+    {
+      id: "answer_max",
+      label: "Verified",
+      title: "Prioritize corroboration and clearly separate evidence from inference",
+    },
+  ],
+  plan: [
+    { id: "thinking", label: "Thinking", title: "Plan first, then ask before tools" },
+    { id: "guided", label: "Guided", title: "Step-by-step with approvals" },
+  ],
+  build: [
+    { id: "agent", label: "Agent", title: "Tools on by default; high-risk asks" },
+    { id: "balanced", label: "Verified", title: "Small coherent patch plus the most relevant verification" },
   ],
   multi_agent: [
-    { id: "autonomous", label: "Autonomous", title: "Full tools with parallel discovery" },
-    { id: "max", label: "Max", title: "Maximum autonomy with parallel discovery" },
+    { id: "autonomous", label: "Coordinated", title: "Parallel independent discovery with ordered changes and one synthesis" },
+    { id: "max", label: "Maximum", title: "Maximum parallel discovery for broad, separable workstreams" },
   ],
 };
 
@@ -117,6 +150,8 @@ export class ModelBar {
    * making a busy session look like it changed providers halfway through.
    */
   private activeRunProfile: { provider: string; model: string; effort?: string } | null = null;
+  /** Effective per-turn route while the persisted selection stays Adaptive. */
+  private activeAdaptiveRoute: AdaptiveRouteSummary | null = null;
 
   constructor(onChange: () => void) {
     this.onChange = onChange;
@@ -163,14 +198,17 @@ export class ModelBar {
         }
       : null;
     const current = this.activeRunProfile;
+    const routeWillClear = !next && this.activeAdaptiveRoute !== null;
     if (
       current?.provider === next?.provider &&
       current?.model === next?.model &&
-      current?.effort === next?.effort
+      current?.effort === next?.effort &&
+      !routeWillClear
     ) {
       return;
     }
     this.activeRunProfile = next;
+    if (!next) this.activeAdaptiveRoute = null;
     // Invalidate a slow provider-discovery selection that began before the
     // session became busy. It must not save a different model mid-run.
     this.providerSelectionGeneration += 1;
@@ -381,22 +419,28 @@ export class ModelBar {
 
   getMode(): PermissionMode {
     this.normalizeMode();
-    return (this.settings.permission_mode || "plan") as PermissionMode;
+    return (this.settings.permission_mode || "adaptive") as PermissionMode;
   }
 
   private normalizeMode() {
     const m = String(this.settings.permission_mode || "").toLowerCase().trim();
-    if (m === "research" || m === "ask") {
-      this.settings.permission_mode = "ask";
-    } else if (m === "plan" || m === "auto" || m === "full" || m === "multi_agent") {
+    if (m === "auto") {
+      this.settings.permission_mode = "adaptive";
+    } else if (m === "full") {
+      this.settings.permission_mode = "build";
+    } else if (
+      m === "adaptive" ||
+      m === "ask" ||
+      m === "research" ||
+      m === "plan" ||
+      m === "build" ||
+      m === "multi_agent"
+    ) {
       this.settings.permission_mode = m;
     } else {
-      this.settings.permission_mode = this.settings.auto_approve ? "auto" : "plan";
+      this.settings.permission_mode = "adaptive";
     }
-    this.settings.auto_approve =
-      this.settings.permission_mode === "auto" ||
-      this.settings.permission_mode === "full" ||
-      this.settings.permission_mode === "multi_agent";
+    this.settings.auto_approve = modeAutoApproves(this.settings.permission_mode as PermissionMode);
   }
 
   private syncCapabilityDefault() {
@@ -473,9 +517,9 @@ export class ModelBar {
 
   private async saveMode(mode: PermissionMode) {
     const prev = this.getMode();
+    this.activeAdaptiveRoute = null;
     this.settings.permission_mode = mode;
-    this.settings.auto_approve =
-      mode === "auto" || mode === "full" || mode === "multi_agent";
+    this.settings.auto_approve = modeAutoApproves(mode);
     this.syncCapabilityDefault();
     this.renderProviderRail();
     try {
@@ -486,11 +530,12 @@ export class ModelBar {
       this.syncCapabilityDefault();
       this.renderProviderRail();
       const labels: Record<PermissionMode, string> = {
-        plan: "Plan — refine first; Apply switches to Multi-Agent to change files",
-        auto: "Auto — build with defaults",
-        ask: "Ask — answer with evidence; no file writes",
-        full: "Full — max autonomy",
-        multi_agent: "Multi-Agent — parallel discovery",
+        adaptive: "Adaptive Director — automatic per-turn routing",
+        ask: "Ask — direct bounded answer; no project writes",
+        research: "Research — deep read-only evidence and synthesis",
+        plan: "Plan — decisions and acceptance criteria before changes",
+        build: "Build — focused implementation and verification",
+        multi_agent: "Parallel — coordinated independent workstreams",
       };
       this.setStatus(labels[this.getMode()]);
       this.onChange();
@@ -567,6 +612,13 @@ export class ModelBar {
     const displaySettings = lockedProfile || this.settings;
     const modelIsLocked = this.modelSelectionLocked();
     const modeMeta = MODES.find((m) => m.id === mode) || MODES[0];
+    const routeMeta = mode === "adaptive" && this.activeAdaptiveRoute
+      ? MODES.find((entry) => entry.id === this.activeAdaptiveRoute?.mode)
+      : null;
+    const modeChip = routeMeta ? `auto → ${routeMeta.chip}` : modeMeta.chip;
+    const modeTitle = routeMeta
+      ? `${modeMeta.title}\nCurrent route: ${routeMeta.label} — ${this.activeAdaptiveRoute?.reason || "selected by the Director"}`
+      : modeMeta.title;
     const uiProvId = uiProviderId(displaySettings.provider, displaySettings.model);
     const provider = PROVIDERS.find((p) => p.id === uiProvId) || visibleProviders()[0] || PROVIDERS[0];
     const meta = getProviderMeta(uiProvId) || provider;
@@ -597,10 +649,12 @@ export class ModelBar {
     // Mode chip (build / plan / ship style)
     const modeWrap = el("div", { class: "chip-wrap" });
     const modeBtn = this.chipBtn(
-      modeMeta.chip,
-      modeMeta.title,
-      `Mode: ${modeMeta.label}`,
-      "chip-mode" + (mode === "multi_agent" ? " chip-mode-multi-agent" : ""),
+      modeChip,
+      modeTitle,
+      routeMeta ? `Mode: Adaptive, routed to ${routeMeta.label}` : `Mode: ${modeMeta.label}`,
+      "chip-mode" +
+        (mode === "multi_agent" ? " chip-mode-multi-agent" : "") +
+        (routeMeta ? " chip-mode-adaptive-routed" : ""),
     );
     modeBtn.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -619,8 +673,10 @@ export class ModelBar {
           title: m.title,
         }, [
           m.id === "multi_agent"
-            ? "🌈 Multi-Agent — parallel workspace discovery"
-            : `${m.chip} — ${m.label}`,
+            ? "parallel — Multi-Agent coordination"
+            : m.id === "adaptive"
+              ? "auto — Adaptive Director (recommended)"
+              : `${m.chip} — ${m.label}`,
         ]) as HTMLButtonElement;
         item.addEventListener("click", (e) => {
           e.preventDefault();
@@ -805,7 +861,7 @@ export class ModelBar {
       const caps = CAPABILITIES[mode];
       const cap = caps.find((c) => c.id === this.capabilityId) || caps[0];
       const capWrap = el("div", { class: "chip-wrap" });
-      const agentic = mode === "auto" || mode === "full" || mode === "multi_agent";
+      const agentic = mode === "adaptive" || mode === "build" || mode === "multi_agent";
       const capBtn = this.chipBtn(
         cap.label,
         cap.title,
@@ -856,7 +912,7 @@ export class ModelBar {
     this.providerRail.appendChild(this.statusEl);
   }
 
-  /** + menu: Plan / Debug / Multitask / Ask · Image / Video / Files. */
+  /** + menu: quick workflow choices plus attachments. */
   private async openPlusMenu(btn: HTMLButtonElement) {
     const menu = el("div", {
       class: "chip-menu chip-menu-plus",
@@ -896,37 +952,52 @@ export class ModelBar {
       return item;
     };
 
+    addItem("Adaptive Director", "spark", {
+      title: "Auto-route every turn by intent, complexity, and risk",
+      active: mode === "adaptive",
+      onClick: () => {
+        this.closeMenus();
+        void this.applyPlusMode("adaptive", "balanced", "Adaptive Director");
+      },
+    });
+    addItem("Ask", "ask", {
+      title: "Ask — direct bounded answer with no project writes",
+      active: mode === "ask" && cap === "answer_max",
+      onClick: () => {
+        this.closeMenus();
+        void this.applyPlusMode("ask", "answer_max", "Ask · Answer Max");
+      },
+    });
+    addItem("Research", "search", {
+      title: "Research — deep read-only evidence, cross-checking, and synthesis",
+      active: mode === "research",
+      onClick: () => {
+        this.closeMenus();
+        void this.applyPlusMode("research", "investigate", "Research · Deep evidence");
+      },
+    });
     addItem("Plan", "planList", {
-      title: "Plan — refine request; wait for Apply before file changes",
+      title: "Plan — clarify decisions and verification before file changes",
       active: mode === "plan",
       onClick: () => {
         this.closeMenus();
         void this.applyPlusMode("plan", undefined, "Plan mode");
       },
     });
-    addItem("Debug", "bug", {
-      title: "Debug — investigate bugs with evidence",
-      active: mode === "ask" && cap === "investigate",
+    addItem("Build", "bug", {
+      title: "Build — focused implementation with a relevant verification check",
+      active: mode === "build",
       onClick: () => {
         this.closeMenus();
-        void this.applyPlusMode("ask", "investigate", "Debug mode");
-        this.insertComposer("Debug this:\n");
+        void this.applyPlusMode("build", "agent", "Build mode");
       },
     });
-    addItem("Multitask", "multitask", {
-      title: "Multitask — start a parallel session",
+    addItem("Parallel (Multi-Agent)", "multitask", {
+      title: "Coordinate independent workstreams and synthesize one verified result",
+      active: mode === "multi_agent",
       onClick: () => {
         this.closeMenus();
-        window.dispatchEvent(new CustomEvent("horma:new-session"));
-        this.setStatus("New session for multitask");
-      },
-    });
-    addItem("Ask", "ask", {
-      title: "Ask — reliable complete answer with evidence",
-      active: mode === "ask" && cap === "answer_max",
-      onClick: () => {
-        this.closeMenus();
-        void this.applyPlusMode("ask", "answer_max", "Ask · Answer Max");
+        void this.applyPlusMode("multi_agent", "autonomous", "Parallel · Multi-Agent");
       },
     });
 
@@ -983,18 +1054,58 @@ export class ModelBar {
     this.openChipMenu(btn, menu);
   }
 
+  /** Show the Director's effective per-turn route without persisting over Adaptive. */
+  showAdaptiveRoute(route: AdaptiveRouteSummary) {
+    if (this.getMode() !== "adaptive") return;
+    this.activeAdaptiveRoute = route;
+    this.renderProviderRail();
+    const meta = MODES.find((entry) => entry.id === route.mode);
+    const label = meta?.label || route.mode;
+    this.setStatus(`Adaptive → ${label} · ${route.reason}`);
+  }
+
+  /** Reconcile the UI with the backend's authoritative effective run mode. */
+  showRunRoute(value: unknown) {
+    if (this.getMode() !== "adaptive") return;
+    const mode = String(value || "").trim().toLowerCase();
+    if (!(["ask", "research", "plan", "build", "multi_agent"] as string[]).includes(mode)) return;
+    const existing = this.activeAdaptiveRoute;
+    this.activeAdaptiveRoute = {
+      mode: mode as AdaptiveRouteSummary["mode"],
+      reason: existing?.mode === mode ? existing.reason : "confirmed by the backend Director",
+      complexity: existing?.complexity,
+      risk: existing?.risk,
+      confidence: existing?.confidence,
+    };
+    this.renderProviderRail();
+  }
+
   async applyIntentMode(mode: PermissionMode) {
     if (this.getMode() === mode) return;
     const capability =
-      mode === "ask" ? "answer_max" : mode === "plan" ? "thinking" : mode === "multi_agent" ? "autonomous" : undefined;
+      mode === "adaptive"
+        ? "balanced"
+        : mode === "ask"
+          ? "answer_max"
+          : mode === "research"
+            ? "investigate"
+            : mode === "plan"
+              ? "thinking"
+              : mode === "build"
+                ? "agent"
+                : "autonomous";
     const status =
-      mode === "ask"
-        ? "Ask · Answer Max"
-        : mode === "plan"
-          ? "Plan mode"
-          : mode === "multi_agent"
-            ? "Multi-Agent"
-            : mode;
+      mode === "adaptive"
+        ? "Adaptive Director"
+        : mode === "ask"
+          ? "Ask · Answer Max"
+          : mode === "research"
+            ? "Research · Deep evidence"
+            : mode === "plan"
+              ? "Plan mode"
+              : mode === "build"
+                ? "Build mode"
+                : "Parallel · Multi-Agent";
     await this.applyPlusMode(mode, capability, status);
   }
 
@@ -1003,9 +1114,9 @@ export class ModelBar {
     capability: string | undefined,
     status: string,
   ) {
+    this.activeAdaptiveRoute = null;
     this.settings.permission_mode = mode;
-    this.settings.auto_approve =
-      mode === "auto" || mode === "full" || mode === "multi_agent";
+    this.settings.auto_approve = modeAutoApproves(mode);
     this.syncCapabilityDefault();
     if (capability && CAPABILITIES[mode].some((c) => c.id === capability)) {
       this.capabilityId = capability;
@@ -1016,8 +1127,7 @@ export class ModelBar {
       await api.saveSettings(this.settings);
       const saved = await api.getSettings();
       saved.permission_mode = mode;
-      saved.auto_approve =
-        mode === "auto" || mode === "full" || mode === "multi_agent";
+      saved.auto_approve = modeAutoApproves(mode);
       if (capability) saved.capability_mode = this.settings.capability_mode;
       this.settings = saved;
       this.normalizeMode();

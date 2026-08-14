@@ -705,9 +705,9 @@ export function defaultSettings(): Settings {
     // The agent loop is now intentionally unbounded.
     max_iterations: 0,
     command_timeout_secs: 120,
-    auto_approve: false,
-    permission_mode: "plan",
-    capability_mode: "thinking",
+    auto_approve: true,
+    permission_mode: "adaptive",
+    capability_mode: "balanced",
     taglish: false,
     computer_use_enabled: false,
     computer_use_prompt_activation: true,
@@ -731,19 +731,24 @@ export async function getSettingsSafe(): Promise<Settings> {
 /** Normalize provider settings while preserving user-entered custom model IDs. */
 export function normalizeSettings(s: Settings): Settings {
   s.provider = String(s.provider || "").trim().toLowerCase();
-  if (!s.permission_mode || !["plan", "auto", "ask", "research", "full", "multi_agent"].includes(s.permission_mode)) {
-    s.permission_mode = s.auto_approve ? "auto" : "plan";
-  }
-  if (s.permission_mode === "research") s.permission_mode = "ask";
+  const rawMode = String(s.permission_mode || "").trim().toLowerCase();
+  s.permission_mode = rawMode === "auto"
+    ? "adaptive"
+    : rawMode === "full"
+      ? "build"
+      : ["adaptive", "ask", "research", "plan", "build", "multi_agent"].includes(rawMode)
+        ? rawMode
+        : "adaptive";
   s.auto_approve =
-    s.permission_mode === "auto" ||
-    s.permission_mode === "full" ||
+    s.permission_mode === "adaptive" ||
+    s.permission_mode === "build" ||
     s.permission_mode === "multi_agent";
   const capsByMode: Record<string, string[]> = {
+    adaptive: ["balanced", "agent"],
+    ask: ["answer_max", "brief"],
+    research: ["investigate", "answer_max"],
     plan: ["thinking", "guided"],
-    auto: ["agent", "balanced"],
-    ask: ["answer_max", "investigate", "brief"],
-    full: ["autonomous", "max"],
+    build: ["agent", "balanced"],
     multi_agent: ["autonomous", "max"],
   };
   const allowed = capsByMode[s.permission_mode] || ["thinking"];
@@ -1382,7 +1387,7 @@ export class SettingsModal {
       return inp;
     }));
 
-    body.appendChild(this.field("Director", () => {
+    body.appendChild(this.field("Adaptive Director runtime", () => {
       const wrap = el("label", { class: "set-check", style: "display:flex;align-items:center;gap:8px;cursor:pointer" });
       const inp = el("input", { type: "checkbox" }) as HTMLInputElement;
       inp.checked = this.settings.smart_agent_enabled !== false;
@@ -1390,11 +1395,11 @@ export class SettingsModal {
         this.settings.smart_agent_enabled = inp.checked;
       });
       wrap.appendChild(inp);
-      wrap.appendChild(document.createTextNode("Keep host-owned Answer / Change / Ship / Operate jobs, automatic recovery, and a verification check for mutating work"));
+      wrap.appendChild(document.createTextNode("Keep host-owned Answer / Change / Ship / Operate jobs, automatic recovery, and verification for mutating work"));
       return wrap;
     }));
     body.appendChild(el("div", { class: "set-hint", style: "margin-top:-6px;margin-bottom:12px" }, [
-      "Questions and simplify requests stay in Answer: a short visible reply, no delivery card. Build, fix, app, website, software, APK, and release work use Ship or Change and check evidence before the AI says it is done. It never changes your selected provider, model, or API key.",
+      "This runtime enforces the effective mode after routing: read-only turns cannot mutate files, Build stays focused, and broad Parallel work gets one integrated verification pass. It never changes your selected provider, model, or API key.",
     ]));
 
     body.appendChild(this.field("Flavour memory", () => {
@@ -1415,25 +1420,26 @@ export class SettingsModal {
     body.appendChild(this.field("Permission mode", () => {
       const sel = el("select", { class: "field" }) as HTMLSelectElement;
       for (const [value, label] of [
-        ["plan", "Plan — refine request, suggest options, numbered plan; file writes locked until Apply (then Multi-Agent)"],
-        ["auto", "Auto — build with defaults; confirm delete/kill/outside project"],
-        ["ask", "Ask — answer with evidence; all tools except file create/write/edit"],
-        ["full", "Full — maximum autonomy, zero desktop prompts"],
-        ["multi_agent", "Multi-Agent — Ship permission; independent workspace checks run together"],
+        ["adaptive", "Adaptive Director (recommended) — auto-route each turn by intent, complexity, and risk"],
+        ["ask", "Ask — direct bounded answer; project writes locked"],
+        ["research", "Research — deep read-only evidence, cross-checking, and synthesis"],
+        ["plan", "Plan — scope, decisions, acceptance criteria, and verification before changes"],
+        ["build", "Build — focused implementation with relevant verification"],
+        ["multi_agent", "Parallel (Multi-Agent) — coordinated independent workstreams and one delivery"],
       ] as const) {
         const opt = el("option", { value }, [label]);
-        if ((this.settings.permission_mode || "plan") === value) opt.setAttribute("selected", "selected");
+        if ((this.settings.permission_mode || "adaptive") === value) opt.setAttribute("selected", "selected");
         sel.appendChild(opt);
       }
       sel.addEventListener("change", () => {
         this.settings.permission_mode = sel.value;
         this.settings.auto_approve =
-          sel.value === "auto" || sel.value === "full" || sel.value === "multi_agent";
+          sel.value === "adaptive" || sel.value === "build" || sel.value === "multi_agent";
       });
       return sel;
     }));
     body.appendChild(el("div", { class: "set-hint", style: "margin-top:-6px;margin-bottom:12px" }, [
-      "Plan: improve brief, options, and questions first. File writes stay locked until you confirm Apply, which switches to Multi-Agent. Ask: answer with evidence using any tool except file create/write/edit. Auto: implement in-project quickly. Full: no tool prompts. Multi-Agent: Ship-level access with safe independent workspace checks started together. Hormachuelos also auto-switches Ask / Plan / Multi-Agent from the request. Same switch sits next to the chat box.",
+      "Adaptive keeps your selection stable while routing each turn to Ask, Research, Plan, Build, or Parallel. Ask is direct and bounded. Research performs deeper read-only evidence gathering. Plan stays locked until Apply. Build uses one focused owner and verifies the requested change. Parallel is for genuinely separable workstreams; dependent edits remain ordered and one Director synthesizes the delivery.",
     ]));
 
     body.appendChild(this.renderComputerUsePanel());
@@ -1530,10 +1536,10 @@ export class SettingsModal {
     saveAllBtn.addEventListener("click", async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this.settings.permission_mode = (this.settings.permission_mode || "plan").toLowerCase();
+      this.settings.permission_mode = (this.settings.permission_mode || "adaptive").toLowerCase();
       this.settings.auto_approve =
-        this.settings.permission_mode === "auto" ||
-        this.settings.permission_mode === "full" ||
+        this.settings.permission_mode === "adaptive" ||
+        this.settings.permission_mode === "build" ||
         this.settings.permission_mode === "multi_agent";
       try {
         await api.saveSettings(this.settings);

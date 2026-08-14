@@ -1758,19 +1758,49 @@ export function resolvePreviewComputerUsePromptIntent(
   return playwrightRequest || previewAction ? "auto" : null;
 }
 
-export type InferredPermissionMode = "ask" | "plan" | "multi_agent";
+export type InferredPermissionMode =
+  | "ask"
+  | "research"
+  | "plan"
+  | "build"
+  | "multi_agent";
+
+export type AdaptiveRoute = {
+  mode: InferredPermissionMode;
+  reason: string;
+  complexity: "low" | "medium" | "high";
+  risk: "low" | "guarded" | "high";
+  confidence: "medium" | "high";
+};
 
 /**
- * Switch the visible mode from the client's request before the run starts.
- * Short follow-ups ("yes", "React + Vite") keep the current mode.
+ * Host-owned Adaptive Director. It classifies intent before any model call so
+ * permissions never depend on a model correctly interpreting a prose hint.
+ * Explicit modes bypass this router; only Adaptive uses it.
  */
-export function inferPermissionMode(value: string): InferredPermissionMode | null {
+export function inferAdaptiveRoute(
+  value: string,
+  previousMode: InferredPermissionMode | null = null,
+): AdaptiveRoute | null {
+  const hadAttachment = /\[Attached (?:image|video):[^\]]*\]/i.test(String(value || ""));
   const prompt = String(value || "")
     .replace(/\[Attached (?:image|video):[^\]]*\]/gi, " ")
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
-  if (!prompt) return null;
+  const route = (
+    mode: InferredPermissionMode,
+    reason: string,
+    complexity: AdaptiveRoute["complexity"],
+    risk: AdaptiveRoute["risk"],
+    confidence: AdaptiveRoute["confidence"] = "high",
+  ): AdaptiveRoute => ({ mode, reason, complexity, risk, confidence });
+  if (!prompt) {
+    if (hadAttachment) return route("ask", "attached media question", "low", "low");
+    return previousMode
+      ? route(previousMode, "continuing the active workflow", "medium", "guarded", "medium")
+      : null;
+  }
 
   const isPlan =
     /\bkeep planning\b/.test(prompt) ||
@@ -1782,7 +1812,7 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\bproposal\b/.test(prompt) ||
     /\bjust a proposal\b/.test(prompt) ||
     (/\bplan\b/.test(prompt) && !/\b(implement|apply) (this|the) plan\b/.test(prompt));
-  if (isPlan) return "plan";
+  if (isPlan) return route("plan", "planning requested without implementation", "medium", "low");
 
   const isSimplify =
     /\bsimplif/i.test(prompt) ||
@@ -1792,13 +1822,13 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\b(in simple terms|in plain english|in plain language|eli5|make it shorter|make it simpler|make this simpler|make this shorter|shorter explanation|shorter version|less technical|explain it simply|explain simply|simpler explanation)\b/.test(
       prompt,
     );
-  if (isSimplify) return "ask";
+  if (isSimplify) return route("ask", "direct explanation or rewrite", "low", "low");
 
   // How-to questions mention add/change but still want an answer, not an edit.
   const isHowTo =
     /^(how do i|how to|how can i|how should i|how would i)\b/.test(prompt) ||
     /\bhow (do|can|should|would) (i|you|we)\b/.test(prompt);
-  if (isHowTo) return "ask";
+  if (isHowTo) return route("ask", "how-to question", "low", "low");
 
   // A non-mutating constraint is an Answer/Ask contract, not a planning
   // request. Keep this ahead of generic build verbs: phrases such as
@@ -1810,7 +1840,18 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\b(don't|don’t|dont|do not)\s+(change|modify|edit|write|create|delete|touch)\s+(any\s+|the\s+)?files?\b/.test(prompt) ||
     /\bwithout\s+(changing|modifying|editing|writing|creating)\b/.test(prompt) ||
     /\bno\s+(file\s+)?(changes?|edits?|modifications?)\b/.test(prompt);
-  if (isExplicitReadOnly) return "ask";
+  const wantsDeepEvidence =
+    /\b(deep|thorough|comprehensive|exhaustive|in-depth)\s+(research|analysis|review|audit|assessment|investigation)\b/.test(prompt) ||
+    /\b(research|investigate|benchmark|cross-check|cross check|fact-check|fact check|compare alternatives|compare options)\b/.test(prompt) ||
+    /\b(security|architecture|performance|accessibility|dependency|codebase)\s+(audit|review|assessment|analysis)\b/.test(prompt) ||
+    /\bmultiple sources\b|\bcite sources\b|\bverify (?:the )?(?:claims|facts|evidence)\b/.test(prompt) ||
+    (/\b(analyze|analyse|inspect|review|audit|assess|examine)\b/.test(prompt) &&
+      /\b(architecture|security|tests?|risks?|performance|dependencies|entire|whole|project|codebase)\b/.test(prompt));
+  if (isExplicitReadOnly) {
+    return wantsDeepEvidence
+      ? route("research", "deep read-only evidence requested", "high", "low")
+      : route("ask", "read-only answer requested", "medium", "low");
+  }
 
   const isFileWrite =
     /\b(make|create|write|save|export|generate|put)\b[\s\S]{0,48}\b(md|markdown|\.md|notes?|files?|document|txt)\b/.test(prompt) ||
@@ -1847,7 +1888,48 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
   const isApplyNow =
     /^(do it|go ahead and (do|apply|implement|make)|yes,?\s+(do it|apply|make the change)|apply (it|this|the change|the edit)|make the (change|edit)|implement (it|this|that))\b/.test(prompt) ||
     /\b(apply|make) (this|the) (change|edit|fix)\b/.test(prompt);
-  if (isImplementPlan || isApplySuggestions || isPoliteBuild || isContextualMake || isEditAction || isApplyNow || isFileWrite) return "multi_agent";
+  const mutatesProject =
+    isImplementPlan ||
+    isApplySuggestions ||
+    isPoliteBuild ||
+    isContextualMake ||
+    isEditAction ||
+    isApplyNow ||
+    isFileWrite;
+
+  const explicitlyParallel =
+    /\b(multi[- ]agent|parallel(?:ize|ise| work)?|concurrent(?:ly)?|in parallel|multiple agents?|agent team|split (?:this|the work|work) into|independent workstreams?)\b/.test(prompt);
+  const broadChange =
+    /\b(entire|whole|all major|every)\s+(app|application|project|codebase|system|module|mode|screen|flow)s?\b/.test(prompt) ||
+    /\b(end[- ]to[- ]end|full[- ]stack|from scratch|large[- ]scale|major)\s+(build|rewrite|refactor|overhaul|migration|upgrade)\b/.test(prompt) ||
+    /\bacross\s+(the\s+)?(frontend|backend|database|tests?|app|project|codebase)\b/.test(prompt);
+  const workAreas = [
+    /\b(frontend|ui|ux|layout|styles?|css)\b/,
+    /\b(backend|server|api|tauri|rust)\b/,
+    /\b(database|schema|migration|sql)\b/,
+    /\b(tests?|qa|playwright|verification)\b/,
+    /\b(auth|security|permissions?)\b/,
+    /\b(build|release|deploy|ci|installer)\b/,
+  ].filter((pattern) => pattern.test(prompt)).length;
+  const highRisk =
+    /\b(delete|migration|auth(?:entication|orization)?|security|payments?|production|deploy(?:ment)?)\b/.test(prompt);
+
+  if (mutatesProject) {
+    if (explicitlyParallel || broadChange || workAreas >= 3) {
+      return route(
+        "multi_agent",
+        explicitlyParallel ? "parallel work explicitly requested" : "several independent workstreams detected",
+        "high",
+        highRisk ? "high" : "guarded",
+      );
+    }
+    return route(
+      "build",
+      "focused implementation request",
+      workAreas >= 2 ? "medium" : "low",
+      highRisk ? "high" : "guarded",
+    );
+  }
 
   const isQuestion =
     prompt.includes("?") ||
@@ -1856,7 +1938,7 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\b(please describe|describe this|describe these|describe the image|describe what)\b/.test(prompt) ||
     /\b(what is this|what are these|what this image|what these image|what's in this|whats in this)\b/.test(prompt) ||
     /\b(look at this|what does this)\b/.test(prompt);
-  if (isQuestion) return "ask";
+  if (isQuestion) return route("ask", "direct question", "low", "low");
 
   const isAnalysisRequest =
     /^(analyze|analyse|inspect|review|audit|assess|examine|summarize|understand|report on)\b/.test(prompt) ||
@@ -1866,11 +1948,34 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
     /\b(add|create|build|implement|scaffold|generate|fix|debug|repair|refactor|upgrade|rename)\b/.test(prompt);
   // "Review and fix" is implementation; a plain architecture/security review
   // is an answer. Evaluate the explicit mutation before the analysis fallback.
-  if (isBuildAction) return "multi_agent";
-  if (isAnalysisRequest) return "ask";
+  if (isBuildAction) {
+    return explicitlyParallel || broadChange || workAreas >= 3
+      ? route("multi_agent", "broad implementation with independent workstreams", "high", highRisk ? "high" : "guarded")
+      : route("build", "focused implementation request", "medium", highRisk ? "high" : "guarded");
+  }
+  if (isAnalysisRequest) {
+    return wantsDeepEvidence
+      ? route("research", "deep analysis needs evidence gathering", "high", "low")
+      : route("ask", "bounded analysis request", "medium", "low");
+  }
 
-  if (/\[attached (?:image|video):/i.test(String(value || ""))) return "ask";
+  if (hadAttachment) return route("ask", "attached media question", "low", "low");
+
+  if (/^(continue|keep going|proceed|carry on|resume|do it|go ahead|apply it|implement it)\b/.test(prompt)) {
+    const continuation = previousMode && previousMode !== "ask" && previousMode !== "research"
+      ? previousMode
+      : "build";
+    return route(continuation, "continuing the previous task", "medium", "guarded", "medium");
+  }
+  if (previousMode && /^(yes|okay|ok|sure|that one|the first|the second|react \+ vite)\b/.test(prompt)) {
+    return route(previousMode, "short follow-up keeps the active workflow", "medium", "guarded", "medium");
+  }
   return null;
+}
+
+/** Backward-compatible mode-only view used by tests and non-UI callers. */
+export function inferPermissionMode(value: string): InferredPermissionMode | null {
+  return inferAdaptiveRoute(value)?.mode ?? null;
 }
 
 async function sendPrompt(submission: ChatPromptSubmission) {
@@ -1897,15 +2002,21 @@ async function sendPrompt(submission: ChatPromptSubmission) {
   }
   const computerUseIntent = resolvePreviewComputerUsePromptIntent(visiblePrompt);
   let promptSettings = modelBar.settings;
-  const inferredMode = taskProfile === "default" ? inferPermissionMode(visiblePrompt) : null;
-  if (inferredMode) {
-    try {
-      await modelBar.applyIntentMode(inferredMode);
-      promptSettings = modelBar.settings;
-    } catch (error) {
-      console.warn("Could not auto-switch permission mode", error);
-    }
-  }
+  const selectedMode = modelBar.getMode();
+  const previousRunMode = [...chat.getMessages()]
+    .reverse()
+    .find((message) => message.type === "run_start")?.permissionMode ?? null;
+  const adaptiveRoute = taskProfile === "default" && selectedMode === "adaptive"
+    ? inferAdaptiveRoute(visiblePrompt, previousRunMode)
+      ?? {
+        mode: "ask" as const,
+        reason: "ambiguous request; safest useful route",
+        complexity: "low" as const,
+        risk: "low" as const,
+        confidence: "medium" as const,
+      }
+    : null;
+  if (adaptiveRoute) modelBar.showAdaptiveRoute(adaptiveRoute);
   if (promptSettings && (computerUseIntent === "enable" || computerUseIntent === "disable")) {
     const updatedSettings = {
       ...promptSettings,
@@ -1940,7 +2051,21 @@ async function sendPrompt(submission: ChatPromptSubmission) {
     model: runProfile.model,
     model_effort: runProfile.effort || promptSettings.model_effort,
     computer_use_enabled: computerUseForRun,
-    ...(inferredMode ? { permission_mode: inferredMode } : {}),
+    ...(adaptiveRoute
+      ? {
+          permission_mode: adaptiveRoute.mode,
+          capability_mode:
+            adaptiveRoute.mode === "ask"
+              ? "answer_max"
+              : adaptiveRoute.mode === "research"
+                ? "investigate"
+                : adaptiveRoute.mode === "plan"
+                  ? "thinking"
+                  : adaptiveRoute.mode === "build"
+                    ? "agent"
+                    : "autonomous",
+        }
+      : {}),
   } : undefined;
   if (isHostedCatalogRestricted()) {
     const allowed = visibleProviders();
@@ -2085,6 +2210,7 @@ async function sendPrompt(submission: ChatPromptSubmission) {
       taskProfile,
       workspacePanel.getExecutionProfile(),
       runSettings,
+      selectedMode,
     );
     if (typeof nextAgentId === "string" && nextAgentId.trim()) {
       const owning = sessionForId(sessionId);
@@ -2663,9 +2789,37 @@ async function init() {
     chat.applyUltraChrome();
   });
   window.addEventListener("horma:new-session", () => void createNewSession());
-  window.addEventListener("horma:run-permission-mode", ((e: CustomEvent<{ mode?: string }>) => {
+  window.addEventListener("horma:run-permission-mode", ((e: CustomEvent<{
+    mode?: string;
+    persist?: boolean;
+    reason?: string;
+    complexity?: "low" | "medium" | "high";
+    risk?: "low" | "guarded" | "high";
+  }>) => {
     const mode = String(e.detail?.mode || "").trim().toLowerCase();
-    if (mode === "ask" || mode === "plan" || mode === "multi_agent") {
+    if (
+      e.detail?.reason &&
+      (mode === "ask" || mode === "research" || mode === "plan" || mode === "build" || mode === "multi_agent")
+    ) {
+      modelBar.showAdaptiveRoute({
+        mode,
+        reason: e.detail.reason,
+        complexity: e.detail.complexity,
+        risk: e.detail.risk,
+        confidence: "high",
+      });
+    } else {
+      modelBar.showRunRoute(mode);
+    }
+    if (
+      e.detail?.persist === true &&
+      (mode === "adaptive" ||
+        mode === "ask" ||
+        mode === "research" ||
+        mode === "plan" ||
+        mode === "build" ||
+        mode === "multi_agent")
+    ) {
       void modelBar.applyIntentMode(mode);
     }
   }) as EventListener);
