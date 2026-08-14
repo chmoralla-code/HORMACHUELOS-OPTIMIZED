@@ -189,6 +189,18 @@ pub fn resolve_project_path(root: &Path, relative: &str) -> Result<PathBuf> {
     let target = root.join(safe);
     let metadata = std::fs::symlink_metadata(&target)
         .with_context(|| format!("Project item not found: {relative}"))?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+        let is_directory = metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0;
+        if is_directory && metadata.file_type().is_symlink() {
+            bail!(
+                "Directory junctions and symbolic links are not available in the workspace viewer."
+            );
+        }
+    }
+    #[cfg(not(windows))]
     if metadata.file_type().is_symlink() {
         bail!("Symbolic links are not available in the workspace viewer.");
     }
@@ -199,6 +211,20 @@ pub fn resolve_project_path(root: &Path, relative: &str) -> Result<PathBuf> {
         bail!("Project item resolves outside the active project.");
     }
     Ok(canonical)
+}
+
+fn skip_workspace_tree_entry(file_type: &std::fs::FileType) -> bool {
+    if !file_type.is_symlink() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        !file_type.is_file()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
 }
 
 fn relative_display(path: &Path) -> String {
@@ -227,7 +253,7 @@ fn list_directory(
         .filter_map(std::result::Result::ok)
         .filter_map(|entry| {
             let file_type = entry.file_type().ok()?;
-            if file_type.is_symlink() {
+            if skip_workspace_tree_entry(&file_type) {
                 return None;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -317,6 +343,21 @@ pub fn read_project_file(root: &Path, relative: &str) -> Result<FilePreview> {
     if !metadata.is_file() {
         bail!("Only regular project files can be previewed.");
     }
+    let language = language_for(&path);
+    if crate::document_inspect::is_spreadsheet_ext(&language)
+        || crate::document_inspect::is_presentation_ext(&language)
+        || crate::document_inspect::is_word_ext(&language)
+        || crate::document_inspect::is_pdf_ext(&language)
+    {
+        let content = crate::document_inspect::read_inspectable_file(&path, 80_000)
+            .context("Could not extract document text.")?;
+        return Ok(FilePreview {
+            path: relative_display(&validate_relative_path(relative)?),
+            content,
+            size: metadata.len(),
+            language,
+        });
+    }
     if metadata.len() > MAX_PREVIEW_BYTES {
         bail!("File is larger than the 1 MiB preview limit.");
     }
@@ -327,7 +368,7 @@ pub fn read_project_file(root: &Path, relative: &str) -> Result<FilePreview> {
         path: relative_display(&validate_relative_path(relative)?),
         content,
         size: metadata.len(),
-        language: language_for(&path),
+        language,
     })
 }
 
@@ -713,6 +754,24 @@ mod tests {
 
         assert!(read_project_file(workspace.path(), "binary.bin").is_err());
         assert!(read_project_file(workspace.path(), "large.txt").is_err());
+    }
+
+    #[test]
+    fn lists_and_previews_office_spreadsheets() {
+        let workspace = TestWorkspace::new();
+        let (bytes, _) =
+            crate::document_inspect::xlsx_from_tabular_text("Role,Count\nPayroll,12").unwrap();
+        std::fs::write(workspace.path().join("payroll.xlsx"), bytes).unwrap();
+        std::fs::write(workspace.path().join("legacy.xls"), b"fake-xls").unwrap();
+
+        let tree = list_project_files(workspace.path(), 8).expect("list project");
+        let mut paths = Vec::new();
+        flatten_paths(&tree.nodes, &mut paths);
+        assert!(paths.contains(&"payroll.xlsx".to_string()));
+        assert!(paths.contains(&"legacy.xls".to_string()));
+
+        let preview = read_project_file(workspace.path(), "payroll.xlsx").expect("preview xlsx");
+        assert!(preview.content.contains("Payroll"), "{}", preview.content);
     }
 
     #[test]

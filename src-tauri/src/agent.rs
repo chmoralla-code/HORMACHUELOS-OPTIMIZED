@@ -1606,12 +1606,15 @@ fn normalize_tool_calls(root: &Path, tool_calls: &mut [ToolCall]) {
     }
 }
 
-/// Read-only workspace tools intentionally reject absolute paths at execution
-/// time. If a provider ignores their schema but points at an existing file or
-/// directory inside the current project, rebase it before the dispatcher sees
-/// it. Outside paths remain untouched and are still rejected by the tool.
+/// If a provider ignores the schema but points at an existing file or
+/// directory inside the current project, rebase it to a relative path before
+/// the dispatcher sees it. Absolute paths outside the project stay absolute so
+/// read tools can inspect a user-named folder under the user profile.
 fn normalize_in_project_read_path(root: &Path, tool_name: &str, arguments: &mut Value) {
-    if !matches!(tool_name, "read_file" | "list_dir" | "grep" | "file_info") {
+    if !matches!(
+        tool_name,
+        "read_file" | "list_dir" | "grep" | "file_info" | "view_image" | "view_video"
+    ) {
         return;
     }
     let Some(path) = arguments
@@ -2952,7 +2955,7 @@ FILE CREATE / WRITE / EDIT TOOLS ARE LOCKED. Other tools (read, search, browser,
 \n\
 GOAL: Understand the user, improve the request, propose a plan, ask questions, and wait for an explicit Apply confirmation.\n\
 Unavailable: write_file, edit_file, delete_file, make_dir, copy_file, move_file, run_command, git_init/add/commit, download_file, export_client_pack.\n\
-Allowed: read_file, list_dir, glob, grep, git_status, web_search, browse_page, view_image, computer_observe, computer_actions, ask_user, todo_write, open_path, start_dev_server, and similar non-file-write tools.\n\
+Allowed: read_file, list_dir, glob, grep, git_status, file_info, web_search, browse_page, view_image, view_video, computer_observe, computer_actions, ask_user, todo_write, open_path, start_dev_server, and similar non-file-write tools.\n\
 \n\
 MANDATORY FIRST RESPONSE (no write/run/scaffold tools):\n\
 1. Restate the goal in one plain sentence.\n\
@@ -2993,7 +2996,9 @@ ANSWER CONTRACT:\n\
 - Answer straightforward questions directly from reliable context; do not force tool use when it adds no value.\n\
 - For project-specific or uncertain questions, investigate with the smallest useful set of tools: list_dir, glob, grep, read_file, file_info, git_status, web_search, browse_page, computer_observe.\n\
 - After tools return, always synthesize the evidence into an answer. If a tool fails, continue with what you have. Never quote HTTP status, provider ids, or paste-temp paths to the user.\n\
-- When the user asks where a file is, or for its full path/directory, answer immediately with the absolute filesystem path. Join the project root with the relative path from write_file/file_info. Do not list_dir the whole project. Do not call done.\n\
+- When the user asks where a project file is, or for its full path/directory, answer with the absolute filesystem path by joining the project root with the relative path from write_file/file_info. Do not list_dir the whole project. Do not call done.\n\
+- When the user names an absolute folder or file (for example C:\\Users\\…\\Music\\BEDYUS), inspect it with list_dir / read_file / grep / file_info / view_image / view_video using that exact path. Do not refuse, do not say tools are locked to the project, and do not only offer Explorer.\n\
+- Excel, CSV, PowerPoint, Word, PDF, images, audio, and video are first-class. list_dir shows those names. read_file extracts spreadsheet/document text — never say the folder is empty because you only saw .hormachuelos. If list_dir reports a parent folder of documents, list that absolute parent. Use view_image / view_video for media, and open_path when the user says open.\n\
 - Keep answers short. Do not write Result, Recommended next step, or Why I'm stopping sections unless the user asked for a report.\n\
 - If they ask to simplify or shorten, rewrite the last answer in 2-5 short everyday sentences. Do not call tools or done.\n\
 - Talk about screens, helpers, and behavior in plain language. Do not list project-relative file paths in the visible reply. Give the absolute filesystem path only when they asked where a file lives. Distinguish verified facts from inference.\n\
@@ -3156,7 +3161,8 @@ ACTIVE RUNTIME (report these values accurately when asked):\n\
 {task_profile_policy}\
 {execution_profile_policy}\
 CAPABILITIES:\n\
-- Workspace inspection tool ARGUMENTS must use ONLY project-relative paths or patterns (`.` or `src/main.ts`), never C:\\Users\\… as a tool path. When the user asks where a file is, the VISIBLE REPLY must give the absolute filesystem path by joining the project root with the relative path (example: `{root}\\docs\\notes.md`). Do not list the whole project for a location question. Do not call done.\n\
+- Workspace inspection: for files inside the active project, pass project-relative paths or patterns (`.` or `src/main.ts`). When the user names an absolute folder or file (for example `C:\\Users\\…\\Music\\BEDYUS`), pass that exact path to list_dir, read_file, grep, file_info, view_image, or view_video. Do not refuse, do not say tools are locked to the project, and do not only offer Explorer. The host blocks Windows/Program Files, AppData, .ssh, and credential folders. glob stays project-relative. When they ask where a project file is, the VISIBLE REPLY must give the absolute filesystem path by joining the project root with the relative path (example: `{root}\\docs\\notes.md`). Do not list the whole project for a location question. Do not call done.\n\
+- Documents and media: list_dir/glob include .xls/.xlsx/.xlsm/.csv/.ppt/.pptx/.pdf/.doc/.docx, images, audio, and video, including OneDrive/cloud placeholder files whose path stays inside the allowed folder. `.hormachuelos` is app metadata — NEVER tell the user the project/folder is empty when that is all you listed. If list_dir notes a parent folder with documents, immediately list_dir that exact absolute parent (this is how an EXCELS project can sit next to payroll workbooks in BEDYUS). read_file extracts sheet/cell text from Excel/CSV, slide/paragraph text from pptx/docx, and bounded PDF text; it will not dump ZIP bytes. write_file can create CSV or an .xlsx workbook from tabular text inside the project. Use view_image for pictures, view_video for video (visual only, no transcript), and open_path to open Excel/PowerPoint/PDF/media in the default Windows app when the user says open/view/play.\n\
 - run_command runs PowerShell hidden — scaffold, install, build, test, system tasks, CLIs. Use `cwd` when needed.\n\
 - start_dev_server starts a Vite/Next/npm/pnpm/yarn local server in a detached host-managed process. Give it a command plus optional `cwd` and `port`; it handles Windows `.cmd` shims, sends server output to `.hormachuelos-dev-server.log`, and returns immediately.\n\
 - NEVER use `Start-Process`, `Start-Job`, `cmd.exe`, `start /b`, `&`, or other background-shell tricks through run_command for a local server. Use start_dev_server, then continue with preview, inspection, and the requested work.\n\
@@ -3178,7 +3184,7 @@ CAPABILITIES:\n\
 - export_client_pack: zip the project for client handoff (excludes node_modules/.git/target/dist) and write CLIENT_HANDOFF.md.\n\
 - web_search / browse_page: research the public web when local files are not enough.\n\
 - view_image: view/describe an image file (PNG/JPG/WEBP/GIF/BMP). Attached images are auto-described in parallel before the run; do not call view_image for those paths unless a description is missing.\n\
-- view_video: view a local project video through six chronological visual samples. Attached videos are already sampled automatically; call view_video only for a project file that was not attached. Visual summary only, not an audio transcript.\n\
+- view_video: view a local video through six chronological visual samples. Attached videos are already sampled automatically; call view_video for a project file or a user-named absolute video that was not attached. Visual summary only, not an audio transcript.\n\
 - Attached videos arrive as a six-frame chronological contact sheet plus its auto-generated visual description. Treat that description as the video’s visual context for every model; never invent audio or unsampled moments.\n\
 - computer_observe / computer_actions: Preview-only control when Computer Use is enabled. They can list Preview tab identities, activate a selected Preview tab, navigate/open Preview Browser tabs, and interact only with the active page; they never control Windows or other apps. For \"playwright this website\" and equivalent live-browser requests, observe and interact with Preview before reading source or creating tests. If Preview is closed, still call open_tab or navigate; the host opens the Preview window and a Preview Browser tab automatically. Never ask the user to open Preview. Never use open_url for Preview navigation because it launches the external default browser.
 

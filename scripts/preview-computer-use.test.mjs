@@ -186,9 +186,9 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
 test("project and Browser tabs render bounded cinematic cursor feedback", () => {
   for (const source of [frameController, browserController]) {
     assert.match(source, /translate3d/);
-    assert.match(source, /width:52px/);
+    assert.match(source, /(?:width:48px|AI_CURSOR_HAND_WIDTH|aiCursorHandBeforeCss)/);
     assert.match(source, /will-change:transform,opacity|willChange/);
-    assert.match(source, /contain:(?:layout style paint|strict)/);
+    assert.match(source, /contain:(?:layout style(?: paint)?|strict)/);
     assert.match(source, /pointer-events:none/);
     assert.match(source, /data-gesture|dataset\.gesture/);
     assert.match(source, /prefers-reduced-motion/);
@@ -199,6 +199,7 @@ test("project and Browser tabs render bounded cinematic cursor feedback", () => 
     assert.match(source, /scroll/);
     assert.match(source, /drag/);
     assert.doesNotMatch(source, /backdrop-filter/);
+    assert.match(source, /(?:ai-cursor-hand|AI_CURSOR_HAND|aiCursorHandBeforeCss|__HORMA_HAND_URI__)/);
     const cursorFx = source
       .replace(/@keyframes __horma-ai-frame-(?:spin|breathe|glow|shade)\{[^}]*\}/g, "")
       .replace(/#__horma_browser_viewport(?::after)?\{[^}]*\}/g, "");
@@ -207,7 +208,7 @@ test("project and Browser tabs render bounded cinematic cursor feedback", () => 
   assert.match(frameController, /MAX_CURSOR_TRAIL_SPARKS = 3/);
   assert.match(frameController, /MAX_CURSOR_TRANSIENTS = 8/);
   assert.match(browserController, /transients\.length>8/);
-  assert.match(browserController, /initialization_script\(BROWSER_COMPUTER_SCRIPT\)/);
+  assert.match(browserController, /initialization_script\(browser_computer_script\(\)\)/);
   assert.match(browserController, /ensure_main_caller\(&caller\)/);
 });
 
@@ -250,6 +251,8 @@ test("desktop overlay is click-through cinematic FX for Desktop mode", () => {
     "src-tauri/capabilities/computer-fx.json",
     "src/computer-fx.html",
     "src/computer-fx.ts",
+    "src/computer-cursor.ts",
+    "src/assets/ai-cursor-hand.png",
   ]) {
     assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), true, `${path} must exist`);
   }
@@ -267,6 +270,7 @@ test("desktop overlay is click-through cinematic FX for Desktop mode", () => {
   assert.match(fx, /typing_fx_never_serializes_typed_content/);
   assert.match(fx, /payload\.text = None/);
   assert.match(overlay, /__horma-ai-cursor/);
+  assert.match(overlay, /aiCursorHandBeforeCss/);
   assert.match(overlay, /__horma-ai-shockwave/);
   assert.match(overlay, /AI cursor · Desktop/);
   assert.match(overlay, /prefers-reduced-motion/);

@@ -13,6 +13,7 @@ import {
   type PreviewScrollCandidate,
   type PreviewScrollPosition,
 } from "./preview-scroll-policy";
+import { aiCursorHandBeforeCss } from "../computer-cursor";
 
 export type PreviewComputerRequest = {
   requestId: string;
@@ -550,9 +551,9 @@ class PreviewFrameComputerController {
     style.dataset.hormaComputerUse = "true";
     style.textContent = `
       #__horma-ai-cursor,#__horma-ai-target,#__horma-ai-status,.__horma-ai-fx{box-sizing:border-box!important;pointer-events:none!important;user-select:none!important;font-family:ui-monospace,SFMono-Regular,Consolas,monospace!important}
-      #__horma-ai-cursor{position:fixed!important;z-index:2147483646!important;left:0!important;top:0!important;width:52px!important;height:52px!important;opacity:0;transform:translate3d(32px,32px,0);will-change:transform,opacity;contain:layout style paint;isolation:isolate;transition:opacity .16s ease}
+      #__horma-ai-cursor{position:fixed!important;z-index:2147483646!important;left:0!important;top:0!important;width:0!important;height:0!important;opacity:0;transform:translate3d(32px,32px,0);will-change:transform,opacity;contain:layout style;overflow:visible;isolation:isolate;transition:opacity .16s ease}
       #__horma-ai-cursor[data-visible="true"]{opacity:1}
-      #__horma-ai-cursor::before{content:"";position:absolute;inset:1px 17px 15px 1px;border-radius:7px 58% 58% 58%;background:linear-gradient(145deg,#f7feff 0%,#68e7ff 42%,#7b61ff 100%);clip-path:polygon(0 0,100% 69%,57% 74%,39% 100%);box-shadow:0 0 0 2px #03101ee6,0 0 12px rgba(87,221,255,.82);transform-origin:7px 7px;transition:transform .12s cubic-bezier(.16,1,.3,1),opacity .12s ease}
+      ${aiCursorHandBeforeCss("#__horma-ai-cursor", "::before")}
       #__horma-ai-cursor::after{content:"";position:absolute;left:-12px;top:-12px;width:48px;height:48px;border:1px solid rgba(108,234,255,.7);border-radius:50%;opacity:.2;transform:scale(.72);transition:transform .16s cubic-bezier(.16,1,.3,1),opacity .16s ease}
       #__horma-ai-cursor[data-gesture="approach"]::after{opacity:.82;transform:scale(1)}
       #__horma-ai-cursor[data-gesture="hover"]::before{transform:scale(1.06) rotate(-2deg)}
@@ -560,8 +561,8 @@ class PreviewFrameComputerController {
       #__horma-ai-cursor[data-gesture="click"]::before{animation:__horma-click-pop .22s cubic-bezier(.16,1,.3,1)}
       #__horma-ai-cursor[data-gesture="type"]::after,#__horma-ai-cursor[data-gesture="key"]::after{border-color:#a693ff;opacity:.85;transform:scale(.92)}
       #__horma-ai-cursor[data-gesture="scroll"]::after,#__horma-ai-cursor[data-gesture="drag"]::after{border-color:#6ceaff;opacity:.9;transform:scale(1)}
-      #__horma-ai-cursor-core{position:absolute;left:5px;top:5px;width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px rgba(83,224,255,.5),0 0 12px #fff}
-      #__horma-ai-cursor-label{position:absolute;left:28px;top:30px;white-space:nowrap;padding:4px 7px;border:1px solid rgba(123,230,255,.76);border-radius:999px;background:#07121ef2;color:#effdff;font:800 9px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:.08em;box-shadow:0 4px 12px rgba(0,0,0,.38);opacity:0;transform:translate3d(0,4px,0);transition:transform .14s cubic-bezier(.16,1,.3,1),opacity .14s ease}
+      #__horma-ai-cursor-core{position:absolute;left:-2px;top:-2px;width:4px;height:4px;opacity:0}
+      #__horma-ai-cursor-label{position:absolute;left:22px;top:44px;white-space:nowrap;padding:4px 7px;border:1px solid rgba(123,230,255,.76);border-radius:999px;background:#07121ef2;color:#effdff;font:800 9px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:.08em;box-shadow:0 4px 12px rgba(0,0,0,.38);opacity:0;transform:translate3d(0,4px,0);transition:transform .14s cubic-bezier(.16,1,.3,1),opacity .14s ease}
       #__horma-ai-cursor[data-label-x="left"] #__horma-ai-cursor-label{left:auto;right:32px}
       #__horma-ai-cursor[data-label-y="up"] #__horma-ai-cursor-label{top:auto;bottom:32px}
       #__horma-ai-cursor[data-busy="true"] #__horma-ai-cursor-label{opacity:1;transform:translate3d(0,0,0)}

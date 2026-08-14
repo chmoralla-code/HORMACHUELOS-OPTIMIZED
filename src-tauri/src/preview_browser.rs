@@ -363,16 +363,16 @@ const BROWSER_COMPUTER_SCRIPT: &str = r###"
 #__horma_browser_viewport{position:fixed!important;z-index:2147483642!important;inset:0!important;pointer-events:none!important;border-radius:0;background:linear-gradient(to right,#000 0,rgba(255,255,255,.38) 8px,transparent 72px),linear-gradient(to left,#000 0,rgba(255,255,255,.38) 8px,transparent 72px),linear-gradient(to bottom,#000 0,rgba(255,255,255,.38) 8px,transparent 72px),linear-gradient(to top,#000 0,rgba(255,255,255,.38) 8px,transparent 72px);box-shadow:inset 0 0 0 1px #000;animation:__horma-ai-frame-shade 5.2s ease-in-out infinite}
 #__horma_browser_viewport:after{content:'';position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 2px #fff,inset 0 0 14px 2px rgba(255,255,255,.42),inset 0 0 36px 8px rgba(255,255,255,.12);animation:__horma-ai-frame-glow 5.2s ease-in-out infinite}
 #__horma_browser_cursor,#__horma_browser_target,#__horma_browser_viewport,#__horma_browser_badge,.__horma_browser_fx{box-sizing:border-box!important;pointer-events:none!important;user-select:none!important;font-family:ui-monospace,Consolas,monospace!important}
-#__horma_browser_cursor{position:fixed!important;z-index:2147483646!important;left:0!important;top:0!important;width:52px!important;height:52px!important;opacity:0;transform:translate3d(32px,32px,0);will-change:transform,opacity;contain:layout style paint;isolation:isolate;transition:opacity .16s ease}
+#__horma_browser_cursor{position:fixed!important;z-index:2147483646!important;left:0!important;top:0!important;width:0!important;height:0!important;opacity:0;transform:translate3d(32px,32px,0);will-change:transform,opacity;contain:layout style;overflow:visible;isolation:isolate;transition:opacity .16s ease}
 #__horma_browser_cursor[data-visible='true']{opacity:1}
-#__horma_browser_cursor:before{content:'';position:absolute;inset:1px 17px 15px 1px;border-radius:7px 58% 58% 58%;background:linear-gradient(145deg,#f7feff,#68e7ff 42%,#7b61ff);clip-path:polygon(0 0,100% 69%,57% 74%,39% 100%);box-shadow:0 0 0 2px #03101ee6,0 0 12px rgba(87,221,255,.82);transform-origin:7px 7px;transition:transform .12s cubic-bezier(.16,1,.3,1),opacity .12s ease}
+#__horma_browser_cursor:before{content:'';position:absolute;left:-28px;top:0;width:48px;height:128px;background:url(__HORMA_HAND_URI__) no-repeat 0 0/48px 128px;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.55));transform-origin:28px 0;transition:transform .12s cubic-bezier(.16,1,.3,1),opacity .12s ease}
 #__horma_browser_cursor:after{content:'';position:absolute;left:-12px;top:-12px;width:48px;height:48px;border:1px solid rgba(108,234,255,.7);border-radius:50%;opacity:.2;transform:scale(.72);transition:transform .16s cubic-bezier(.16,1,.3,1),opacity .16s ease}
 #__horma_browser_cursor[data-gesture='approach']:after{opacity:.82;transform:scale(1)}
 #__horma_browser_cursor[data-gesture='hover']:before{transform:scale(1.06) rotate(-2deg)}
 #__horma_browser_cursor[data-gesture='press']:before{transform:scale(.86) rotate(-3deg)}
 #__horma_browser_cursor[data-gesture='click']:before{animation:__horma_browser_click .22s cubic-bezier(.16,1,.3,1)}
-#__horma_browser_core{position:absolute;left:5px;top:5px;width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px rgba(83,224,255,.5),0 0 12px #fff}
-#__horma_browser_label{position:absolute;left:28px;top:30px;white-space:nowrap;padding:4px 7px;border:1px solid rgba(123,230,255,.76);border-radius:999px;background:#07121ef2;color:#effdff;font:800 9px/1 ui-monospace,Consolas,monospace!important;letter-spacing:.08em;box-shadow:0 4px 12px rgba(0,0,0,.38);opacity:0;transform:translate3d(0,4px,0);transition:transform .14s cubic-bezier(.16,1,.3,1),opacity .14s ease}
+#__horma_browser_core{position:absolute;left:-2px;top:-2px;width:4px;height:4px;opacity:0}
+#__horma_browser_label{position:absolute;left:22px;top:44px;white-space:nowrap;padding:4px 7px;border:1px solid rgba(123,230,255,.76);border-radius:999px;background:#07121ef2;color:#effdff;font:800 9px/1 ui-monospace,Consolas,monospace!important;letter-spacing:.08em;box-shadow:0 4px 12px rgba(0,0,0,.38);opacity:0;transform:translate3d(0,4px,0);transition:transform .14s cubic-bezier(.16,1,.3,1),opacity .14s ease}
 #__horma_browser_cursor[data-label-x='left'] #__horma_browser_label{left:auto;right:32px}
 #__horma_browser_cursor[data-label-y='up'] #__horma_browser_label{top:auto;bottom:32px}
 #__horma_browser_cursor[data-busy='true'] #__horma_browser_label{opacity:1;transform:translate3d(0,0,0)}
@@ -418,6 +418,17 @@ const BROWSER_COMPUTER_SCRIPT: &str = r###"
   window.__hormaPreviewComputerUse={stop(){generation++;destroyFx();return{ok:true,scope:'active-preview-tab-only'}},observe,async actions(args){try{generation++;if(currentTimer)clearTimeout(currentTimer);if(currentReject){const reject=currentReject;currentReject=null;reject(Error('Preview Computer Use superseded.'))}currentAnimation?.cancel?.();currentAnimation=null;const own=generation;if(!refs.size)observe();const list=Array.isArray(args?.actions)?args.actions:[],results=[];for(let i=0;i<list.length;i++){if(own!==generation)throw Error('Preview Computer Use stopped.');status(`${i+1}/${list.length} · ${list[i].type}`,true);const detail=await action(list[i],own)||{};results.push({index:i,type:list[i].type,ok:true,...detail})}status(`Complete · ${list.length} action${list.length===1?'':'s'}`);const failed=results.filter(v=>v.type==='check'&&v.passed===false);if(settleTimer)clearTimeout(settleTimer);settleTimer=setTimeout(()=>{settleTimer=null;hide()},900);return{ok:failed.length===0,passed:failed.length===0,failedChecks:failed.length,scope:'active-preview-tab-only',completed:list.length,results,cursor:{x:Math.round(point.x),y:Math.round(point.y)}}}catch(error){destroyFx();throw error}},handle(op,args){if(op==='observe')return Promise.resolve(observe());if(op==='actions')return this.actions(args);if(op==='stop')return Promise.resolve(this.stop());return Promise.reject(Error('Unsupported Preview Computer Use operation.'))}};
 })();
 "###;
+
+fn browser_computer_script() -> String {
+    use base64::Engine as _;
+    let uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD
+            .encode(include_bytes!("../../src/assets/ai-cursor-hand.png"))
+    );
+    BROWSER_COMPUTER_SCRIPT.replace("__HORMA_HAND_URI__", &uri)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewBrowserBounds {
@@ -855,7 +866,7 @@ pub async fn create_preview_browser(
         .zoom_hotkeys_enabled(true)
         .devtools(cfg!(debug_assertions))
         .initialization_script(BROWSER_INSPECTION_SCRIPT)
-        .initialization_script(BROWSER_COMPUTER_SCRIPT)
+        .initialization_script(browser_computer_script())
         .on_navigation(move |next| {
             if let Some(event) = inspection_navigation(next) {
                 if let Ok((kind, target)) = event {

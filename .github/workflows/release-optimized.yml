@@ -82,13 +82,13 @@ jobs:
           releaseBody: |
             Beta of the independent FPS-focused Windows edition.
 
-            This release (1.2.10-1):
-            - Plan mode ends with a Plan ready chooser; Apply unlocks writes, and a new request plans again
-            - "simply explain" stays Ask; "okay apply all your suggestions except …" switches to Multi-Agent
-            - Ask no longer auto-resumes after an announced action, so the run can idle
-            - Visible replies hide dumped file-path chips
-            - Thought / Ran N sit under the Plan chooser so the run does not look frozen
-            - Computer Use and Desktop mode draw a box-aligned black-to-white glow that slowly fades in and out on the preview or target window
+            This release (1.2.11-1):
+            - The agent can list and inspect a folder you name under your user profile (Music, Documents, Desktop, Downloads)
+            - Excel, CSV, Word, PowerPoint, PDF, images, audio, and video show up in listings; read_file extracts Office/CSV/PDF text; write_file can create .xlsx; open_path opens the default Windows app
+            - An empty project folder such as EXCELS still surfaces sibling workbooks in the parent directory
+            - Cloud placeholder files are listed; AppData, .ssh, and Windows system folders stay blocked
+            - Debug no longer sticks on Edge's localhost refused page or a black unstyled window
+            - Computer Use uses a pointing-hand cursor instead of the CSS arrow
 
             Gemini 3.7 Flash:
             - Gemini 3.7 Flash is in the model picker; Command Code Studio keys (user_…) call google/gemini-3.7-flash

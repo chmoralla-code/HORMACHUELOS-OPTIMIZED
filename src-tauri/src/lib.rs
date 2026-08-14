@@ -7,8 +7,10 @@ pub mod config;
 pub mod cursor_bridge;
 pub mod design_source;
 pub mod desktop_computer_use;
+pub mod document_inspect;
 pub mod execution_profile;
 pub mod flavour;
+pub mod frontend_shell;
 pub mod integration_chat;
 pub mod integrations;
 pub mod license;
@@ -1543,6 +1545,8 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
+                #[cfg(not(feature = "custom-protocol"))]
+                frontend_shell::reload_dev_frontend(&window);
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -1643,6 +1647,10 @@ pub fn run() {
             computer_use::install(app.handle().clone());
             computer_use::install_emergency_hotkey(app.handle().clone());
             desktop_computer_use::install(app.handle().clone());
+            #[cfg(not(feature = "custom-protocol"))]
+            if let Some(window) = app.get_webview_window("main") {
+                frontend_shell::recover_dev_frontend(window);
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -311,6 +311,9 @@ async function loadSameOriginController() {
   const qaUrl = `data:text/javascript;base64,${Buffer.from(
     compileTypeScript(read("src/components/preview-computer-qa.ts")),
   ).toString("base64")}`;
+  const cursorUrl = `data:text/javascript;base64,${Buffer.from(
+    compileTypeScript(read("src/computer-cursor.ts")),
+  ).toString("base64")}`;
   const controller = compileTypeScript(read("src/components/preview-computer-use.ts"))
     .replace(
       /from\s+["']\.\/preview-scroll-policy["']/,
@@ -319,6 +322,10 @@ async function loadSameOriginController() {
     .replace(
       /from\s+["']\.\/preview-computer-qa["']/,
       `from ${JSON.stringify(qaUrl)}`,
+    )
+    .replace(
+      /from\s+["']\.\.\/computer-cursor["']/,
+      `from ${JSON.stringify(cursorUrl)}`,
     );
   const controllerUrl = `data:text/javascript;base64,${Buffer.from(controller).toString("base64")}`;
   return import(controllerUrl);

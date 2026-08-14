@@ -1080,17 +1080,92 @@ fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
     }
 }
 
-#[cfg(windows)]
+/// True for name-surrogate reparse points (symlinks and directory junctions).
+/// OneDrive/cloud placeholder *files* are reparse points but not symlinks —
+/// they must still be listed and opened when canonical containment holds.
 fn metadata_is_link_like(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
     metadata.file_type().is_symlink()
-        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(windows)]
+fn metadata_is_directory(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+    metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
 }
 
 #[cfg(not(windows))]
-fn metadata_is_link_like(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
+fn metadata_is_directory(metadata: &std::fs::Metadata) -> bool {
+    metadata.is_dir()
+}
+
+/// Skip directory junctions/symlinks while walking so they cannot be used to
+/// escape the allowed root. Do not skip ordinary files, including cloud
+/// placeholder files whose canonical path stays inside that root.
+///
+/// On Windows, `Metadata::is_dir()` is false for reparse points (junctions and
+/// cloud folders), so directory-ness comes from `FILE_ATTRIBUTE_DIRECTORY`.
+fn skip_walk_entry(metadata: &std::fs::Metadata) -> bool {
+    metadata_is_directory(metadata) && metadata_is_link_like(metadata)
+}
+
+fn is_app_metadata_listing_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == ".hormachuelos"
+        || lower.starts_with(".hormachuelos")
+        || lower == "desktop.ini"
+        || lower == "thumbs.db"
+        || lower == ".ds_store"
+}
+
+/// When a folder listing is only Hormachuelos metadata, mention sibling
+/// documents in the inspectable parent so the model does not claim "empty".
+fn nearby_parent_documents_note(listed_dir: &Path, entries: &[Value]) -> Option<String> {
+    let has_user_docs = entries.iter().any(|entry| {
+        entry
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| {
+                !is_app_metadata_listing_name(name) && name != "…" && !name.starts_with('…')
+            })
+    });
+    if has_user_docs {
+        return None;
+    }
+    let parent = listed_dir.parent()?;
+    let parent_canon = resolve_user_profile_read_path(parent).ok()?;
+    let child_name = listed_dir
+        .file_name()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let mut names = Vec::new();
+    let reader = std::fs::read_dir(&parent_canon).ok()?;
+    for entry in reader.flatten() {
+        let meta = std::fs::symlink_metadata(entry.path()).ok()?;
+        if skip_walk_entry(&meta) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.to_ascii_lowercase() == child_name || is_app_metadata_listing_name(&name) {
+            continue;
+        }
+        if metadata_is_directory(&meta) {
+            names.push(format!("{name}/"));
+        } else {
+            names.push(name);
+        }
+        if names.len() >= 40 {
+            break;
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Note: this folder only contains Hormachuelos metadata (for example .hormachuelos). Do not tell the user it is empty. Nearby parent {} contains: {}. Call list_dir with that exact absolute path to inspect those documents.",
+        absolute_display_path(&parent_canon),
+        names.join(", ")
+    ))
 }
 
 fn validate_project_relative_path(path: &str) -> Result<PathBuf> {
@@ -1122,9 +1197,10 @@ fn validate_project_relative_path(path: &str) -> Result<PathBuf> {
     Ok(safe)
 }
 
-/// Resolve an existing read target inside `root`. Every existing component is
-/// checked for symlinks/reparse points before canonical containment is checked,
-/// preventing directory-junction escapes and read-time link races.
+/// Resolve an existing read target inside `root`. Directory junctions and
+/// directory symlinks are rejected before they are followed. Cloud placeholder
+/// files (reparse points that are not name-surrogate links) are allowed, then
+/// canonical containment is still enforced.
 fn resolve_project_read_path(root: &Path, relative: &str) -> Result<PathBuf> {
     let root = root
         .canonicalize()
@@ -1135,10 +1211,8 @@ fn resolve_project_read_path(root: &Path, relative: &str) -> Result<PathBuf> {
         cursor.push(component.as_os_str());
         let metadata = std::fs::symlink_metadata(&cursor)
             .with_context(|| format!("Project item not found: {relative}"))?;
-        if metadata_is_link_like(&metadata) {
-            anyhow::bail!(
-                "Symbolic links and filesystem reparse points are not readable by tools."
-            );
+        if skip_walk_entry(&metadata) {
+            anyhow::bail!("Directory junctions and symbolic links are not followed by tools.");
         }
     }
     let canonical = cursor
@@ -1150,47 +1224,164 @@ fn resolve_project_read_path(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-/// Resolve an image path for `view_image`. Project-relative paths use the
-/// normal project boundary; absolute paths inside the app's paste temp dir
-/// (clipboard/drag-drop attachments) are also allowed since they are
-/// user-provided and never executed.
-fn resolve_image_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
-    let p = Path::new(raw);
-    if p.is_absolute() {
-        let paste_dir = std::env::temp_dir().join("hormachuelos-paste");
-        let canonical = p
-            .canonicalize()
-            .with_context(|| format!("Could not resolve image path: {}", p.display()))?;
-        let Ok(paste_canon) = paste_dir.canonicalize() else {
-            anyhow::bail!("Image path is not inside the app paste directory.");
-        };
-        if canonical.starts_with(&paste_canon) {
-            return Ok(canonical);
-        }
-        anyhow::bail!("Image path resolves outside the project and the paste directory.");
-    }
-    resolve_project_read_path(root, raw)
+fn user_profile_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
 }
 
-/// Resolve a video path with the same boundaries as `view_image`. Directly
-/// selected media lives in the app's private paste directory; project-relative
-/// paths remain constrained to the active workspace.
-fn resolve_video_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
-    let p = Path::new(raw);
-    if p.is_absolute() {
-        let paste_dir = std::env::temp_dir().join("hormachuelos-paste");
-        let canonical = p
-            .canonicalize()
-            .with_context(|| format!("Could not resolve video path: {}", p.display()))?;
-        let Ok(paste_canon) = paste_dir.canonicalize() else {
-            anyhow::bail!("Video path is not inside the app paste directory.");
-        };
-        if canonical.starts_with(&paste_canon) {
-            return Ok(canonical);
+fn path_is_unc_or_device(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        match path.components().next() {
+            Some(Component::Prefix(prefix)) => matches!(
+                prefix.kind(),
+                Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..)
+            ),
+            _ => false,
         }
-        anyhow::bail!("Video path resolves outside the project and the paste directory.");
     }
-    resolve_project_read_path(root, raw)
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().starts_with("//")
+    }
+}
+
+fn blocked_home_root_name(name: &str) -> bool {
+    matches!(
+        name,
+        "appdata"
+            | "application data"
+            | "local settings"
+            | "cookies"
+            | "nethood"
+            | "printhood"
+            | "recent"
+            | "sendto"
+            | "start menu"
+            | "templates"
+            | "library"
+    ) || name.starts_with('.')
+}
+
+fn path_has_blocked_component(rel: &Path) -> bool {
+    rel.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        matches!(
+            name.as_str(),
+            ".ssh"
+                | ".gnupg"
+                | ".aws"
+                | ".azure"
+                | ".kube"
+                | ".docker"
+                | "credentials"
+                | "ntuser.dat"
+        )
+    })
+}
+
+/// True when a canonical path under `home` must not be inspected.
+fn is_blocked_user_profile_read(canonical: &Path, home: &Path) -> bool {
+    let Ok(rel) = canonical.strip_prefix(home) else {
+        return true;
+    };
+    let Some(first) = rel.components().next() else {
+        return false;
+    };
+    let first = first.as_os_str().to_string_lossy().to_ascii_lowercase();
+    blocked_home_root_name(&first) || path_has_blocked_component(rel)
+}
+
+/// Read a user-named absolute path under the signed-in profile.
+/// Junctions (OneDrive Documents/Music) are allowed when the canonical target
+/// stays inside the profile and outside protected folders.
+fn resolve_user_profile_read_path(path: &Path) -> Result<PathBuf> {
+    if path_is_unc_or_device(path) {
+        anyhow::bail!("Read tools do not accept network or device paths.");
+    }
+    let normalized = normalize_lexically(path);
+    if path_is_unc_or_device(&normalized) {
+        anyhow::bail!("Read tools do not accept network or device paths.");
+    }
+    let canonical = normalized
+        .canonicalize()
+        .with_context(|| format!("Path not found: {}", absolute_display_path(&normalized)))?;
+    let home = user_profile_dir().ok_or_else(|| {
+        anyhow::anyhow!("Could not resolve the user profile for an outside-project read.")
+    })?;
+    let home = home
+        .canonicalize()
+        .context("Could not resolve the user profile.")?;
+    if !canonical.starts_with(&home) {
+        anyhow::bail!(
+            "Read tools can inspect the active project or a folder you named under your user profile (Documents, Music, Desktop, Downloads, …). That path is outside both."
+        );
+    }
+    if is_blocked_user_profile_read(&canonical, &home) {
+        anyhow::bail!("That folder is protected and cannot be inspected.");
+    }
+    Ok(canonical)
+}
+
+/// Resolve a read-only inspection target: project-relative paths stay inside
+/// the active project; absolute paths the user named may also be read when they
+/// resolve under the user profile (not AppData, secrets, or OS folders).
+fn resolve_inspection_path(root: &Path, requested: &str) -> Result<PathBuf> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return resolve_project_read_path(root, ".");
+    }
+    let path = Path::new(requested);
+    if !path.is_absolute() {
+        return resolve_project_read_path(root, requested);
+    }
+    let project = root
+        .canonicalize()
+        .with_context(|| format!("Could not resolve project root: {}", root.display()))?;
+    if let Ok(canonical) = path.canonicalize() {
+        if let Ok(relative) = canonical.strip_prefix(&project) {
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            let relative = if relative.is_empty() {
+                "."
+            } else {
+                relative.as_str()
+            };
+            return resolve_project_read_path(root, relative);
+        }
+    }
+    resolve_user_profile_read_path(path)
+}
+
+fn resolve_paste_attachment_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let paste_dir = std::env::temp_dir().join("hormachuelos-paste");
+    let canonical = path.canonicalize().ok()?;
+    let paste_canon = paste_dir.canonicalize().ok()?;
+    canonical.starts_with(&paste_canon).then_some(canonical)
+}
+
+/// Images/videos: project, chat paste directory, or a user-named profile folder.
+fn resolve_media_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
+    let raw = raw.trim();
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        if let Some(paste) = resolve_paste_attachment_path(path) {
+            return Ok(paste);
+        }
+    }
+    resolve_inspection_path(root, raw)
+}
+
+fn resolve_image_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
+    resolve_media_read_path(root, raw)
+}
+
+fn resolve_video_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
+    resolve_media_read_path(root, raw)
 }
 
 pub fn path_escapes_project(root: &Path, rel: &str) -> bool {
@@ -1247,11 +1438,11 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a text file inside the active project. Absolute paths, traversal, and symbolic-link escapes are rejected.",
+                "description": "Read a file. Text/code is returned as UTF-8. Excel/CSV returns sheet names and cell text; PowerPoint/Word/PDF return extracted text when possible. Images/video/audio return a short description and tell you to use view_image, view_video, or open_path. Use a project-relative path, or the exact absolute path when the user named a folder/file under their user profile. Do not treat ZIP/Office binaries as an empty folder. Parent-directory traversal, AppData, secrets, and OS folders are rejected.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Relative path within project" }
+                        "path": { "type": "string", "description": "Project-relative path, or an absolute path the user named under their user profile" }
                     },
                     "required": ["path"]
                 }
@@ -1261,7 +1452,7 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Write text contents to a file. Creates parent directories. Overwrites if exists. Accepts absolute paths or relative to project root. The result includes the full filesystem path so you can tell the user where the file is.",
+                "description": "Write a file in the active project (absolute paths still require the usual confirmation when they leave the project). Text/CSV is stored as-is. For .xlsx/.xlsm, content is tabular text (CSV, TSV, or a JSON array of rows) and is written as a real spreadsheet. Creates parent directories. Overwrites if exists. The result includes the full filesystem path.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1292,11 +1483,11 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "list_dir",
-                "description": "List a directory inside the active project. Returns the absolute directory path plus file/folder names. For 'where is this file' questions, prefer the write_file/file_info full path instead of listing the whole project.",
+                "description": "List a directory, including Excel, CSV, PowerPoint, PDF, images, audio, video, and OneDrive/cloud placeholder files. Use '.' or a project-relative path for the active workspace. When the user names an absolute folder (for example C:\\\\Users\\\\…\\\\Music\\\\BEDYUS), pass that exact path. Do not say the folder is empty if the listing is only .hormachuelos — that is app metadata; list the parent if the result mentions nearby documents. Directory junctions are not followed. For 'where is this project file' questions, prefer file_info.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Path relative to the project root; default '.'", "default": "." }
+                        "path": { "type": "string", "description": "Project-relative path (default '.') or an absolute folder the user named under their user profile", "default": "." }
                     }
                 }
             }
@@ -1305,7 +1496,7 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "glob",
-                "description": "Find files inside the active project matching a relative glob pattern (e.g. '**/*.ts', 'src/*.html').",
+                "description": "Find files inside the active project matching a relative glob pattern. Includes office and media names (e.g. '**/*.xlsx', '**/*.pdf', '**/*.ts'). Cloud placeholder files in the project are included; directory junctions are not followed. glob stays project-relative — for a user-named folder outside the project, use list_dir on that absolute path.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1319,12 +1510,12 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "grep",
-                "description": "Search project file contents with a regex pattern. Optional path restricts the search to a project-relative directory.",
+                "description": "Search file contents with a regex pattern. Optional path restricts the search to a project-relative directory or an absolute folder the user named under their user profile.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": { "type": "string", "description": "Regex" },
-                        "path": { "type": "string", "description": "Directory relative to the project root. Defaults to project root." }
+                        "path": { "type": "string", "description": "Directory or file: project-relative, or an absolute path the user named under their user profile. Defaults to the project root." }
                     },
                     "required": ["pattern"]
                 }
@@ -1503,7 +1694,7 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "open_path",
-                "description": "Open a file or folder in Windows Explorer.",
+                "description": "Open a file or folder with the default Windows app (Excel, PowerPoint, Word, PDF reader, media player, Explorer for folders). Use this when the user says open/view/play a spreadsheet, deck, PDF, audio, or video. HTML still opens in the in-app Preview.",
                 "parameters": {
                     "type": "object",
                     "properties": { "path": { "type": "string" } },
@@ -1584,10 +1775,12 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "file_info",
-                "description": "Return metadata about a file or directory inside the active project.",
+                "description": "Return metadata about a file or directory in the active project, or at an absolute path the user named under their user profile.",
                 "parameters": {
                     "type": "object",
-                    "properties": { "path": { "type": "string" } },
+                    "properties": {
+                        "path": { "type": "string", "description": "Project-relative path, or an absolute path the user named under their user profile" }
+                    },
                     "required": ["path"]
                 }
             }
@@ -1596,10 +1789,10 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "view_image",
-                "description": "View and describe an image file (PNG/JPG/WEBP/GIF/BMP) at an absolute or project-relative path. Attached chat images are auto-described in parallel before the run. Do not call this for those attachments unless a path is missing a description; repeating it stalls the same vision helper.",
+                "description": "View and describe an image file (PNG/JPG/WEBP/GIF/BMP). Accepts a project-relative path, a pasted-attachment path, or an absolute image the user named under their user profile. Attached chat images are auto-described in parallel before the run. Do not call this for those attachments unless a path is missing a description; repeating it stalls the same vision helper.",
                 "parameters": {
                     "type": "object",
-                    "properties": { "path": { "type": "string", "description": "Absolute or project-relative path to the image file" } },
+                    "properties": { "path": { "type": "string", "description": "Project-relative, paste-temp, or user-named absolute image path" } },
                     "required": ["path"]
                 }
             }
@@ -1608,10 +1801,10 @@ pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bo
             "type": "function",
             "function": {
                 "name": "view_video",
-                "description": "View and summarize a local video by sampling six chronological frames. Supports MP4, MOV, WEBM, MKV, AVI, WMV, FLV, MPEG, and 3GP. Use for a project video that was not attached in the chat; attached videos are auto-sampled already. Visual summary only — it does not transcribe audio.",
+                "description": "View and summarize a local video by sampling six chronological frames. Supports MP4, MOV, WEBM, MKV, AVI, WMV, FLV, MPEG, and 3GP. Use for a project video or an absolute video the user named under their user profile that was not attached in the chat; attached videos are auto-sampled already. Visual summary only — it does not transcribe audio.",
                 "parameters": {
                     "type": "object",
-                    "properties": { "path": { "type": "string", "description": "Absolute pasted-video path or a path relative to the active project" } },
+                    "properties": { "path": { "type": "string", "description": "Project-relative, paste-temp, or user-named absolute video path" } },
                     "required": ["path"]
                 }
             }
@@ -2480,13 +2673,30 @@ fn open_filesystem_path(path: &Path) -> Result<()> {
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        Command::new("explorer.exe")
-            .arg(path)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .context("Failed to open path in Explorer")?;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let result = unsafe {
+            ShellExecuteW(
+                HWND(std::ptr::null_mut()),
+                windows::core::w!("open"),
+                PCWSTR(wide.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result.0 as isize <= 32 {
+            anyhow::bail!("Could not open {}", path.display());
+        }
         return Ok(());
     }
 
@@ -2960,6 +3170,37 @@ fn probe_video_duration(path: &Path) -> Result<f64> {
         anyhow::bail!("Videos longer than 20 minutes are not sampled automatically.");
     }
     Ok(duration)
+}
+
+fn describe_audio_file(path: &Path) -> Result<String> {
+    let ext = crate::document_inspect::extension_lower(path);
+    let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    let display = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let mut out = crate::document_inspect::describe_audio_placeholder(&display, size, &ext);
+    let probe = run_media_process(
+        "ffprobe",
+        &[
+            std::ffi::OsStr::new("-v"),
+            std::ffi::OsStr::new("error"),
+            std::ffi::OsStr::new("-show_entries"),
+            std::ffi::OsStr::new("format=duration,format_name,bit_rate"),
+            std::ffi::OsStr::new("-of"),
+            std::ffi::OsStr::new("default=noprint_wrappers=1"),
+            path.as_os_str(),
+        ],
+        Duration::from_secs(8),
+    );
+    if let Ok(output) = probe {
+        let tags = String::from_utf8_lossy(&output).trim().to_string();
+        if !tags.is_empty() {
+            out.push_str("\nffprobe:\n");
+            out.push_str(&tags);
+        }
+    }
+    Ok(out)
 }
 
 fn create_video_contact_sheet(frame_paths: &[PathBuf], output_dir: &Path) -> Result<PathBuf> {
@@ -3603,24 +3844,12 @@ pub fn execute(
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-                let full = resolve_project_read_path(root, p)?;
-                let total_bytes = std::fs::metadata(&full)?.len();
-                let mut bytes = Vec::with_capacity(
-                    usize::try_from(total_bytes.min((MAX_FILE_READ_BYTES + 1) as u64))
-                        .unwrap_or(MAX_FILE_READ_BYTES + 1),
-                );
-                std::fs::File::open(&full)?
-                    .take((MAX_FILE_READ_BYTES + 1) as u64)
-                    .read_to_end(&mut bytes)?;
-                let content = String::from_utf8_lossy(&bytes).to_string();
-                if total_bytes > MAX_FILE_READ_BYTES as u64 || content.len() > MAX_FILE_READ_BYTES {
-                    Ok(format!(
-                        "{}...(truncated, {} bytes total; narrow the read or use grep)",
-                        utf8_prefix(&content, MAX_FILE_READ_BYTES),
-                        total_bytes
-                    ))
+                let full = resolve_inspection_path(root, p)?;
+                let ext = crate::document_inspect::extension_lower(&full);
+                if crate::document_inspect::is_audio_ext(&ext) {
+                    Ok(describe_audio_file(&full)?)
                 } else {
-                    Ok(content)
+                    crate::document_inspect::read_inspectable_file(&full, MAX_FILE_READ_BYTES)
                 }
             }
             "write_file" => {
@@ -3636,12 +3865,24 @@ pub fn execute(
                 if let Some(parent) = full.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                std::fs::write(&full, content)?;
-                Ok(path_result_with_full(
-                    format!("Wrote {} bytes to {p}", content.len()),
-                    p,
-                    &full,
-                ))
+                let ext = crate::document_inspect::extension_lower(&full);
+                if crate::document_inspect::is_xlsx_write_ext(&ext) {
+                    let (bytes, summary) =
+                        crate::document_inspect::xlsx_from_tabular_text(content)?;
+                    std::fs::write(&full, &bytes)?;
+                    Ok(path_result_with_full(
+                        format!("Wrote {summary} to {p}"),
+                        p,
+                        &full,
+                    ))
+                } else {
+                    std::fs::write(&full, content)?;
+                    Ok(path_result_with_full(
+                        format!("Wrote {} bytes to {p}", content.len()),
+                        p,
+                        &full,
+                    ))
+                }
             }
             "edit_file" => {
                 let p = args
@@ -3657,6 +3898,17 @@ pub fn execute(
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("missing new_string"))?;
                 let full = resolve_path(root, p)?;
+                let ext = crate::document_inspect::extension_lower(&full);
+                if crate::document_inspect::is_xlsx_write_ext(&ext)
+                    || matches!(
+                        ext.as_str(),
+                        "xls" | "xlsb" | "pptx" | "pptm" | "docx" | "docm" | "pdf"
+                    )
+                {
+                    anyhow::bail!(
+                        "edit_file cannot patch binary office/PDF files. For spreadsheets, call write_file with tabular CSV/TSV text to replace the workbook, or open_path to edit it in Excel/PowerPoint."
+                    );
+                }
                 let src = std::fs::read_to_string(&full)?;
                 let out = apply_edit_file(&src, old, new)
                     .map_err(|detail| anyhow::anyhow!("old_string edit failed in {p}: {detail}"))?;
@@ -3665,7 +3917,7 @@ pub fn execute(
             }
             "list_dir" => {
                 let rel = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let full = resolve_project_read_path(root, rel)?;
+                let full = resolve_inspection_path(root, rel)?;
                 let mut entries = Vec::new();
                 for e in std::fs::read_dir(&full)? {
                     if ctx.cancel.load(Ordering::SeqCst) {
@@ -3673,12 +3925,12 @@ pub fn execute(
                     }
                     let e = e?;
                     let meta = std::fs::symlink_metadata(e.path())?;
-                    if metadata_is_link_like(&meta) {
+                    if skip_walk_entry(&meta) {
                         continue;
                     }
                     entries.push(json!({
                         "name": e.file_name().to_string_lossy(),
-                        "is_dir": meta.is_dir(),
+                        "is_dir": metadata_is_directory(&meta),
                         "size": meta.len(),
                     }));
                     if entries.len() > MAX_LIST_DIR_ENTRIES {
@@ -3708,10 +3960,15 @@ pub fn execute(
                     }));
                 }
                 let listing = serde_json::to_string_pretty(&entries)?;
-                Ok(format!(
-                    "Listed {rel} at {} (project-relative: {rel})\n{listing}",
+                let mut message = format!(
+                    "Listed {rel} at {}\n{listing}",
                     absolute_display_path(&full)
-                ))
+                );
+                if let Some(note) = nearby_parent_documents_note(&full, &entries) {
+                    message.push('\n');
+                    message.push_str(&note);
+                }
+                Ok(message)
             }
             "glob" => {
                 let pat = args
@@ -3773,9 +4030,9 @@ pub fn execute(
                 }
                 let search_root = args.get("path").and_then(|v| v.as_str());
                 let dir = match search_root {
-                    Some(p) if grep_path_looks_unusable(p) => resolve_project_read_path(root, ".")?,
-                    Some(p) => resolve_project_read_path(root, p)?,
-                    None => resolve_project_read_path(root, ".")?,
+                    Some(p) if grep_path_looks_unusable(p) => resolve_inspection_path(root, ".")?,
+                    Some(p) => resolve_inspection_path(root, p)?,
+                    None => resolve_inspection_path(root, ".")?,
                 };
                 // Weak providers sometimes send plain text containing an unmatched
                 // `[` or `(`. Fall back to a literal search instead of turning a
@@ -3791,11 +4048,14 @@ pub fn execute(
                 let meta = std::fs::symlink_metadata(&dir)
                     .with_context(|| format!("Search path not found: {}", dir.display()))?;
                 if meta.is_file() {
-                    grep_file_hits(&dir, &project_root, &re, 1000, &mut hits)?;
+                    grep_file_hits(&dir, &dir, &re, 1000, &mut hits)?;
                 } else {
+                    let home = user_profile_dir().and_then(|home| home.canonicalize().ok());
+                    let external = !dir.starts_with(&project_root);
                     GrepWalk {
                         display_root: &dir,
-                        project_root: &project_root,
+                        containment_root: &dir,
+                        blocked_home: if external { home.as_deref() } else { None },
                         re: &re,
                         limit: 1000,
                         ctx,
@@ -4122,14 +4382,36 @@ pub fn execute(
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-                let full = resolve_project_read_path(root, p)?;
+                let full = resolve_inspection_path(root, p)?;
                 let meta = std::fs::metadata(&full)?;
+                let ext = crate::document_inspect::extension_lower(&full);
+                let kind = if meta.is_dir() {
+                    "directory"
+                } else if crate::document_inspect::is_spreadsheet_ext(&ext) {
+                    "spreadsheet"
+                } else if crate::document_inspect::is_presentation_ext(&ext) {
+                    "presentation"
+                } else if crate::document_inspect::is_word_ext(&ext) {
+                    "document"
+                } else if crate::document_inspect::is_pdf_ext(&ext) {
+                    "pdf"
+                } else if crate::document_inspect::is_image_ext(&ext) {
+                    "image"
+                } else if crate::document_inspect::is_video_ext(&ext) {
+                    "video"
+                } else if crate::document_inspect::is_audio_ext(&ext) {
+                    "audio"
+                } else {
+                    "file"
+                };
                 let info = json!({
                     "path": p,
                     "full_path": absolute_display_path(&full),
                     "exists": true,
                     "is_dir": meta.is_dir(),
                     "is_file": meta.is_file(),
+                    "kind": kind,
+                    "extension": ext,
                     "size_bytes": meta.len(),
                     "readonly": meta.permissions().readonly(),
                     "modified": meta.modified().ok().map(|t| t.elapsed().ok().map(|d| d.as_secs()).unwrap_or(0)).unwrap_or(0),
@@ -4308,7 +4590,8 @@ pub fn list_dir_json(path: &str, max_depth: u32) -> Result<Value> {
 
 struct GrepWalk<'a> {
     display_root: &'a Path,
-    project_root: &'a Path,
+    containment_root: &'a Path,
+    blocked_home: Option<&'a Path>,
     re: &'a regex::Regex,
     limit: usize,
     ctx: &'a ToolRunContext,
@@ -4327,8 +4610,14 @@ impl GrepWalk<'_> {
             return Ok(());
         }
         let canonical_dir = dir.canonicalize()?;
-        if !canonical_dir.starts_with(self.project_root) {
-            anyhow::bail!("Search directory resolves outside the active project.");
+        if !canonical_dir.starts_with(self.containment_root) {
+            anyhow::bail!("Search directory resolves outside the allowed read root.");
+        }
+        if self
+            .blocked_home
+            .is_some_and(|home| is_blocked_user_profile_read(&canonical_dir, home))
+        {
+            return Ok(());
         }
         for entry in std::fs::read_dir(dir)? {
             if self.ctx.cancel.load(Ordering::SeqCst) {
@@ -4340,14 +4629,20 @@ impl GrepWalk<'_> {
             let entry = entry?;
             let path = entry.path();
             let meta = std::fs::symlink_metadata(&path)?;
-            if metadata_is_link_like(&meta) {
+            if skip_walk_entry(&meta) {
                 continue;
             }
             let canonical = path.canonicalize()?;
-            if !canonical.starts_with(self.project_root) {
+            if !canonical.starts_with(self.containment_root) {
                 continue;
             }
-            if meta.is_dir() {
+            if self
+                .blocked_home
+                .is_some_and(|home| is_blocked_user_profile_read(&canonical, home))
+            {
+                continue;
+            }
+            if metadata_is_directory(&meta) {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with('.')
                     || name == "node_modules"
@@ -5007,6 +5302,155 @@ mod security_tests {
     }
 
     #[test]
+    fn blocked_user_profile_reads_cover_secrets_but_allow_music() {
+        let home = Path::new(r"C:\Users\Test");
+        assert!(is_blocked_user_profile_read(
+            &home.join("AppData").join("Local").join("Temp").join("x"),
+            home
+        ));
+        assert!(is_blocked_user_profile_read(
+            &home.join(".ssh").join("id_rsa"),
+            home
+        ));
+        assert!(is_blocked_user_profile_read(
+            &home.join("Documents").join(".ssh").join("id_rsa"),
+            home
+        ));
+        assert!(!is_blocked_user_profile_read(
+            &home.join("Music").join("BEDYUS"),
+            home
+        ));
+        assert!(!is_blocked_user_profile_read(
+            &home.join("Documents").join("notes.txt"),
+            home
+        ));
+        assert!(!is_blocked_user_profile_read(home, home));
+    }
+
+    struct ProfileProbe {
+        dir: PathBuf,
+    }
+
+    impl ProfileProbe {
+        fn new() -> Option<Self> {
+            let home = user_profile_dir()?;
+            let parent = ["Documents", "Music", "Desktop"]
+                .into_iter()
+                .map(|name| home.join(name))
+                .find(|path| path.is_dir())
+                .unwrap_or(home);
+            let dir = parent.join(format!("hormachuelos-inspection-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).ok()?;
+            if std::fs::write(dir.join("note.txt"), "hello-from-profile").is_err() {
+                let _ = std::fs::remove_dir_all(&dir);
+                return None;
+            }
+            Some(Self { dir })
+        }
+    }
+
+    impl Drop for ProfileProbe {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn read_tools_allow_user_named_profile_folders() {
+        let Some(probe) = ProfileProbe::new() else {
+            return;
+        };
+        let tree = TempTree::new();
+        let context = ToolRunContext::noop();
+        let folder = probe.dir.to_string_lossy().to_string();
+        let file = probe.dir.join("note.txt").to_string_lossy().to_string();
+
+        let listed = execute(
+            "list_dir",
+            &json!({ "path": folder }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("list_dir should inspect a user-named profile folder");
+        assert!(listed.contains("note.txt"), "{listed}");
+
+        let read = execute(
+            "read_file",
+            &json!({ "path": file }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("read_file should inspect a user-named profile file");
+        assert_eq!(read, "hello-from-profile");
+
+        let info = execute(
+            "file_info",
+            &json!({ "path": file }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("file_info should inspect a user-named profile file");
+        assert!(info.contains("note.txt"), "{info}");
+
+        let searched = execute(
+            "grep",
+            &json!({ "pattern": "hello-from-profile", "path": folder }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("grep should search a user-named profile folder");
+        assert!(searched.contains("hello-from-profile"), "{searched}");
+        assert!(
+            resolve_inspection_path(&tree.root, &file).is_ok(),
+            "inspection resolver should accept the profile file"
+        );
+        assert!(
+            resolve_image_read_path(&tree.root, &file).is_ok(),
+            "view_image should accept a user-named profile file"
+        );
+        assert!(
+            resolve_video_read_path(&tree.root, &file).is_ok(),
+            "view_video should accept a user-named profile file"
+        );
+    }
+
+    #[test]
+    fn read_tools_still_reject_os_and_appdata_paths() {
+        let tree = TempTree::new();
+        let context = ToolRunContext::noop();
+        let temp = std::env::temp_dir().to_string_lossy().to_string();
+        assert!(
+            execute(
+                "list_dir",
+                &json!({ "path": temp }),
+                &tree.root,
+                5,
+                &context
+            )
+            .is_err(),
+            "AppData/temp must stay unreadable"
+        );
+        #[cfg(windows)]
+        {
+            assert!(
+                execute(
+                    "list_dir",
+                    &json!({ "path": r"C:\Windows\System32" }),
+                    &tree.root,
+                    5,
+                    &context
+                )
+                .is_err(),
+                "System32 must stay unreadable"
+            );
+        }
+    }
+
+    #[test]
     fn merged_read_file_tool_name_is_repaired_at_the_dispatch_boundary() {
         let tree = TempTree::new();
         let output = execute(
@@ -5139,7 +5583,7 @@ mod security_tests {
         std::fs::write(&pasted, b"fake-png").unwrap();
         let resolved = resolve_image_read_path(&tree.root, &pasted.to_string_lossy()).unwrap();
         assert!(resolved.starts_with(paste_dir.canonicalize().unwrap()));
-        // An arbitrary absolute path outside the project is rejected.
+        // An arbitrary absolute path outside the project and user profile is rejected.
         let outside_img = tree.outside.join("shot.png");
         std::fs::write(&outside_img, b"x").unwrap();
         assert!(resolve_image_read_path(&tree.root, &outside_img.to_string_lossy()).is_err());
@@ -5280,6 +5724,173 @@ mod security_tests {
             &ToolRunContext::noop()
         )
         .is_err());
+    }
+
+    #[test]
+    fn list_dir_and_glob_include_office_file_names() {
+        let tree = TempTree::new();
+        std::fs::write(tree.root.join("payroll.xlsx"), b"PK").unwrap();
+        std::fs::write(tree.root.join("manpower.xls"), b"fake-xls").unwrap();
+        std::fs::write(tree.root.join("deck.pptx"), b"PK").unwrap();
+        std::fs::write(tree.root.join("notes.pdf"), b"%PDF").unwrap();
+        std::fs::write(tree.root.join("clip.mp4"), b"fake-mp4").unwrap();
+        let listed = execute(
+            "list_dir",
+            &json!({ "path": "." }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("list_dir");
+        for name in [
+            "payroll.xlsx",
+            "manpower.xls",
+            "deck.pptx",
+            "notes.pdf",
+            "clip.mp4",
+        ] {
+            assert!(listed.contains(name), "missing {name} in {listed}");
+        }
+        let globbed = execute(
+            "glob",
+            &json!({ "pattern": "*.xlsx" }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("glob");
+        assert!(globbed.contains("payroll.xlsx"), "{globbed}");
+    }
+
+    #[test]
+    fn read_file_extracts_xlsx_cell_text_instead_of_empty_or_mojibake() {
+        let tree = TempTree::new();
+        let (bytes, _) =
+            crate::document_inspect::xlsx_from_tabular_text("Name,Amount\nPayroll,42").unwrap();
+        std::fs::write(tree.root.join("payroll.xlsx"), bytes).unwrap();
+        let text = execute(
+            "read_file",
+            &json!({ "path": "payroll.xlsx" }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("read xlsx");
+        assert!(text.contains("Payroll"), "{text}");
+        assert!(text.contains("42"), "{text}");
+        assert!(
+            !text.contains('\u{FFFD}') && !text.contains("PK\u{3}"),
+            "xlsx should not be dumped as binary: {text}"
+        );
+    }
+
+    #[test]
+    fn write_file_creates_xlsx_from_tabular_text() {
+        let tree = TempTree::new();
+        let wrote = execute(
+            "write_file",
+            &json!({
+                "path": "hr-summary.xlsx",
+                "content": "Team,Headcount\nManpower,18"
+            }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("write xlsx");
+        assert!(
+            wrote.to_ascii_lowercase().contains("spreadsheet"),
+            "{wrote}"
+        );
+        let text = execute(
+            "read_file",
+            &json!({ "path": "hr-summary.xlsx" }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("read written xlsx");
+        assert!(text.contains("Manpower"), "{text}");
+        assert!(text.contains("18"), "{text}");
+    }
+
+    #[test]
+    fn directory_junction_escape_is_not_followed_when_supported() {
+        let tree = TempTree::new();
+        let escape = tree.root.join("escape");
+        #[cfg(windows)]
+        let linked = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &escape.to_string_lossy(),
+                &tree.outside.to_string_lossy(),
+            ])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&tree.outside, &escape).is_ok();
+        if !linked {
+            return;
+        }
+        let listed = execute(
+            "list_dir",
+            &json!({ "path": "." }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("list_dir");
+        assert!(
+            !listed.contains("\"escape\""),
+            "junction directory should not be listed: {listed}"
+        );
+        assert!(execute(
+            "read_file",
+            &json!({ "path": "escape/secret.txt" }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop()
+        )
+        .is_err());
+        let _ = std::fs::remove_dir(&escape);
+    }
+
+    #[test]
+    fn list_dir_notes_parent_documents_when_project_is_only_hormachuelos() {
+        let Some(probe) = ProfileProbe::new() else {
+            return;
+        };
+        let tree = TempTree::new();
+        let child = probe.dir.join("EXCELS");
+        std::fs::create_dir_all(child.join(".hormachuelos")).unwrap();
+        std::fs::write(child.join(".hormachuelos").join("flavour.json"), "{}").unwrap();
+        std::fs::write(probe.dir.join("WEEKLY PAYROLL.xls"), b"fake-xls").unwrap();
+        std::fs::write(probe.dir.join("HR ATTRITION.xlsx"), b"PK").unwrap();
+        let listed = execute(
+            "list_dir",
+            &json!({ "path": child.to_string_lossy().to_string() }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("list nested hormachuelos folder");
+        assert!(
+            listed.contains(".hormachuelos"),
+            "child metadata should still list: {listed}"
+        );
+        assert!(
+            listed.contains("WEEKLY PAYROLL.xls") && listed.contains("HR ATTRITION.xlsx"),
+            "parent workbooks should be mentioned: {listed}"
+        );
+        assert!(
+            listed
+                .to_ascii_lowercase()
+                .contains("do not tell the user it is empty"),
+            "{listed}"
+        );
     }
 
     #[test]
