@@ -13,6 +13,19 @@ const MAX_DIRECT_SNAPSHOT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_PROJECT_SNAPSHOT_BYTES: u64 = 160 * 1024 * 1024;
 const MAX_SNAPSHOT_ENTRIES: usize = 24_000;
 const MAX_CHECKPOINTS_PER_PROJECT: usize = 24;
+const MAX_ACTION_SUMMARIES_PER_CHECKPOINT: usize = 32;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointActionSummary {
+    pub id: u64,
+    pub tool: String,
+    pub status: String,
+    pub tool_ok: Option<bool>,
+    pub targets: Vec<String>,
+    pub project_wide: bool,
+    pub created_at_ms: u64,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +42,7 @@ pub struct CheckpointSummary {
     pub unprotected_actions: usize,
     pub created_at_ms: u64,
     pub finished_at_ms: Option<u64>,
+    pub actions: Vec<CheckpointActionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -350,6 +364,30 @@ impl RunCheckpoint {
             .flat_map(|action| action.scopes.iter().map(|scope| scope.target.clone()))
             .collect::<HashSet<_>>()
             .len();
+        // The UI receives a bounded, display-safe action ledger. Never expose
+        // tool arguments, file contents, shell commands, or snapshot blobs.
+        let action_start = manifest
+            .actions
+            .len()
+            .saturating_sub(MAX_ACTION_SUMMARIES_PER_CHECKPOINT);
+        let actions = manifest.actions[action_start..]
+            .iter()
+            .map(|action| CheckpointActionSummary {
+                id: action.id,
+                tool: action.tool.clone(),
+                status: action.status.clone(),
+                tool_ok: action.tool_ok,
+                targets: action
+                    .scopes
+                    .iter()
+                    .map(|scope| scope.target.clone())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                project_wide: action.scopes.iter().any(|scope| scope.project_scope),
+                created_at_ms: action.created_at_ms,
+            })
+            .collect();
         CheckpointSummary {
             id: manifest.id.clone(),
             session_id: manifest.session_id.clone(),
@@ -367,6 +405,7 @@ impl RunCheckpoint {
             unprotected_actions: manifest.unprotected_action_count,
             created_at_ms: manifest.created_at_ms,
             finished_at_ms: manifest.finished_at_ms,
+            actions,
         }
     }
 
@@ -1043,6 +1082,12 @@ mod tests {
         std::fs::write(&source, "after").unwrap();
         assert!(checkpoint.finish_tool_action(ticket, true).is_none());
         checkpoint.mark_finished("finished");
+        let summary = checkpoint.summary();
+        assert_eq!(summary.actions.len(), 1);
+        assert_eq!(summary.actions[0].tool, "write_file");
+        assert_eq!(summary.actions[0].targets, vec!["src/main.ts"]);
+        assert_eq!(summary.actions[0].status, "recorded");
+        assert_eq!(summary.actions[0].tool_ok, Some(true));
         let result = checkpoint.rollback(false).unwrap();
         assert_eq!(result.rolled_back_actions, 1);
         assert_eq!(std::fs::read_to_string(source).unwrap(), "before");

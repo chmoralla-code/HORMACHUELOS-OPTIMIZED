@@ -18,7 +18,7 @@
     <aside class="inspector" id="inspector" aria-label="Project inspector">
       <div class="inspector-tabs" role="tablist">
         <button class="inspector-tab" data-inspector-tab="files">Files</button>
-        <button class="inspector-tab active" data-inspector-tab="changes">Changes</button>
+        <button class="inspector-tab active" data-inspector-tab="changes">Time Machine</button>
         <button class="inspector-tab" data-inspector-tab="console">Console</button>
       </div>
       <section class="inspector-panel" id="files-panel"></section>
@@ -44,6 +44,11 @@
         unprotectedActions: 0,
         createdAtMs: Date.now(),
         finishedAtMs: Date.now(),
+        actions: [
+          { id: 1, tool: "edit_file", status: "recorded", toolOk: true, targets: ["src/main.ts"], projectWide: false, createdAtMs: Date.now() - 3000 },
+          { id: 2, tool: "write_file", status: "recorded", toolOk: true, targets: ["src/theme.css"], projectWide: false, createdAtMs: Date.now() - 2000 },
+          { id: 3, tool: "run_command", status: "recorded", toolOk: true, targets: ["."], projectWide: true, createdAtMs: Date.now() - 1000 },
+        ],
       }];
       let rollbackResult = {
         checkpointId: "checkpoint-1",

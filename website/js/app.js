@@ -41,19 +41,19 @@ const DESKTOP_DOWNLOADS = {
 
 /** Independent FPS-focused edition with Adaptive Director and maximized modes. */
 const OPTIMIZED_DOWNLOAD_BASE =
-  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.13";
+  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.14";
 
 const OPTIMIZED_DOWNLOADS = {
-  version: "1.2.13",
-  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.2.13",
+  version: "1.2.14",
+  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.2.14",
   windows: {
     msi: {
       label: "Optimized installer (MSI)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.13_x64.msi`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.14_x64.msi`,
     },
     setup: {
       label: "Optimized setup (EXE)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.13_x64-setup.exe`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.14_x64-setup.exe`,
     },
   },
 };
@@ -2772,7 +2772,12 @@ function renderDownload() {
       <div class="card" id="optimized-download" style="margin:20px 0;border-color:var(--primary)">
         <div class="eyebrow" style="margin-bottom:10px"><span class="dot"></span> New optimized release</div>
         <h3 style="margin-top:0">Hormachuelos Optimized v${optimized.version}</h3>
-        <p class="muted small">Adaptive Director, smarter automatic mode switching, maximized Ask / Plan / Research / Multi-Agent / Build behavior, and a cleaner AI reply layout. Installs independently from the standard edition.</p>
+        <p class="muted small">The mission-driven release for longer, safer autonomous work. Installs independently from the standard edition.</p>
+        <ul class="small" style="margin:14px 0 0;padding-left:20px">
+          <li><strong>Mission Control</strong> — durable goals, boundaries, approval policy, execution depth, and measurable finish lines.</li>
+          <li><strong>Workspace Time Machine</strong> — protected run history, action evidence, Undo Last, and conflict-aware rollback.</li>
+          <li><strong>Test &amp; Fix Everything</strong> — a closed inspect, test, repair, and retest loop with honest proof states.</li>
+        </ul>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
           <a class="btn btn-primary" id="optimized-exe" href="${optimized.windows.setup.href}">${escapeHtml(optimized.windows.setup.label)}</a>
           <a class="btn" id="optimized-msi" href="${optimized.windows.msi.href}">${escapeHtml(optimized.windows.msi.label)}</a>

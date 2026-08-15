@@ -120,6 +120,7 @@ pub struct LlmResponse {
 pub mod anthropic;
 pub mod commandcode;
 pub mod gemini;
+pub mod gemini_cli;
 pub mod glm;
 pub mod openai;
 
@@ -134,7 +135,7 @@ pub fn provider_needs_key(provider: &str) -> bool {
     }
     !matches!(
         provider.to_lowercase().as_str(),
-        "ollama" | "hormachuelos_free"
+        "ollama" | "hormachuelos_free" | "gemini_cli"
     )
 }
 
@@ -151,6 +152,7 @@ pub fn provider_default_base_url(provider: &str) -> Option<&'static str> {
         "hormachuelos_free" => Some("https://hormachuelos.vercel.app/api/v1"),
         "anthropic" => Some("https://api.anthropic.com"),
         "gemini" => Some("https://generativelanguage.googleapis.com"),
+        "gemini_cli" => Some("https://cloudcode-pa.googleapis.com"),
         "commandcode" => Some(crate::config::COMMANDCODE_API_BASE_URL),
         _ => None,
     }
@@ -245,9 +247,14 @@ pub fn build_provider_with_effort(
                 } else {
                     base
                 };
-                Ok(Box::new(gemini::Gemini::new(&key, native_base, model)))
+                Ok(Box::new(
+                    gemini::Gemini::new(&key, native_base, model).with_effort(model_effort),
+                ))
             }
         }
+        "gemini_cli" => Ok(Box::new(
+            gemini_cli::GeminiCli::new(model).with_effort(model_effort),
+        )),
         "commandcode" => {
             // Through the Hormachuelos hosted proxy the OpenAI-compatible
             // chat/completions endpoint is used (the proxy translates to the
@@ -326,6 +333,11 @@ mod tests {
             );
         }
         assert!(!provider_needs_key("ollama"));
+        assert!(!provider_needs_key("gemini_cli"));
+        assert_eq!(
+            provider_default_base_url("gemini_cli"),
+            Some("https://cloudcode-pa.googleapis.com")
+        );
         assert_eq!(
             provider_default_base_url("hormachuelos_free"),
             Some("https://hormachuelos.vercel.app/api/v1")

@@ -49,6 +49,17 @@ export type AgentTaskProfile =
 /** Speed, verification, and rollback policy; Auto is resolved by the host. */
 export type AgentExecutionProfile = "auto" | "fast" | "balanced" | "thorough" | "safe";
 
+export type CheckpointActionSummary = {
+  id: number;
+  tool: string;
+  status: string;
+  toolOk: boolean | null;
+  /** Project-relative targets only; arguments and contents are never exposed. */
+  targets: string[];
+  projectWide: boolean;
+  createdAtMs: number;
+};
+
 export type CheckpointSummary = {
   id: string;
   sessionId: string;
@@ -62,6 +73,7 @@ export type CheckpointSummary = {
   unprotectedActions: number;
   createdAtMs: number;
   finishedAtMs: number | null;
+  actions: CheckpointActionSummary[];
 };
 
 export type RollbackResult = {
@@ -73,7 +85,7 @@ export type RollbackResult = {
   message: string;
 };
 
-export type Provider = "deepseek" | "openrouter" | "glm" | "openai" | "cursor" | "hormachuelos_free" | "anthropic" | "gemini" | "ollama" | "pollinations";
+export type Provider = "deepseek" | "openrouter" | "glm" | "openai" | "cursor" | "hormachuelos_free" | "anthropic" | "gemini" | "gemini_cli" | "ollama" | "pollinations";
 
 export type ConnectionTestResult = {
   ok: boolean;

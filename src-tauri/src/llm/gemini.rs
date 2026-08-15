@@ -48,7 +48,177 @@ pub fn command_code_gemini_model(model: &str) -> String {
     }
 }
 
-fn parse_model_page(text: &str) -> Result<(Vec<String>, Option<String>)> {
+fn normalized_gemini_model_id(model: &str) -> String {
+    model
+        .trim()
+        .strip_prefix("models/")
+        .unwrap_or(model.trim())
+        .trim_start_matches("google/")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn is_gemini_25_model(model: &str) -> bool {
+    let model = normalized_gemini_model_id(model);
+    model.contains("2.5") || model.contains("2-5")
+}
+
+fn gemini_3_allows_minimal(model: &str) -> bool {
+    let model = normalized_gemini_model_id(model);
+    if is_gemini_25_model(&model) {
+        return false;
+    }
+    if model.contains("3.7") {
+        return false;
+    }
+    if model.contains("pro") && !model.contains("flash") {
+        return false;
+    }
+    true
+}
+
+/// Map Hormachuelos / Command Code aliases onto Gemini CLI Code Assist ids.
+pub fn code_assist_model_id(model: &str) -> String {
+    match normalized_gemini_model_id(model).as_str() {
+        "" => "gemini-3.5-flash".into(),
+        "gemini-3.7-flash" | "gemini-3-7-flash" | "gemini-3.6-flash" => "gemini-3.5-flash".into(),
+        "gemini-3.1-pro" => "gemini-3.1-pro-preview".into(),
+        "gemini-3-pro" | "gemini-3.0-pro" => "gemini-3-pro-preview".into(),
+        "gemini-3-flash" | "gemini-3.0-flash" => "gemini-3-flash".into(),
+        other => other.to_string(),
+    }
+}
+
+fn gemini_3_thinking_level(model: &str, effort: &str) -> &'static str {
+    let effort = effort.trim().to_ascii_lowercase();
+    if gemini_3_allows_minimal(model) {
+        match effort.as_str() {
+            "light" | "minimal" | "off" => "MINIMAL",
+            "medium" | "low" => "LOW",
+            "high" => "MEDIUM",
+            "xhigh" | "ultra" | "max" | "dynamic" => "HIGH",
+            _ => "MEDIUM",
+        }
+    } else {
+        match effort.as_str() {
+            "light" | "low" | "minimal" | "off" => "LOW",
+            "medium" => "MEDIUM",
+            "high" | "xhigh" | "ultra" | "max" | "dynamic" => "HIGH",
+            _ => "HIGH",
+        }
+    }
+}
+
+/// Native Gemini 3 thinkingLevel / Gemini 2.5 thinkingBudget for the UI effort.
+pub fn thinking_config_for_model(model: &str, effort: Option<&str>) -> Value {
+    let effort = effort.unwrap_or("high");
+    if is_gemini_25_model(model) {
+        let budget = match effort.trim().to_ascii_lowercase().as_str() {
+            "light" | "low" | "minimal" | "off" => 0,
+            "medium" => 1024,
+            "high" => 8192,
+            "xhigh" => 24576,
+            "ultra" | "max" | "dynamic" => -1,
+            _ => 8192,
+        };
+        return json!({ "includeThoughts": true, "thinkingBudget": budget });
+    }
+    json!({
+        "includeThoughts": true,
+        "thinkingLevel": gemini_3_thinking_level(model, effort),
+    })
+}
+
+/// Code Assist's older thinkingLevel enum only accepts LOW / HIGH.
+pub fn thinking_config_for_code_assist(model: &str, effort: Option<&str>) -> Value {
+    if is_gemini_25_model(model) {
+        return thinking_config_for_model(model, effort);
+    }
+    let level = gemini_3_thinking_level(model, effort.unwrap_or("high"));
+    let wire = match level {
+        "MINIMAL" | "LOW" => "LOW",
+        _ => "HIGH",
+    };
+    json!({ "includeThoughts": true, "thinkingLevel": wire })
+}
+
+pub fn generate_content_config(model: &str, effort: Option<&str>, code_assist: bool) -> Value {
+    let thinking = if code_assist {
+        thinking_config_for_code_assist(model, effort)
+    } else {
+        thinking_config_for_model(model, effort)
+    };
+    json!({
+        "temperature": 1.0,
+        "topP": 0.95,
+        "topK": 64,
+        "maxOutputTokens": 16384,
+        "thinkingConfig": thinking,
+    })
+}
+
+pub(crate) fn sanitize_gemini_schema(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, child) in map {
+                match key.as_str() {
+                    "$schema"
+                    | "$id"
+                    | "$ref"
+                    | "additionalProperties"
+                    | "unevaluatedProperties"
+                    | "maxLength"
+                    | "minLength"
+                    | "minimum"
+                    | "maximum"
+                    | "exclusiveMinimum"
+                    | "exclusiveMaximum"
+                    | "pattern"
+                    | "format"
+                    | "default"
+                    | "examples"
+                    | "example"
+                    | "const"
+                    | "prefixItems"
+                    | "unevaluatedItems"
+                    | "nullable"
+                    | "anyOf"
+                    | "oneOf"
+                    | "allOf" => continue,
+                    "enum" => {
+                        if child
+                            .as_array()
+                            .is_some_and(|items| items.iter().all(Value::is_string))
+                        {
+                            out.insert(key.clone(), child.clone());
+                        }
+                    }
+                    "properties" => {
+                        if let Some(props) = child.as_object() {
+                            let mut cleaned = serde_json::Map::new();
+                            for (name, schema) in props {
+                                cleaned.insert(name.clone(), sanitize_gemini_schema(schema));
+                            }
+                            out.insert(key.clone(), Value::Object(cleaned));
+                        }
+                    }
+                    "items" => {
+                        out.insert(key.clone(), sanitize_gemini_schema(child));
+                    }
+                    _ => {
+                        out.insert(key.clone(), sanitize_gemini_schema(child));
+                    }
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sanitize_gemini_schema).collect()),
+        other => other.clone(),
+    }
+}
+
+pub(crate) fn parse_model_page(text: &str) -> Result<(Vec<String>, Option<String>)> {
     let value: Value = serde_json::from_str(text)
         .map_err(|_| anyhow!("invalid_response: Gemini returned malformed model data."))?;
     let mut models: Vec<String> = value
@@ -149,6 +319,7 @@ pub struct Gemini {
     api_key: String,
     base_url: String,
     model: String,
+    effort: Option<String>,
 }
 
 impl Gemini {
@@ -161,11 +332,20 @@ impl Gemini {
                 .trim_end_matches('/')
                 .to_string(),
             model: model.to_string(),
+            effort: None,
         }
+    }
+
+    pub fn with_effort(mut self, effort: Option<&str>) -> Self {
+        self.effort = effort
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        self
     }
 }
 
-fn msg_to_gemini(m: &ChatMessage) -> Option<Value> {
+pub(crate) fn msg_to_gemini(m: &ChatMessage) -> Option<Value> {
     let role = match m.role.as_str() {
         "user" => "user",
         "assistant" => "model",
@@ -180,13 +360,14 @@ fn msg_to_gemini(m: &ChatMessage) -> Option<Value> {
     }
     if let Some(tcs) = &m.tool_calls {
         for tc in tcs {
-            parts.push(json!({
-                "functionCall": {
-                    "name": tc.name,
-                    "args": tc.arguments,
-                },
-                "id": tc.id,
-            }));
+            let mut function_call = json!({
+                "name": tc.name,
+                "args": tc.arguments,
+            });
+            if !tc.id.is_empty() {
+                function_call["id"] = json!(tc.id);
+            }
+            parts.push(json!({ "functionCall": function_call }));
         }
     }
     if let Some(id) = &m.tool_call_id {
@@ -204,12 +385,14 @@ fn msg_to_gemini(m: &ChatMessage) -> Option<Value> {
     Some(json!({ "role": role, "parts": parts }))
 }
 
-fn openai_tool_to_gemini(t: &Value) -> Value {
+pub(crate) fn openai_tool_to_gemini(t: &Value) -> Value {
     let f = t.get("function").cloned().unwrap_or(Value::Null);
     json!({
         "name": f.get("name").cloned().unwrap_or(Value::Null),
         "description": f.get("description").cloned().unwrap_or(Value::Null),
-        "parameters": f.get("parameters").cloned().unwrap_or(json!({})),
+        "parameters": sanitize_gemini_schema(
+            f.get("parameters").unwrap_or(&json!({ "type": "object", "properties": {} })),
+        ),
     })
 }
 
@@ -235,13 +418,15 @@ impl LlmProvider for Gemini {
 
         let mut body = json!({
             "contents": conv,
-            "generationConfig": { "temperature": 0.2 },
+            "generationConfig": generate_content_config(&self.model, self.effort.as_deref(), false),
         });
         if let Some(s) = system {
             body["systemInstruction"] = json!({ "parts": [{ "text": s }] });
         }
         if !tools.is_empty() {
-            body["tools"] = json!({ "functionDeclarations": tools.iter().map(openai_tool_to_gemini).collect::<Vec<_>>() });
+            body["tools"] = json!([{
+                "functionDeclarations": tools.iter().map(openai_tool_to_gemini).collect::<Vec<_>>()
+            }]);
         }
 
         let url = format!(
@@ -285,81 +470,103 @@ impl LlmProvider for Gemini {
             }
         }
         let text = response.ok_or_else(|| anyhow!("Gemini did not return a response."))?;
-
         let v: Value = serde_json::from_str(&text)?;
-        let candidates = v
-            .get("candidates")
-            .and_then(|c| c.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let cand = candidates
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("no candidates: {text}"))?;
-        let parts = cand
-            .get("content")
-            .and_then(|c| c.get("parts"))
-            .and_then(|p| p.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        let mut text_out = String::new();
-        let mut tool_calls = Vec::new();
-        for p in &parts {
-            if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
-                text_out.push_str(t);
-            }
-            if let Some(fc) = p.get("functionCall") {
-                let name = fc
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let args = fc.get("args").cloned().unwrap_or(Value::Null);
-                let id = fc
-                    .get("id")
-                    .and_then(|i| i.as_str())
-                    .unwrap_or("call")
-                    .to_string();
-                tool_calls.push(ToolCall {
-                    id,
-                    name,
-                    arguments: args,
-                });
-            }
-        }
-
-        let stop = cand
-            .get("finishReason")
-            .and_then(|f| f.as_str())
-            .unwrap_or("STOP")
-            .to_string();
-        let usage = v
-            .get("usageMetadata")
-            .and_then(|u| u.get("totalTokenCount"))
-            .and_then(|t| t.as_u64())
-            .unwrap_or(0);
-
-        Ok(LlmResponse {
-            text: if text_out.is_empty() {
-                None
-            } else {
-                Some(text_out)
-            },
-            tool_calls,
-            reasoning_content: None,
-            stop_reason: stop,
-            usage_tokens: usage,
-        })
+        parse_generate_content_value(&v)
     }
+}
+
+pub(crate) fn parse_generate_content_value(v: &Value) -> Result<LlmResponse> {
+    let payload = v.get("response").unwrap_or(v);
+    let candidates = payload
+        .get("candidates")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let cand = candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("no candidates"))?;
+    let parts = cand
+        .get("content")
+        .and_then(|c| c.get("parts"))
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut text_out = String::new();
+    let mut thoughts = String::new();
+    let mut tool_calls = Vec::new();
+    for p in &parts {
+        let is_thought = p.get("thought").and_then(|t| t.as_bool()).unwrap_or(false);
+        if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
+            if is_thought {
+                thoughts.push_str(t);
+                continue;
+            }
+            text_out.push_str(t);
+        }
+        if let Some(fc) = p.get("functionCall") {
+            let name = fc
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args = fc.get("args").cloned().unwrap_or(Value::Null);
+            let id = fc
+                .get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or("call")
+                .to_string();
+            tool_calls.push(ToolCall {
+                id,
+                name,
+                arguments: args,
+            });
+        }
+    }
+
+    let stop = cand
+        .get("finishReason")
+        .and_then(|f| f.as_str())
+        .unwrap_or("STOP")
+        .to_string();
+    let usage = payload
+        .get("usageMetadata")
+        .and_then(|u| u.get("totalTokenCount"))
+        .and_then(|t| t.as_u64())
+        .or_else(|| {
+            v.get("usageMetadata")
+                .and_then(|u| u.get("totalTokenCount"))
+                .and_then(|t| t.as_u64())
+        })
+        .unwrap_or(0);
+
+    Ok(LlmResponse {
+        text: if text_out.is_empty() {
+            None
+        } else {
+            Some(text_out)
+        },
+        tool_calls,
+        reasoning_content: if thoughts.is_empty() {
+            None
+        } else {
+            Some(thoughts)
+        },
+        stop_reason: stop,
+        usage_tokens: usage,
+    })
 }
 
 #[cfg(test)]
 mod model_tests {
     use super::{
-        command_code_gemini_model, is_command_code_api_key, is_google_gemini_api_key,
-        parse_model_page, uses_command_code_provider_api, uses_hosted_gemini_proxy,
+        code_assist_model_id, command_code_gemini_model, generate_content_config,
+        is_command_code_api_key, is_google_gemini_api_key, openai_tool_to_gemini,
+        parse_generate_content_value, parse_model_page, thinking_config_for_code_assist,
+        thinking_config_for_model, uses_command_code_provider_api, uses_hosted_gemini_proxy,
     };
+    use serde_json::json;
 
     #[test]
     fn routes_command_code_keys_to_provider_gemini_ids() {
@@ -410,5 +617,80 @@ mod model_tests {
             vec!["gemini-2.5-flash".to_string(), "gemini-2.5-pro".to_string()]
         );
         assert_eq!(next.as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn parses_code_assist_wrapped_candidates() {
+        let parsed = parse_generate_content_value(&json!({
+            "response": {
+                "candidates": [{
+                    "content": { "parts": [{ "text": "ok" }] },
+                    "finishReason": "STOP"
+                }]
+            }
+        }))
+        .expect("wrapped");
+        assert_eq!(parsed.text.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn maps_picker_aliases_and_thinking_to_gemini_wire_values() {
+        assert_eq!(code_assist_model_id("gemini-3.7-flash"), "gemini-3.5-flash");
+        assert_eq!(
+            code_assist_model_id("gemini-3.1-pro"),
+            "gemini-3.1-pro-preview"
+        );
+        assert_eq!(
+            thinking_config_for_model("gemini-3.7-flash", Some("light"))["thinkingLevel"],
+            json!("LOW")
+        );
+        assert_eq!(
+            thinking_config_for_model("gemini-3.5-flash", Some("light"))["thinkingLevel"],
+            json!("MINIMAL")
+        );
+        assert_eq!(
+            thinking_config_for_code_assist("gemini-3.5-flash", Some("light"))["thinkingLevel"],
+            json!("LOW")
+        );
+        assert_eq!(
+            thinking_config_for_model("gemini-2.5-pro", Some("high"))["thinkingBudget"],
+            json!(8192)
+        );
+        assert_eq!(
+            generate_content_config("gemini-3.5-flash", Some("high"), true)["temperature"],
+            json!(1.0)
+        );
+        let tool = openai_tool_to_gemini(&json!({
+            "type": "function",
+            "function": {
+                "name": "click",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "clicks": { "type": "integer", "enum": [1, 2], "maximum": 2 }
+                    }
+                }
+            }
+        }));
+        assert!(tool["parameters"].get("additionalProperties").is_none());
+        assert!(tool["parameters"]["properties"]["clicks"]
+            .get("enum")
+            .is_none());
+        assert!(tool["parameters"]["properties"]["clicks"]
+            .get("maximum")
+            .is_none());
+        let thought = parse_generate_content_value(&json!({
+            "candidates": [{
+                "content": { "parts": [
+                    { "text": "plan", "thought": true },
+                    { "text": "hello" }
+                ] },
+                "finishReason": "STOP"
+            }]
+        }))
+        .expect("thoughts");
+        assert_eq!(thought.text.as_deref(), Some("hello"));
+        assert_eq!(thought.reasoning_content.as_deref(), Some("plan"));
     }
 }

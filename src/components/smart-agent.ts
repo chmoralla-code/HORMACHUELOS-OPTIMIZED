@@ -1,5 +1,6 @@
 import type { AgentEvent } from "../ipc";
 import { clear, div, el } from "./util";
+import { icon } from "./icons";
 import {
   redactChatCredentials,
   sanitizeSmartAgentTaskState,
@@ -199,12 +200,21 @@ function stepMark(status: SmartAgentStepState): string {
   return "–";
 }
 
+type SmartAgentPanelHandlers = {
+  onStop?: () => void;
+  onReviewChanges?: () => void;
+  onOpenMission?: () => void;
+};
+
 /** Compact, session-scoped task ledger mounted above the chat transcript. */
 export class SmartAgentPanel {
   private currentSessionId: string | null = null;
   private state: SmartAgentTaskState | undefined;
 
-  constructor(private readonly node: HTMLElement) {
+  constructor(
+    private readonly node: HTMLElement,
+    private readonly handlers: SmartAgentPanelHandlers = {},
+  ) {
     this.node.hidden = true;
   }
 
@@ -225,10 +235,16 @@ export class SmartAgentPanel {
     clear(this.node);
     const card = div(`smart-agent-card smart-agent-${state.status}`);
     const head = div("smart-agent-head");
+    head.appendChild(el("span", { class: "smart-agent-signal", "aria-hidden": "true" }));
     head.appendChild(el("span", { class: "smart-agent-title" }, [state.title || "Director"]));
     head.appendChild(el("span", { class: `smart-agent-badge ${state.status}`, role: "status" }, [
       statusLabel(state.status),
     ]));
+    const completed = state.steps.filter((step) => step.state === "completed").length;
+    const percent = state.status === "completed"
+      ? 100
+      : Math.max(4, Math.round((completed / Math.max(1, state.steps.length)) * 100));
+    head.appendChild(el("span", { class: "smart-agent-percent", "aria-label": `${percent}% complete` }, [`${percent}%`]));
     card.appendChild(head);
 
     const list = el("ol", { class: "smart-agent-steps", "aria-label": "Task progress" });
@@ -244,6 +260,34 @@ export class SmartAgentPanel {
       list.appendChild(item);
     }
     card.appendChild(list);
+
+    const lower = div("smart-agent-lower");
+    const detail = el("div", { class: "smart-agent-detail" });
+    detail.append(
+      el("span", { class: "smart-agent-detail-label" }, [state.status === "working" ? "NOW" : "STATUS"]),
+      el("span", { class: "smart-agent-detail-text", title: state.detail }, [state.detail || state.summary || "Mission progress is being recorded."]),
+    );
+    const actions = el("div", { class: "smart-agent-actions" });
+    if (this.handlers.onReviewChanges) {
+      const review = el("button", { type: "button", title: "Open Time Machine", "aria-label": "Open Time Machine", html: icon("planList", 13) });
+      review.addEventListener("click", this.handlers.onReviewChanges);
+      actions.appendChild(review);
+    }
+    if (this.handlers.onOpenMission) {
+      const mission = el("button", { type: "button", title: "Open Mission Control", "aria-label": "Open Mission Control", html: icon("spark", 13) });
+      mission.addEventListener("click", this.handlers.onOpenMission);
+      actions.appendChild(mission);
+    }
+    if (state.status === "working" && this.handlers.onStop) {
+      const stop = el("button", { class: "danger", type: "button", title: "Stop mission", "aria-label": "Stop mission", html: icon("stop", 12) });
+      stop.addEventListener("click", this.handlers.onStop);
+      actions.appendChild(stop);
+    }
+    lower.append(detail, actions);
+    card.appendChild(lower);
+    const progress = el("div", { class: "smart-agent-progress", "aria-hidden": "true" });
+    progress.appendChild(el("span", { style: `width:${percent}%` }));
+    card.appendChild(progress);
     this.node.appendChild(card);
   }
 }

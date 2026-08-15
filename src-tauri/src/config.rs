@@ -21,6 +21,7 @@ const BUILTIN_PROVIDER_IDS: &[&str] = &[
     "hormachuelos_free",
     "anthropic",
     "gemini",
+    "gemini_cli",
     "ollama",
     "pollinations",
     "commandcode",
@@ -758,6 +759,7 @@ mod tests {
     #[test]
     fn accepts_the_dedicated_xai_provider() {
         assert!(validate_provider_id("xai").is_ok());
+        assert!(validate_provider_id("gemini_cli").is_ok());
         assert_eq!(XAI_API_BASE_URL, "https://api.x.ai/v1");
     }
 

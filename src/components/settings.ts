@@ -155,6 +155,25 @@ export const PROVIDERS: ProviderDef[] = [
     ],
   },
   {
+    id: "gemini_cli",
+    label: "Gemini CLI",
+    logoKey: "gemini",
+    logoSrc: "./logos/gemini.svg",
+    defaultModel: "gemini-3.5-flash",
+    defaultBaseUrl: "https://cloudcode-pa.googleapis.com",
+    keyUrl: "",
+    keyRequired: false,
+    models: [
+      "gemini-3.5-flash",
+      "gemini-3.1-pro-preview",
+      "gemini-3-pro-preview",
+      "gemini-3-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+    ],
+  },
+  {
     id: "glm",
     label: "OpenCode",
     logoKey: "glm",
@@ -237,6 +256,12 @@ const BUILTIN_PROVIDERS: ProviderDef[] = PROVIDERS.map((provider) => ({
   ...provider,
   models: [...provider.models],
 }));
+/** Providers that run on this PC, not through the Hormachuelos hosted catalog. */
+export const LOCAL_MACHINE_PROVIDER_IDS = new Set(["ollama", "gemini_cli"]);
+
+export function isLocalMachineProvider(providerId: string): boolean {
+  return LOCAL_MACHINE_PROVIDER_IDS.has(String(providerId || "").trim().toLowerCase());
+}
 const HOSTED_PROVIDER_CATALOG = new Map<string, HostedProviderCatalogEntry>();
 const HOSTED_MODEL_DISPLAY_NAMES = new Map<string, string>();
 /** When true, the server allowlist is exclusive — no builtin provider/model fallbacks. */
@@ -252,7 +277,7 @@ function hostedModelNameKey(providerId: string, modelId: string): string {
 
 function isHostedProviderAlias(value: string): boolean {
   const id = String(value || "").trim().toLowerCase();
-  return /^[a-z][a-z0-9_-]{0,48}$/.test(id) && id !== "cursor" && id !== "ollama";
+  return /^[a-z][a-z0-9_-]{0,48}$/.test(id) && id !== "cursor" && id !== "ollama" && id !== "gemini_cli";
 }
 
 function uniqueModels(models: readonly string[]): string[] {
@@ -332,15 +357,16 @@ function rebuildProviderCatalog() {
     if (provider) managed.set(provider.id, provider);
   }
 
-  // Admin allowlists are exclusive: only the providers returned by the hosted
-  // catalog may appear. Local BYOK / Ollama / Cursor are also locked out so a
-  // prohibited model cannot be selected outside the allowlist.
+  // Keep local machine providers such as Gemini CLI and Ollama in the picker.
+  // Admin allowlists hide hosted BYOK chips. These local providers do not use
+  // the Hormachuelos plan catalog.
   if (hostedCatalogRestricted && managed.size > 0) {
     const providers = [...managed.values()].map((provider) => ({
       ...provider,
       hidden: false,
       models: [...provider.models],
     }));
+    appendLocalMachineProviders(providers);
     PROVIDERS.splice(0, PROVIDERS.length, ...providers);
     return;
   }
@@ -404,9 +430,28 @@ export async function refreshHostedProviderCatalog(): Promise<HostedProviderCata
   return payload.data;
 }
 
+function localMachineBuiltinProviders(): ProviderDef[] {
+  return BUILTIN_PROVIDERS
+    .filter((provider) => isLocalMachineProvider(provider.id))
+    .map((provider) => ({
+      ...provider,
+      hidden: false,
+      models: [...provider.models],
+    }));
+}
+
+function appendLocalMachineProviders(providers: ProviderDef[]) {
+  for (const builtin of localMachineBuiltinProviders()) {
+    if (providers.some((provider) => provider.id === builtin.id)) continue;
+    providers.push(builtin);
+  }
+}
+
 /** Providers shown in pickers. */
 export function visibleProviders(): ProviderDef[] {
-  return PROVIDERS.filter((p) => !p.hidden);
+  const visible = PROVIDERS.filter((p) => !p.hidden);
+  appendLocalMachineProviders(visible);
+  return visible;
 }
 
 /** Friendly labels for model IDs (API id unchanged). */
@@ -439,7 +484,11 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   "google/gemini-3.7-flash": "Gemini 3.7 Flash",
   "gemini-3.5-flash": "Gemini 3.5 Flash",
   "gemini-3.1-pro": "Gemini 3.1 Pro",
+  "gemini-3.1-pro-preview": "Gemini 3.1 Pro",
+  "gemini-3-pro-preview": "Gemini 3 Pro",
   "gemini-3-flash": "Gemini 3 Flash",
+  "gemini-3-flash-preview": "Gemini 3 Flash",
+  "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite",
   "gemini-2.5-pro": "Gemini 2.5 Pro",
   "gemini-2.5-flash": "Gemini 2.5 Flash",
   "composer-2": "Composer 2",
@@ -481,6 +530,8 @@ export const REASONING_EFFORT_PROVIDER_IDS = new Set([
   "openai",
   "ollama",
   "pollinations",
+  "gemini",
+  "gemini_cli",
 ]);
 
 /** Provider catalogs that are deliberately pinned (no live /models flood). */
@@ -504,6 +555,19 @@ export function hasStaticModelCatalog(providerId: string): boolean {
   return STATIC_MODEL_PROVIDER_IDS.has(providerId) || Boolean(getProviderMeta(providerId)?.hostedManaged);
 }
 
+function modelBelongsWithProvider(providerId: string, modelId: string): boolean {
+  const provider = String(providerId || "").trim().toLowerCase();
+  const model = String(modelId || "").trim().toLowerCase();
+  if (!provider || !model) return false;
+  if (model.startsWith("hormachuelos-v")) return provider === "hormachuelos_free";
+  if (model.startsWith("gemini-") || model.startsWith("google/gemini")) {
+    return provider === "gemini" || provider === "gemini_cli";
+  }
+  if (model.startsWith("deepseek")) return provider === "deepseek";
+  if (model === "openrouter/free" || model === "free") return provider === "openrouter";
+  return true;
+}
+
 /**
  * Preserve the built-in Hormachuelos aliases when the hosted catalog is
  * refreshed.  The website can add models at any time, but an older deployed
@@ -512,7 +576,7 @@ export function hasStaticModelCatalog(providerId: string): boolean {
  */
 export function mergeProviderModelCatalog(providerId: string, models: readonly string[]): string[] {
   const hosted = HOSTED_PROVIDER_CATALOG.get(providerId);
-  if (hostedCatalogRestricted && hosted?.models?.length) {
+  if (hostedCatalogRestricted && hosted?.models?.length && !isLocalMachineProvider(providerId)) {
     return uniqueModels(hosted.models.map((model) => model.id));
   }
   const meta = getProviderMeta(providerId);
@@ -520,10 +584,12 @@ export function mergeProviderModelCatalog(providerId: string, models: readonly s
     providerId === "hormachuelos_free" ||
     providerId === "openrouter" ||
     providerId === "gemini" ||
+    providerId === "gemini_cli" ||
     meta?.hostedManaged
       ? meta?.models ?? []
       : [];
-  return [...new Set([...configured, ...models].map((model) => model.trim()).filter(Boolean))];
+  const incoming = models.filter((model) => modelBelongsWithProvider(providerId, model));
+  return [...new Set([...configured, ...incoming].map((model) => model.trim()).filter(Boolean))];
 }
 
 /**
@@ -547,9 +613,51 @@ export const DEEPSEEK_EFFORT_OPTIONS = [
 
 export type EffortId = (typeof CURSOR_EFFORT_OPTIONS)[number]["id"];
 
-export function effortOptionsForProvider(providerId: string) {
+export function effortOptionsForProvider(providerId: string, modelId?: string) {
   if (providerId === "deepseek") return DEEPSEEK_EFFORT_OPTIONS;
+  if (providerId === "gemini" || providerId === "gemini_cli") {
+    return geminiEffortOptions(modelId || "");
+  }
   return CURSOR_EFFORT_OPTIONS;
+}
+
+function isGemini25Model(modelId: string): boolean {
+  const model = String(modelId || "").toLowerCase();
+  return model.includes("2.5") || model.includes("2-5");
+}
+
+function geminiAllowsMinimalThinking(modelId: string): boolean {
+  const model = String(modelId || "").toLowerCase();
+  if (isGemini25Model(model)) return false;
+  if (model.includes("3.7")) return false;
+  if (model.includes("pro") && !model.includes("flash")) return false;
+  return true;
+}
+
+/** Google thinking levels / budgets, stored as the shared effort ids. */
+export function geminiEffortOptions(modelId: string): { id: EffortId; label: string }[] {
+  if (isGemini25Model(modelId)) {
+    return [
+      { id: "light", label: "Off" },
+      { id: "medium", label: "Low" },
+      { id: "high", label: "Medium" },
+      { id: "xhigh", label: "High" },
+      { id: "ultra", label: "Dynamic" },
+    ];
+  }
+  if (geminiAllowsMinimalThinking(modelId)) {
+    return [
+      { id: "light", label: "Minimal" },
+      { id: "medium", label: "Low" },
+      { id: "high", label: "Medium" },
+      { id: "xhigh", label: "High" },
+    ];
+  }
+  return [
+    { id: "light", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+  ];
 }
 
 /** Normalize UI effort ids (legacy low/max accepted). */
@@ -567,11 +675,23 @@ export function normalizeEffort(value: string | null | undefined): EffortId {
 export function normalizeEffortForProvider(
   providerId: string,
   value: string | null | undefined,
+  modelId?: string,
 ): EffortId {
   const v = (value || "").trim().toLowerCase();
   if (providerId === "deepseek") {
     // DeepSeek accepts light/high/ultra (→ low/high/max upstream).
     if (v === "medium" || v === "xhigh") return v === "medium" ? "light" : "ultra";
+    return normalizeEffort(value);
+  }
+  if (providerId === "gemini" || providerId === "gemini_cli") {
+    const opts = geminiEffortOptions(modelId || "");
+    let id: EffortId = normalizeEffort(value);
+    if (v === "minimal" || v === "off") id = "light";
+    if (v === "dynamic") id = "ultra";
+    if (!opts.some((opt) => opt.id === id)) {
+      return (opts[opts.length - 1]?.id as EffortId) || "high";
+    }
+    return id;
   }
   return normalizeEffort(value);
 }
@@ -674,6 +794,7 @@ function isKnownProviderBaseUrl(value: string): boolean {
 export function getProviderMeta(id: string) {
   const normalized = String(id || "").trim().toLowerCase();
   return PROVIDERS.find((p) => p.id === normalized) ||
+    BUILTIN_PROVIDERS.find((p) => p.id === normalized) ||
     (isHostedProviderAlias(normalized) ? fallbackHostedProvider(normalized) : undefined);
 }
 
@@ -770,7 +891,7 @@ export function normalizeSettings(s: Settings): Settings {
   // Flavour is local, provider-neutral memory. Missing on older settings means
   // enabled so long-running and continuing sessions benefit after upgrading.
   s.flavour_enabled = s.flavour_enabled !== false;
-  s.model_effort = normalizeEffortForProvider(s.provider, s.model_effort);
+  s.model_effort = normalizeEffortForProvider(s.provider, s.model_effort, s.model);
   // Older builds pointed the OpenAI label at Cursor. Keep that path for a
   // genuine Cursor key; an explicit xAI endpoint uses the native xAI route.
   if (s.provider === "openai" && s.base_url === "https://api.cursor.com/v1") {
@@ -1262,6 +1383,8 @@ export class SettingsModal {
         ? "Free OpenCode models only. Get a key at opencode.ai/auth."
         : uiIdForKeys === "ollama"
         ? "Select a locally installed Ollama model above."
+        : uiIdForKeys === "gemini_cli"
+        ? "Uses the Google account already logged into Gemini CLI on this PC. No API key is stored in Hormachuelos."
         : discoveryProvider.keyRequired && !this.keyStates[discoveryProvider.id]
           ? "Paste and save an API key — models load automatically from the provider."
           : "Models load automatically from the provider after the key is saved.");
@@ -1372,6 +1495,8 @@ export class SettingsModal {
       const note = el("div", { class: "set-hint", style: "padding:8px 10px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2)" });
       note.textContent = activeProvider.id === "hormachuelos_free"
         ? "Included for signed-in Hormachuelos users. Model credentials are protected by the hosted service and are never bundled with the app."
+        : activeProvider.id === "gemini_cli"
+          ? "Uses the Google account already logged into Gemini CLI on this PC. Sign in with `gemini` if the picker cannot load models. Hormachuelos never copies that login into its own keyring."
         : activeProvider.hostedManaged
           ? "This provider and its model aliases are managed in the Hormachuelos admin dashboard. Its upstream key stays on the hosted service; sign in with an active hosted plan to use it."
           : `${activeProvider.label} does not require an API key. Just pick a model and start building.`;

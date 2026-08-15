@@ -1,4 +1,4 @@
-import { api, type AgentEvent, type AgentTaskProfile } from "../ipc";
+import { api, type AgentEvent, type AgentExecutionProfile, type AgentTaskProfile } from "../ipc";
 import { icon } from "./icons";
 import {
   appendAssistantTranscriptChunk,
@@ -48,6 +48,10 @@ export type ChatPromptSubmission = {
   visibleText: string;
   titleHint: string;
   taskProfile: AgentTaskProfile;
+  /** Trusted in-app workflows may choose a safer one-run mode without changing the user's saved mode. */
+  requestedMode?: "adaptive" | "ask" | "research" | "plan" | "build" | "multi_agent";
+  executionProfile?: AgentExecutionProfile;
+  computerUseOverride?: boolean;
 };
 
 export type PreviewPromptSubmission = {
@@ -57,6 +61,10 @@ export type PreviewPromptSubmission = {
   /** When omitted, the full prompt is visible as it was in earlier releases. */
   visibleText?: string;
   titleHint?: string;
+  /** One-run controls used by Mission Control and other trusted local surfaces. */
+  requestedMode?: ChatPromptSubmission["requestedMode"];
+  executionProfile?: AgentExecutionProfile;
+  computerUseOverride?: boolean;
 };
 
 export class Chat {
@@ -1424,6 +1432,11 @@ export class Chat {
       visibleText,
       input.titleHint || body,
       input.taskProfile || taskProfile,
+      {
+        requestedMode: input.requestedMode,
+        executionProfile: input.executionProfile,
+        computerUseOverride: input.computerUseOverride,
+      },
     );
     if (!submission.modelText || !submission.visibleText) return "stopping";
     if (!this.projectReady) {
@@ -1448,12 +1461,14 @@ export class Chat {
     visibleText = modelText,
     titleHint = visibleText,
     taskProfile: AgentTaskProfile = "default",
+    overrides: Pick<ChatPromptSubmission, "requestedMode" | "executionProfile" | "computerUseOverride"> = {},
   ): ChatPromptSubmission {
     return {
       modelText: modelText.trim(),
       visibleText: visibleText.trim(),
       titleHint: titleHint.trim() || "Design edit",
       taskProfile,
+      ...overrides,
     };
   }
 

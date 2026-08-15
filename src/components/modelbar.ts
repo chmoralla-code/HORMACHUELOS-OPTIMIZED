@@ -1,5 +1,5 @@
 import { api, type Settings } from "../ipc";
-import { PROVIDERS, effortOptionsForProvider, displayModelName, getProviderMeta, getSettingsSafe, hasStaticModelCatalog, isHostedCatalogRestricted, isUltraEffort, mergeProviderModelCatalog, normalizeEffortForProvider, refreshHostedProviderCatalog, uiProviderId, usesReasoningEffort, visibleProviders } from "./settings";
+import { PROVIDERS, effortOptionsForProvider, displayModelName, getProviderMeta, getSettingsSafe, hasStaticModelCatalog, isHostedCatalogRestricted, isLocalMachineProvider, isUltraEffort, mergeProviderModelCatalog, normalizeEffortForProvider, refreshHostedProviderCatalog, uiProviderId, usesReasoningEffort, visibleProviders } from "./settings";
 import { clear, el, escapeHtml } from "./util";
 import { icon, icons } from "./icons";
 
@@ -242,8 +242,8 @@ export class ModelBar {
     const model = String(profile.model || "").trim();
     if (!provider || !model) return false;
     const effort = profile.effort
-      ? normalizeEffortForProvider(provider, profile.effort)
-      : normalizeEffortForProvider(provider, this.settings.model_effort);
+      ? normalizeEffortForProvider(provider, profile.effort, model)
+      : normalizeEffortForProvider(provider, this.settings.model_effort, model);
     const meta = getProviderMeta(provider);
     const same =
       this.settings.provider === provider &&
@@ -329,7 +329,9 @@ export class ModelBar {
       // an admin allowlist — otherwise prohibited providers stay selectable.
       if (isHostedCatalogRestricted()) {
         for (const providerId of Object.keys(this.discoveredModels)) {
-          if (!nextProviderIds.has(providerId)) delete this.discoveredModels[providerId];
+          if (!nextProviderIds.has(providerId) && !isLocalMachineProvider(providerId)) {
+            delete this.discoveredModels[providerId];
+          }
         }
       }
       for (const provider of catalog) {
@@ -375,7 +377,11 @@ export class ModelBar {
   /** Load full model list from the provider API (no manual pick of which models appear). */
   private async ensureModelsLoaded(providerId: string) {
     if (this.discoveredModels[providerId]?.length) return;
-    if (isHostedCatalogRestricted() && !this.hostedCatalogProviderIds.has(providerId)) return;
+    if (
+      isHostedCatalogRestricted()
+      && !this.hostedCatalogProviderIds.has(providerId)
+      && !isLocalMachineProvider(providerId)
+    ) return;
     const meta = getProviderMeta(providerId);
     if (!meta) return;
     if (hasStaticModelCatalog(providerId)) return;
@@ -479,15 +485,19 @@ export class ModelBar {
 
   private async saveEffort(id: string) {
     if (!this.allowModelSelection()) return;
-    const next = normalizeEffortForProvider(this.settings.provider, id);
-    const prev = normalizeEffortForProvider(this.settings.provider, this.settings.model_effort);
+    const next = normalizeEffortForProvider(this.settings.provider, id, this.settings.model);
+    const prev = normalizeEffortForProvider(
+      this.settings.provider,
+      this.settings.model_effort,
+      this.settings.model,
+    );
     this.settings.model_effort = next;
     this.renderProviderRail();
     try {
       await api.saveSettings(this.settings);
       this.settings = await api.getSettings();
       this.renderProviderRail();
-      const opts = effortOptionsForProvider(this.settings.provider);
+      const opts = effortOptionsForProvider(this.settings.provider, this.settings.model);
       const label = opts.find((e) => e.id === next)?.label || next;
       this.setStatus(`Effort: ${label}`);
       this.onChange();
@@ -778,6 +788,11 @@ export class ModelBar {
           if (!this.allowModelSelection()) return;
           this.closeMenus();
           this.settings.model = m;
+          this.settings.model_effort = normalizeEffortForProvider(
+            this.settings.provider,
+            this.settings.model_effort,
+            m,
+          );
           try {
             await api.saveSettings(this.settings);
             this.settings = await api.getSettings();
@@ -796,13 +811,14 @@ export class ModelBar {
     modelWrap.appendChild(modelBtn);
     this.providerRail.appendChild(modelWrap);
 
-    // Cursor and native Grok expose an effort control. For Grok this maps to
-    // xAI's supported reasoning_effort values (low / medium / high).
+    // Cursor, Grok, DeepSeek, and Gemini expose an effort control. Gemini
+    // labels are the model's real thinking levels or 2.5 thinking budgets.
     if (usesReasoningEffort(provider.id)) {
-      const effortOpts = effortOptionsForProvider(provider.id);
+      const effortOpts = effortOptionsForProvider(provider.id, displaySettings.model);
       const effort = normalizeEffortForProvider(
         provider.id,
         lockedProfile?.effort || this.settings.model_effort,
+        displaySettings.model,
       );
       const effortMeta = effortOpts.find((e) => e.id === effort) || effortOpts[effortOpts.length - 1];
       const effortWrap = el("div", { class: "chip-wrap" });
@@ -817,7 +833,7 @@ export class ModelBar {
         const label = effortBtn.querySelector(".chip-label");
         if (label) {
           label.classList.add("chip-effort-ultra-label");
-          label.textContent = "Ultra";
+          label.textContent = effortMeta.label;
         }
       }
       if (modelIsLocked) {
@@ -1209,7 +1225,7 @@ export class ModelBar {
 
   private async selectProvider(id: string) {
     if (!this.allowModelSelection()) return;
-    const p = PROVIDERS.find((x) => x.id === id);
+    const p = getProviderMeta(id) || PROVIDERS.find((x) => x.id === id);
     if (!p) return;
     const selectionGeneration = ++this.providerSelectionGeneration;
     this.closeMenus();
@@ -1229,6 +1245,11 @@ export class ModelBar {
     const known = this.discoveredModels[p.id];
     this.settings.provider = p.id;
     this.settings.model = known?.[0] || p.defaultModel;
+    this.settings.model_effort = normalizeEffortForProvider(
+      p.id,
+      this.settings.model_effort,
+      this.settings.model,
+    );
     this.settings.base_url = p.defaultBaseUrl || null;
     try {
       await api.saveSettings(this.settings);

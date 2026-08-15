@@ -481,6 +481,11 @@ async fn list_provider_models(
     base_url: Option<String>,
 ) -> Result<Vec<String>, String> {
     config::validate_provider_id(&provider).map_err(|e| e.to_string())?;
+    if provider.eq_ignore_ascii_case("gemini_cli") {
+        return llm::gemini_cli::fetch_model_ids()
+            .await
+            .map_err(|e| e.to_string());
+    }
     if provider.eq_ignore_ascii_case("hormachuelos_free") {
         let builtin_aliases = [
             "hormachuelos-v1",
@@ -633,6 +638,7 @@ async fn list_hosted_provider_catalog() -> Result<HostedProviderCatalogResult, S
         if config::validate_provider_id(&id).is_err()
             || id.eq_ignore_ascii_case("cursor")
             || id.eq_ignore_ascii_case("ollama")
+            || id.eq_ignore_ascii_case("gemini_cli")
             || !provider_ids.insert(id.clone())
         {
             continue;

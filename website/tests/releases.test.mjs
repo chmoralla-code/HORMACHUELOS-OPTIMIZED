@@ -61,10 +61,13 @@ test("bundled release never exposes a credential", () => {
 test("download page advertises the independent Optimized release without replacing Standard", () => {
   const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
   assert.match(app, /const OPTIMIZED_DOWNLOADS = \{/);
-  assert.match(app, /version: "1\.2\.13"/);
-  assert.match(app, /HORMACHUELOS-OPTIMIZED\/releases\/download\/v1\.2\.13/);
-  assert.match(app, /Hormachuelos_Optimized_1\.2\.13_x64-setup\.exe/);
-  assert.match(app, /Hormachuelos_Optimized_1\.2\.13_x64\.msi/);
+  assert.match(app, /version: "1\.2\.14"/);
+  assert.match(app, /HORMACHUELOS-OPTIMIZED\/releases\/download\/v1\.2\.14/);
+  assert.match(app, /Hormachuelos_Optimized_1\.2\.14_x64-setup\.exe/);
+  assert.match(app, /Hormachuelos_Optimized_1\.2\.14_x64\.msi/);
+  assert.match(app, /Mission Control/);
+  assert.match(app, /Workspace Time Machine/);
+  assert.match(app, /Test &amp; Fix Everything/);
   assert.match(app, /Standard edition/);
   assert.match(app, /fetch\("\/api\/update"\)/);
 });

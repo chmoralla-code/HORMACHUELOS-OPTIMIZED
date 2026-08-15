@@ -5284,6 +5284,7 @@ fn display_provider_name(provider_id: &str) -> String {
         "openrouter" => "OpenRouter".into(),
         "anthropic" => "Anthropic".into(),
         "gemini" => "Gemini".into(),
+        "gemini_cli" => "Gemini CLI".into(),
         "pollinations" => "Pollinations".into(),
         "commandcode" => "HORMACHUELOS NEW MODELS".into(),
         other if !other.is_empty() => {
@@ -5757,6 +5758,7 @@ mod tests {
         assert_eq!(display_model_name("composer-2.5"), "composer-2.5");
         assert_eq!(display_model_name("vendor/model:free"), "vendor/model:free");
         assert_eq!(display_provider_name("cursor"), "Cursor SDK");
+        assert_eq!(display_provider_name("gemini_cli"), "Gemini CLI");
         assert_eq!(display_provider_name("xai"), "xAI");
         assert_eq!(display_provider_name("glm"), "GLM");
         assert_eq!(display_model_name("hormachuelos-v1"), "Hormachuelos v1");

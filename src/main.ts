@@ -9,7 +9,7 @@ import {
 import { Sidebar } from "./components/sidebar";
 import { Chat, type ChatPromptSubmission } from "./components/chat";
 import { ConsolePanel } from "./components/console";
-import { displayModelName, displayProviderName, getProviderMeta, getSettingsSafe, isHostedCatalogRestricted, visibleProviders } from "./components/settings";
+import { displayModelName, displayProviderName, getProviderMeta, getSettingsSafe, isHostedCatalogRestricted, isLocalMachineProvider, visibleProviders } from "./components/settings";
 import { ModelBar } from "./components/modelbar";
 import { ProjectPicker } from "./components/picker";
 import { WorkspacePanel } from "./components/workspace";
@@ -1386,9 +1386,16 @@ function renderWorkspaceMenu() {
   );
   appendAction(
     "client-success",
-    "Open Client Success Center",
+    "Open Mission Control",
     "spark",
     () => openClientSuccessCenter(),
+    !hasProject,
+  );
+  appendAction(
+    "time-machine",
+    "Open Workspace Time Machine",
+    "panelRight",
+    () => openWorkspaceTimeMachine(),
     !hasProject,
   );
   menu.appendChild(el("div", { class: "workspace-menu-divider", role: "separator" }));
@@ -1462,6 +1469,11 @@ function bindWorkspaceMenuButton() {
 
 /** Wire permanent header controls once (they live in index.html). */
 function bindDrawerButtons() {
+  const missionButton = document.getElementById("mission-control-btn") as HTMLButtonElement | null;
+  if (missionButton && !(missionButton as any).__bound) {
+    missionButton.addEventListener("click", () => openClientSuccessCenter());
+    (missionButton as any).__bound = true;
+  }
   const leftBtn = document.getElementById("drawer-left-btn");
   if (leftBtn && !(leftBtn as any).__bound) {
     leftBtn.addEventListener("click", () => toggleLeftDrawer());
@@ -1649,7 +1661,7 @@ async function refreshProviderReadiness(
   }
 
   // Keyless local providers, or hosted-managed aliases, are ready immediately.
-  if (provider.id === "ollama" || provider.hostedManaged || provider.id === "hormachuelos_free") {
+  if (provider.id === "ollama" || provider.id === "gemini_cli" || provider.hostedManaged || provider.id === "hormachuelos_free") {
     return finish(true);
   }
 
@@ -1659,7 +1671,7 @@ async function refreshProviderReadiness(
 
   // Active Hormachuelos plans unlock cloud providers (including OpenAI branding
   // without a local Cursor key, and OpenRouter Free Models Router).
-  if (providerId !== "ollama") {
+  if (providerId !== "ollama" && providerId !== "gemini_cli") {
     const lic = await api.getLicenseStatus().catch(() => null);
     const hostedReady = Boolean(
       lic?.hosted && lic.active && String(lic.licenseKey || "").trim(),
@@ -1701,11 +1713,31 @@ async function exportClientPack() {
 
 function openClientSuccessCenter() {
   if (!currentProjectPath) {
-    reportError("Open or create a project before using Client Success Center.");
+    reportError("Open or create a project before using Mission Control.");
     openNewProjectPicker();
     return;
   }
+  // Native preview WebViews are separate child windows and can paint above an
+  // HTML modal regardless of z-index. Close Preview before presenting the
+  // mission dossier so every control remains visible and interactive.
+  if (sitePreview?.isOpen) sitePreview.close();
+  rightSideWasPreview = false;
   clientSuccessCenter?.open();
+}
+
+function openWorkspaceTimeMachine() {
+  if (!currentProjectPath) {
+    reportError("Open or create a project before using Time Machine.");
+    openNewProjectPicker();
+    return;
+  }
+  if (sitePreview?.isOpen) sitePreview.close();
+  rightSideWasPreview = false;
+  setDrawerOpen(RIGHT_DRAWER_KEY, true);
+  applyDrawers();
+  syncDrawerButtons();
+  renderWorkspaceMenu();
+  workspacePanel.showTimeMachine();
 }
 
 export type PreviewComputerUsePromptIntent = "enable" | "disable" | "auto" | null;
@@ -2002,7 +2034,7 @@ async function sendPrompt(submission: ChatPromptSubmission) {
   }
   const computerUseIntent = resolvePreviewComputerUsePromptIntent(visiblePrompt);
   let promptSettings = modelBar.settings;
-  const selectedMode = modelBar.getMode();
+  const selectedMode = submission.requestedMode || modelBar.getMode();
   const previousRunMode = [...chat.getMessages()]
     .reverse()
     .find((message) => message.type === "run_start")?.permissionMode ?? null;
@@ -2038,30 +2070,36 @@ async function sendPrompt(submission: ChatPromptSubmission) {
   }
   const promptActivationAllowed =
     promptSettings?.computer_use_prompt_activation !== false;
-  const computerUseForRun = computerUseIntent === "disable"
-    ? false
-    : computerUseIntent === "enable"
-      ? true
-      : computerUseIntent === "auto" && promptActivationAllowed
+  const computerUseForRun = typeof submission.computerUseOverride === "boolean"
+    ? submission.computerUseOverride
+    : computerUseIntent === "disable"
+      ? false
+      : computerUseIntent === "enable"
         ? true
-        : !!promptSettings?.computer_use_enabled;
+        : computerUseIntent === "auto" && promptActivationAllowed
+          ? true
+          : !!promptSettings?.computer_use_enabled;
+  const fixedRunMode = !adaptiveRoute && submission.requestedMode && submission.requestedMode !== "adaptive"
+    ? submission.requestedMode
+    : null;
+  const effectiveRunMode = adaptiveRoute?.mode || fixedRunMode;
   const runSettings = promptSettings ? {
     ...promptSettings,
     provider: runProfile.provider,
     model: runProfile.model,
     model_effort: runProfile.effort || promptSettings.model_effort,
     computer_use_enabled: computerUseForRun,
-    ...(adaptiveRoute
+    ...(effectiveRunMode
       ? {
-          permission_mode: adaptiveRoute.mode,
+          permission_mode: effectiveRunMode,
           capability_mode:
-            adaptiveRoute.mode === "ask"
+            effectiveRunMode === "ask"
               ? "answer_max"
-              : adaptiveRoute.mode === "research"
+              : effectiveRunMode === "research"
                 ? "investigate"
-                : adaptiveRoute.mode === "plan"
+                : effectiveRunMode === "plan"
                   ? "thinking"
-                  : adaptiveRoute.mode === "build"
+                  : effectiveRunMode === "build"
                     ? "agent"
                     : "autonomous",
         }
@@ -2072,7 +2110,15 @@ async function sendPrompt(submission: ChatPromptSubmission) {
     const providerId = String(runProfile.provider).trim();
     const modelId = String(runProfile.model).trim();
     const provider = allowed.find((entry) => entry.id === providerId);
-    if (!provider || (provider.models.length > 0 && !provider.models.includes(modelId))) {
+    if (!provider) {
+      reportError("This AI provider or model is not enabled for your account.");
+      return;
+    }
+    if (
+      !isLocalMachineProvider(providerId)
+      && provider.models.length > 0
+      && !provider.models.includes(modelId)
+    ) {
       reportError("This AI provider or model is not enabled for your account.");
       return;
     }
@@ -2208,7 +2254,7 @@ async function sendPrompt(submission: ChatPromptSubmission) {
       projectRoot,
       resumeAgentId,
       taskProfile,
-      workspacePanel.getExecutionProfile(),
+      submission.executionProfile || workspacePanel.getExecutionProfile(),
       runSettings,
       selectedMode,
     );
@@ -2484,7 +2530,14 @@ async function init() {
   workspacePanel = new WorkspacePanel();
   consolePanel = new ConsolePanel();
   sitePreview = new SitePreview(document.getElementById("site-preview-slot"));
-  smartAgentPanel = new SmartAgentPanel(document.getElementById("smart-agent-status")!);
+  smartAgentPanel = new SmartAgentPanel(document.getElementById("smart-agent-status")!, {
+    onStop: () => {
+      sitePreview.stopComputerUse();
+      if (activeSessionId) api.agentStop(activeSessionId).catch((error) => reportError(String(error)));
+    },
+    onReviewChanges: openWorkspaceTimeMachine,
+    onOpenMission: openClientSuccessCenter,
+  });
   syncSmartAgentPanel();
   sitePreview.setStateChangeHandler((preview) => {
     // The preview component only emits user-driven changes, never a restore of
@@ -2509,7 +2562,14 @@ async function init() {
   });
   clientSuccessCenter = new ClientSuccessCenter(document.getElementById("modal-root")!, {
     getProjectPath: () => currentProjectPath,
-    onRunRecipe: (prompt) => chat.submitPreviewPrompt(prompt),
+    onRunRecipe: (request) => chat.submitPreviewPrompt({
+      prompt: request.prompt,
+      visibleText: request.visibleText,
+      titleHint: request.titleHint,
+      requestedMode: request.requestedMode,
+      executionProfile: request.executionProfile,
+      computerUseOverride: request.enableComputerUse,
+    }),
     onExportClientPack: async (handoffSummary) => {
       if (!currentProjectPath) return null;
       const result = await api.exportClientPack(undefined, handoffSummary);

@@ -7,11 +7,11 @@
     <link rel="stylesheet" href="/theme/globals.css" />
     <link rel="stylesheet" href="/app.css" />
     <link rel="stylesheet" href="/theme/client-success.css" />
-    <title>Client Success Center harness</title>
+    <title>Mission Control harness</title>
   </head>
   <body>
     <main style="padding: 24px">
-      <button id="open-client-success" type="button">Open Client Success Center</button>
+      <button id="open-client-success" type="button">Open Mission Control</button>
     </main>
     <div id="modal-root" class="modal-root"></div>
     <script type="module">
@@ -21,8 +21,8 @@
       const root = document.getElementById("modal-root");
       const center = new ClientSuccessCenter(root, {
         getProjectPath: () => "C:/Projects/Acme Launch",
-        onRunRecipe: (prompt) => {
-          events.push({ kind: "workflow", prompt });
+        onRunRecipe: (request) => {
+          events.push({ kind: "workflow", request });
           return "sent";
         },
         onExportClientPack: async (handoffSummary) => {
@@ -31,7 +31,41 @@
         },
       });
       document.getElementById("open-client-success").addEventListener("click", () => center.open());
-      window.__clientSuccessHarness = { events, compose: () => composeProjectMissionPrompt("C:/Projects/Acme Launch", "Build the requested page") };
+      const fill = () => {
+        document.querySelector('[data-client-brief="goal"]').value = "Ship a mobile-first ordering flow";
+        document.querySelector('[data-client-brief="requirements"]').value = "Preserve the existing API and brand palette";
+        document.querySelector('[data-client-brief="done"]').value = "Checkout passes on desktop and mobile with no console errors";
+        document.querySelector('[data-mission-depth]').value = "maximum";
+      };
+      window.__clientSuccessHarness = {
+        events,
+        fill,
+        snapshot: () => ({
+          title: document.querySelector("#client-success-title")?.textContent || "",
+          start: document.querySelector("[data-start-mission]")?.textContent || "",
+          testFix: document.querySelector("[data-start-test-fix]")?.textContent || "",
+          permissions: document.querySelectorAll("[data-mission-permission]").length,
+          policy: document.querySelector("[data-mission-approval]")?.value || "",
+        }),
+        save: () => {
+          fill();
+          document.querySelector("[data-client-success-save]").click();
+          return composeProjectMissionPrompt("C:/Projects/Acme Launch", "Build the requested page");
+        },
+        startMission: async () => {
+          fill();
+          document.querySelector("[data-start-mission]").click();
+          await Promise.resolve();
+          return events.at(-1);
+        },
+        startTestFix: async () => {
+          fill();
+          document.querySelector("[data-start-test-fix]").click();
+          await Promise.resolve();
+          return events.at(-1);
+        },
+        compose: () => composeProjectMissionPrompt("C:/Projects/Acme Launch", "Build the requested page"),
+      };
     </script>
   </body>
 </html>

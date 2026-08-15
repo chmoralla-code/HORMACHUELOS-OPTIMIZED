@@ -258,6 +258,7 @@ pub fn should_use_hosted(status: &LicenseStatus) -> bool {
 pub fn should_use_hosted_for_provider(status: &LicenseStatus, provider: &str) -> bool {
     !provider.eq_ignore_ascii_case("ollama")
         && !provider.eq_ignore_ascii_case("cursor")
+        && !provider.eq_ignore_ascii_case("gemini_cli")
         && should_use_hosted(status)
 }
 
@@ -738,6 +739,8 @@ mod tests {
         assert!(should_use_hosted(&status));
         assert!(!should_use_hosted_for_provider(&status, "cursor"));
         assert!(!should_use_hosted_for_provider(&status, "CURSOR"));
+        assert!(!should_use_hosted_for_provider(&status, "gemini_cli"));
+        assert!(!should_use_hosted_for_provider(&status, "GEMINI_CLI"));
     }
 
     #[test]
