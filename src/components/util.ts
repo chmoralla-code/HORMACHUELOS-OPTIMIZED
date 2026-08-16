@@ -545,15 +545,10 @@ export function mergeReasoningStream(existing: string, chunk: string): string {
 }
 
 function promoteReadableSections(src: string): string {
-  return String(src || "")
-    .replace(
-      /^(?:\*\*|__)([^\n*]{2,72}?)(?:-)?(?:\*\*|__)\s*-{0,3}\s*$/gm,
-      "## $1",
-    )
-    .replace(
-      /^([A-Z][A-Za-z0-9/&+,'’() -]{2,44}):\s*$/gm,
-      "### $1",
-    );
+  return String(src || "").replace(
+    /^(?:\*\*|__)([^\n*]{2,72}?)(?:-)?(?:\*\*|__)\s*-{0,3}\s*$/gm,
+    "## $1",
+  );
 }
 
 function dropOrphanContinuations(text: string, dropLowercase = false): string {
