@@ -137,13 +137,20 @@ test("Preview sandwich exposes Desktop mode next to Computer Use", async () => {
 });
 
 test("Adaptive Director routes all six workflows without overwriting explicit mode selection", async () => {
-  const main = await read("src/main.ts");
+  const [main, workspace] = await Promise.all([
+    read("src/main.ts"),
+    read("src/components/workspace.ts"),
+  ]);
   assert.match(main, /export function inferAdaptiveRoute/);
   assert.match(main, /export function inferPermissionMode/);
   assert.match(main, /selectedMode === "adaptive"/);
   assert.match(main, /modelBar\.showAdaptiveRoute\(adaptiveRoute\)/);
   assert.doesNotMatch(main, /applyIntentMode\(inferredMode\)/);
   assert.match(main, /runSettings,\s*selectedMode,/);
+  assert.match(main, /resolveRollbackPromptIntent/);
+  assert.match(main, /performProtectedRollback/);
+  assert.match(workspace, /rollbackLatestCheckpoint/);
+  assert.match(workspace, /item\.actions\?\.some\(\(action\) => action\.status === "recorded"\)/);
   const start = main.indexOf("export type InferredPermissionMode");
   const end = main.indexOf("async function sendPrompt", start);
   assert.ok(start >= 0 && end > start);
@@ -156,7 +163,21 @@ test("Adaptive Director routes all six workflows without overwriting explicit mo
   const sandbox = { module: { exports: {} }, exports: null };
   sandbox.exports = sandbox.module.exports;
   vm.runInNewContext(compiled, sandbox, { filename: "adaptive-router.ts" });
-  const { inferAdaptiveRoute, inferPermissionMode: infer } = sandbox.module.exports;
+  const {
+    inferAdaptiveRoute,
+    inferPermissionMode: infer,
+    resolveRollbackPromptIntent,
+  } = sandbox.module.exports;
+
+  assert.equal(resolveRollbackPromptIntent("rollback")?.scope, "run");
+  assert.equal(resolveRollbackPromptIntent("please roll back the last change")?.scope, "run");
+  assert.equal(resolveRollbackPromptIntent("undo")?.scope, "last_action");
+  assert.equal(resolveRollbackPromptIntent("undo the latest action")?.scope, "last_action");
+  assert.equal(resolveRollbackPromptIntent("how do I rollback?"), null);
+  assert.equal(resolveRollbackPromptIntent("do not rollback"), null);
+  assert.equal(resolveRollbackPromptIntent("rollback DashboardOverview.tsx"), null);
+  assert.equal(infer("rollback"), "build");
+  assert.equal(infer("how do I rollback?"), "ask");
 
   assert.equal(infer("what does this form do?"), "ask");
   assert.equal(infer("can you explain this screenshot"), "ask");
