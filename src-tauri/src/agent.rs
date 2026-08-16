@@ -5336,7 +5336,9 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                         agentic_director_tool_count,
                         agentic_started.elapsed().as_millis() as u64,
                     );
-                    done_payload["total_tokens"] = done_payload["agentic"]["facts"]["totalTokens"].clone();
+                    let aggregate_tokens =
+                        done_payload["agentic"]["facts"]["totalTokens"].clone();
+                    done_payload["total_tokens"] = aggregate_tokens;
                 }
                 emit(&app, &session_id, "done", done_payload);
                 return Ok(None);
