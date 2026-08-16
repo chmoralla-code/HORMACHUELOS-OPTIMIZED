@@ -3839,6 +3839,7 @@ The tool entries are historical summaries; use fresh tools for the current works
     let mut consecutive_failed_tool_iterations: u8 = 0;
     let mut previous_failed_tool_signature = String::new();
     let mut agentic_director_tool_count = 0usize;
+    let mut agentic_verification: Vec<crate::agentic::AgenticVerificationEvidence> = Vec::new();
     let mut smart_agent = crate::smart_agent::SmartAgentRun::for_job(
         director_job,
         settings.smart_agent_enabled,
@@ -5105,6 +5106,18 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     }),
                 );
                 return Ok(None);
+            }
+
+            if is_agentic {
+                if let Some(evidence) = crate::agentic::verification_from_tool(
+                    &tc.id,
+                    &tc.name,
+                    &tc.arguments,
+                    ok,
+                    &content,
+                ) {
+                    agentic_verification.push(evidence);
+                }
             }
 
             if ok {
