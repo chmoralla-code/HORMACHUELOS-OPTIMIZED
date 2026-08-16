@@ -1,11 +1,11 @@
 {
-  "version": "1.2.15",
-  "title": "Hormachuelos Optimized v1.2.15",
-  "whatsNew": "Clearline AI replies with section dividers, stronger bold hierarchy, true nested lists, refined code and file chips, responsive visual QA, plus Mission Control, Time Machine, and Test & Fix Everything.",
-  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.15/Hormachuelos_Optimized_1.2.15_x64.msi",
-  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.15/Hormachuelos_Optimized_1.2.15_x64-setup.exe",
-  "msiSha256": "958530e1c0de396b4fbe535fd5702d4942cfff6a1b4b3ab4c7cfcc3667d62b5e",
-  "exeSha256": "c38fa2aba1009f01dea79e6a201f663654eeb748bb5068639833cd83e0af3b9c",
+  "version": "1.2.16",
+  "title": "Hormachuelos Optimized v1.2.16",
+  "whatsNew": "Type rollback or undo in chat to restore the latest protected AI change through Time Machine without model usage; Ask stays read-only, confirmations remain required, and newer user edits are preserved as conflicts. Includes Clearline AI replies, Mission Control, and Test & Fix Everything.",
+  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.16/Hormachuelos_Optimized_1.2.16_x64.msi",
+  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.16/Hormachuelos_Optimized_1.2.16_x64-setup.exe",
+  "msiSha256": "cab4973a15977fc4e4ba5902d7ed72ae5a60a5f435b5008d397be426a90f82fd",
+  "exeSha256": "9f48eb470ce33292538a2709e6664fdf7da3a76985bb88d1c80ce47336a62ea6",
   "forceUpdate": false,
-  "publishedAt": "2026-08-16T00:56:32.938Z"
+  "publishedAt": "2026-08-16T04:26:25.406Z"
 }
