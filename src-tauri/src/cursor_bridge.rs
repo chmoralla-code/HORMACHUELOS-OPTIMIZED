@@ -100,7 +100,8 @@ impl CursorAgenticMetrics {
         if !outcome.answer_text.trim().is_empty() {
             self.answer_text.push_str(&outcome.answer_text);
         }
-        self.verification.extend(outcome.verification.iter().cloned());
+        self.verification
+            .extend(outcome.verification.iter().cloned());
         let mut known = self.changed_files.iter().cloned().collect::<HashSet<_>>();
         for path in &outcome.changed_files {
             if known.insert(path.clone()) {
@@ -159,13 +160,7 @@ impl CursorPassActivity {
         self.tool_count = self.tool_count.saturating_add(1);
     }
 
-    fn record_tool_result(
-        &mut self,
-        id: &str,
-        result_name: &str,
-        ok: bool,
-        content: &str,
-    ) {
+    fn record_tool_result(&mut self, id: &str, result_name: &str, ok: bool, content: &str) {
         let (name, arguments) = self
             .open_tools
             .remove(id)
@@ -1060,16 +1055,30 @@ fn handle_event(
 
 fn cursor_worker_error_is_transient(error: &str) -> bool {
     let value = error.to_ascii_lowercase();
-    ["rate limit", "429", "timeout", "timed out", "temporar", "network", "connection", "unavailable", "overloaded"]
-        .iter()
-        .any(|needle| value.contains(needle))
+    [
+        "rate limit",
+        "429",
+        "timeout",
+        "timed out",
+        "temporar",
+        "network",
+        "connection",
+        "unavailable",
+        "overloaded",
+    ]
+    .iter()
+    .any(|needle| value.contains(needle))
 }
 
 fn bounded_worker_summary(value: &str) -> String {
     let normalized = value.trim();
     let mut chars = normalized.chars();
     let head = chars.by_ref().take(1_400).collect::<String>();
-    if chars.next().is_some() { format!("{head}…") } else { head }
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
 }
 
 /// Run real isolated Cursor agents as read-only evidence workers. The bridge
@@ -1237,7 +1246,10 @@ pub async fn run_cursor_agentic_workers(
         results.push(worker);
     }
 
-    let failed = results.iter().filter(|worker| worker.status == "failed").count();
+    let failed = results
+        .iter()
+        .filter(|worker| worker.status == "failed")
+        .count();
     crate::agentic::emit_phase(
         &app,
         session_id,

@@ -2950,8 +2950,8 @@ Describe each image briefly in the visible reply. Do not mention vision provider
             .as_deref()
             .unwrap_or(&settings.permission_mode),
     );
-    let agentic_plan = (requested_mode == "agentic")
-        .then(|| crate::agentic::AgenticPlan::classify(&user_request));
+    let agentic_plan =
+        (requested_mode == "agentic").then(|| crate::agentic::AgenticPlan::classify(&user_request));
     let is_agentic = agentic_plan.is_some();
     let agentic_started = Instant::now();
     let mut agentic_workers: Vec<crate::agentic::AgenticWorkerResult> = Vec::new();
@@ -3094,19 +3094,41 @@ Describe each image briefly in the visible reply. Do not mention vision provider
         );
         crate::agentic::emit_plan(&app, &session_id, plan);
         crate::agentic::emit_phase(
-            &app, &session_id, crate::agentic::AgenticPhase::Ask,
+            &app,
+            &session_id,
+            crate::agentic::AgenticPhase::Ask,
             crate::agentic::AgenticPhaseState::Completed,
             "Request scope and mutation intent captured by the Director.",
         );
         crate::agentic::emit_phase(
-            &app, &session_id, crate::agentic::AgenticPhase::Plan,
-            if plan.plan { crate::agentic::AgenticPhaseState::Completed } else { crate::agentic::AgenticPhaseState::Skipped },
-            if plan.plan { "Execution path and safety boundaries prepared." } else { "A separate plan would not add value for this request." },
+            &app,
+            &session_id,
+            crate::agentic::AgenticPhase::Plan,
+            if plan.plan {
+                crate::agentic::AgenticPhaseState::Completed
+            } else {
+                crate::agentic::AgenticPhaseState::Skipped
+            },
+            if plan.plan {
+                "Execution path and safety boundaries prepared."
+            } else {
+                "A separate plan would not add value for this request."
+            },
         );
         crate::agentic::emit_phase(
-            &app, &session_id, crate::agentic::AgenticPhase::Research,
-            if plan.research { crate::agentic::AgenticPhaseState::Active } else { crate::agentic::AgenticPhaseState::Skipped },
-            if plan.research { "Gathering workspace or public evidence." } else { "No additional evidence phase is required." },
+            &app,
+            &session_id,
+            crate::agentic::AgenticPhase::Research,
+            if plan.research {
+                crate::agentic::AgenticPhaseState::Active
+            } else {
+                crate::agentic::AgenticPhaseState::Skipped
+            },
+            if plan.research {
+                "Gathering workspace or public evidence."
+            } else {
+                "No additional evidence phase is required."
+            },
         );
     }
     if uses_cursor_sdk(&settings.provider) {
@@ -3458,12 +3480,16 @@ Current user request:\n{prompt}",
             },
             run.clone(),
             plan,
-        ).await;
+        )
+        .await;
         prompt.push_str(&crate::agentic::evidence_context(&agentic_workers));
         if run.cancel.load(Ordering::SeqCst) {
             crate::agentic::emit_phase(
-                &app, &session_id, crate::agentic::AgenticPhase::MultiAgent,
-                crate::agentic::AgenticPhaseState::Cancelled, "Cancelled with the parent run.",
+                &app,
+                &session_id,
+                crate::agentic::AgenticPhase::MultiAgent,
+                crate::agentic::AgenticPhaseState::Cancelled,
+                "Cancelled with the parent run.",
             );
             emit_cancelled(&app, &session_id, 0);
             return Ok(None);
@@ -3472,14 +3498,18 @@ Current user request:\n{prompt}",
     if let Some(plan) = agentic_plan.as_ref() {
         if plan.research {
             crate::agentic::emit_phase(
-                &app, &session_id, crate::agentic::AgenticPhase::Research,
+                &app,
+                &session_id,
+                crate::agentic::AgenticPhase::Research,
                 crate::agentic::AgenticPhaseState::Completed,
                 "Evidence is ready for Director synthesis and integration.",
             );
         }
         if plan.build {
             crate::agentic::emit_phase(
-                &app, &session_id, crate::agentic::AgenticPhase::Build,
+                &app,
+                &session_id,
+                crate::agentic::AgenticPhase::Build,
                 crate::agentic::AgenticPhaseState::Active,
                 "The Director is the sole writer for implementation and verification.",
             );
