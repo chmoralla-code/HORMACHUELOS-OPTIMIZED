@@ -660,7 +660,7 @@ async fn run_worker(
     let secrets = crate::integrations::loaded_tokens();
     let mut conclusion = String::new();
 
-    for _ in 0..MAX_WORKER_ROUNDS {
+    'worker_rounds: for _ in 0..MAX_WORKER_ROUNDS {
         if run.cancel.load(Ordering::SeqCst) {
             worker.status = "cancelled".into();
             break;
@@ -725,14 +725,21 @@ async fn run_worker(
                 let tool_root = root.clone();
                 let context = context.clone();
                 let timeout = config.command_timeout_secs;
-                match tokio::task::spawn_blocking(move || {
+                let execution = tokio::task::spawn_blocking(move || {
                     tools::execute(&name, &arguments, &tool_root, timeout, &context)
-                })
-                .await
-                {
-                    Ok(Ok(content)) => (true, content),
-                    Ok(Err(error)) => (false, format!("Error: {error}")),
-                    Err(error) => (false, format!("Tool task failed: {error}")),
+                });
+                let result = tokio::select! {
+                    result = execution => Some(result),
+                    _ = wait_cancelled(run.cancel.clone()) => None,
+                };
+                match result {
+                    Some(Ok(Ok(content))) => (true, content),
+                    Some(Ok(Err(error))) => (false, format!("Error: {error}")),
+                    Some(Err(error)) => (false, format!("Tool task failed: {error}")),
+                    None => {
+                        worker.status = "cancelled".into();
+                        break 'worker_rounds;
+                    }
                 }
             };
             let content = integration_chat::redact_sensitive_text(&content, &secrets);
