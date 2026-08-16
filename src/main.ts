@@ -93,6 +93,8 @@ let completionCuePending = false;
 let completionCueTimer: ReturnType<typeof setTimeout> | null = null;
 /** Queue dispatch can await provider readiness before it appears in runningSessions. */
 let pendingPromptStarts = 0;
+/** Host-owned rollback confirmations never invoke a model or consume usage. */
+let localRollbackInFlight = false;
 /** Exact provider/model profile captured when each in-flight run starts. */
 const runModelProfiles = new Map<
   string,
@@ -1805,6 +1807,50 @@ export type AdaptiveRoute = {
   confidence: "medium" | "high";
 };
 
+export type RollbackPromptIntent = {
+  scope: "last_action" | "run";
+};
+
+/**
+ * Recognize only short, explicit restoration commands. General editing remains
+ * locked in Ask mode; the host sends these commands to Time Machine instead of
+ * asking a model to imitate a rollback with fresh writes.
+ */
+export function resolveRollbackPromptIntent(value: string): RollbackPromptIntent | null {
+  const prompt = String(value || "")
+    .replace(/\[Attached (?:image|video):[^\]]*\]/gi, " ")
+    .toLowerCase()
+    .replace(/[.!?]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (
+    !prompt ||
+    /\b(?:do not|don't|dont|never)\s+(?:undo|revert|roll\s*back|rollback)\b/.test(prompt) ||
+    /^(?:how|what|why|when|where)\b/.test(prompt)
+  ) {
+    return null;
+  }
+
+  const command = prompt
+    .replace(/^please\s+/, "")
+    .replace(/^(?:can|could|would|will)\s+you\s+/, "")
+    .replace(/^please\s+/, "")
+    .trim();
+
+  if (
+    /^(?:undo)(?:\s+(?:the\s+)?(?:last|latest)\s+(?:agent\s+)?action)?$/.test(command)
+  ) {
+    return { scope: "last_action" };
+  }
+  if (
+    /^(?:rollback|roll back|revert)(?:\s+(?:that|it|this|the\s+(?:(?:last|latest|previous)\s+)?(?:change|changes|edit|edits|run|agent run|work|version)))?$/.test(command) ||
+    /^undo\s+(?:that|it|this|the\s+(?:(?:last|latest|previous)\s+)?(?:change|changes|edit|edits|run|agent run|work))$/.test(command) ||
+    /^restore\s+(?:the\s+)?(?:last|latest|previous)\s+(?:change|version|agent run)$/.test(command)
+  ) {
+    return { scope: "run" };
+  }
+  return null;
+}
 /**
  * Host-owned Adaptive Director. It classifies intent before any model call so
  * permissions never depend on a model correctly interpreting a prose hint.
@@ -1832,6 +1878,11 @@ export function inferAdaptiveRoute(
     return previousMode
       ? route(previousMode, "continuing the active workflow", "medium", "guarded", "medium")
       : null;
+  }
+
+  const rollbackIntent = resolveRollbackPromptIntent(prompt);
+  if (rollbackIntent) {
+    return route("build", "explicit protected rollback", "low", "guarded");
   }
 
   const isPlan =
@@ -2010,12 +2061,131 @@ export function inferPermissionMode(value: string): InferredPermissionMode | nul
   return inferAdaptiveRoute(value)?.mode ?? null;
 }
 
+type ChatReplyProfile = {
+  provider: string;
+  model: string;
+  effort?: string;
+};
+
+function beginChatTurn(
+  visiblePrompt: string,
+  agentText: string,
+  titlePrompt: string,
+  replyProfile: ChatReplyProfile | null,
+): string {
+  let existing = activeSessionId ? sessions.find((item) => item.id === activeSessionId) : null;
+  const hasMessages = existing && existing.messages.length > 0;
+
+  if (!existing || !hasMessages) {
+    if (existing) {
+      existing.title = sessionTitle(titlePrompt);
+    } else {
+      const session: Session = {
+        id: newSessionId(),
+        title: sessionTitle(titlePrompt),
+        projectId: currentProjectPath || "",
+        messages: [],
+        createdAt: Date.now(),
+        preferredProvider: replyProfile?.provider,
+        preferredModel: replyProfile?.model,
+        preferredEffort: replyProfile?.effort,
+      };
+      sessions.unshift(session);
+      sessionRegistry.set(session.id, session);
+      activeSessionId = session.id;
+    }
+    chat.startSession(visiblePrompt, agentText);
+  } else {
+    chat.continueSession(visiblePrompt, agentText);
+  }
+  return activeSessionId!;
+}
+
+async function performProtectedRollback(
+  sessionId: string,
+  visiblePrompt: string,
+  requestedMode: string,
+  intent: RollbackPromptIntent,
+): Promise<void> {
+  localRollbackInFlight = true;
+  chat.handleEvent({
+    session_id: sessionId,
+    kind: "start",
+    payload: {
+      prompt: visiblePrompt,
+      permission_mode: "ask",
+      requested_permission_mode: requestedMode,
+      execution_profile: "safe",
+      checkpoint_id: null,
+    },
+  });
+
+  let reply = "";
+  let endReason = "completed";
+  try {
+    const outcome = await workspacePanel.rollbackLatestCheckpoint(intent.scope);
+    if (outcome.kind === "completed") {
+      const result = outcome.result;
+      if (result.conflicts.length > 0) {
+        reply =
+          "**Rollback partially completed.** " +
+          result.message +
+          "\n\nNewer user edits were preserved instead of being overwritten. Review the details in **Time Machine**.";
+      } else if (result.rolledBackActions > 0) {
+        const pathLabel = result.restoredPaths === 1 ? "path" : "paths";
+        reply =
+          "**Rollback complete.** " +
+          result.message +
+          " Restored " +
+          result.restoredPaths +
+          " protected " +
+          pathLabel +
+          ".";
+      } else {
+        reply = "**Nothing to roll back.** No recorded AI changes remain in the latest protected run.";
+      }
+    } else if (outcome.kind === "cancelled") {
+      reply = "**Rollback cancelled.** No files were changed.";
+    } else if (outcome.kind === "busy") {
+      reply = "**Rollback is already in progress.** Finish the current confirmation first.";
+    } else if (outcome.kind === "unavailable") {
+      reply = "**Nothing to roll back.** I could not find a protected AI change for this project.";
+    } else {
+      endReason = "error";
+      reply = "**Rollback could not be completed.** " + outcome.message;
+    }
+  } catch (error) {
+    endReason = "error";
+    reply =
+      "**Rollback could not be completed.** " +
+      (error instanceof Error ? error.message : String(error));
+  } finally {
+    localRollbackInFlight = false;
+  }
+
+  chat.handleEvent({
+    session_id: sessionId,
+    kind: "text",
+    payload: { text: reply },
+  });
+  chat.handleEvent({
+    session_id: sessionId,
+    kind: "end",
+    payload: { reason: endReason, iteration: 0 },
+  });
+  persistCurrentSession();
+  refreshSidebar();
+}
 async function sendPrompt(submission: ChatPromptSubmission) {
   let prompt = redactChatCredentials(submission.modelText);
   const visiblePrompt = redactChatCredentials(submission.visibleText || submission.modelText);
   const titlePrompt = redactChatCredentials(submission.titleHint || visiblePrompt || prompt);
   const taskProfile = submission.taskProfile || "default";
   if (!prompt.trim() || !visiblePrompt.trim()) return;
+  if (localRollbackInFlight) {
+    reportError("Finish the current rollback confirmation first.");
+    return;
+  }
   cancelDoneWorkingCue();
   if (!currentProjectPath) {
     reportError("Open or create a project before starting.");
@@ -2023,11 +2193,26 @@ async function sendPrompt(submission: ChatPromptSubmission) {
     return;
   }
   const projectRoot = currentProjectPath;
+  const rollbackIntent = taskProfile === "default"
+    ? resolveRollbackPromptIntent(visiblePrompt)
+    : null;
   const runProfile = modelBar.currentProfile() || (modelBar.settings ? {
     provider: modelBar.settings.provider,
     model: modelBar.settings.model,
     effort: modelBar.settings.model_effort,
   } : null);
+  if (rollbackIntent) {
+    const sessionId = beginChatTurn(visiblePrompt, prompt, titlePrompt, runProfile);
+    persistCurrentSession();
+    refreshSidebar();
+    await performProtectedRollback(
+      sessionId,
+      visiblePrompt,
+      submission.requestedMode || modelBar.getMode(),
+      rollbackIntent,
+    );
+    return;
+  }
   if (!runProfile?.provider || !runProfile.model) {
     reportError("Choose an AI provider and model before sending a request.");
     return;
@@ -2141,37 +2326,7 @@ async function sendPrompt(submission: ChatPromptSubmission) {
   // visible chat bubble, session title, or the preview-detection prompt.
   const agentPrompt = composeProjectMissionPrompt(projectRoot, prompt);
 
-  let existing = activeSessionId ? sessions.find((x) => x.id === activeSessionId) : null;
-  const hasMessages = existing && existing.messages.length > 0;
-
-  if (!existing || !hasMessages) {
-    // Fresh session — create one and start clean
-    if (existing) {
-      existing.title = sessionTitle(titlePrompt);
-    } else {
-      const s: Session = {
-        id: newSessionId(),
-        title: sessionTitle(titlePrompt),
-        projectId: projectRoot,
-        messages: [],
-        createdAt: Date.now(),
-        sessionTokens: 0,
-        preferredProvider: runProfile.provider,
-        preferredModel: runProfile.model,
-        preferredEffort: runProfile.effort,
-      };
-      sessions.unshift(s);
-      sessionRegistry.set(s.id, s);
-      activeSessionId = s.id;
-      existing = s;
-    }
-    chat.startSession(visiblePrompt, prompt);
-  } else {
-    // Continuing an existing conversation — append, don't clear
-    chat.continueSession(visiblePrompt, prompt);
-  }
-
-  const sessionId = activeSessionId!;
+  const sessionId = beginChatTurn(visiblePrompt, prompt, titlePrompt, runProfile);
   // Send compact memory from this session only (never other chats).
   const history = buildLlmHistory(chat.getMessages(), prompt);
   runModelProfiles.set(sessionId, runProfile);

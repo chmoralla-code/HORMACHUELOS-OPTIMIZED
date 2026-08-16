@@ -3,6 +3,7 @@ import {
   type AgentEvent,
   type AgentExecutionProfile,
   type CheckpointSummary,
+  type RollbackResult,
   type FilePreview,
   type ProjectNode,
   type ProjectTree,
@@ -14,6 +15,13 @@ type InspectorTab = "files" | "changes" | "console";
 type ChangeKind = "added" | "modified" | "deleted" | "touched" | "command";
 type ChangeItem = { path: string; kind: ChangeKind; detail: string };
 type ToolCall = { name: string; args: Record<string, unknown> };
+
+export type WorkspaceRollbackOutcome =
+  | { kind: "completed"; result: RollbackResult }
+  | { kind: "cancelled" }
+  | { kind: "busy" }
+  | { kind: "unavailable" }
+  | { kind: "error"; message: string };
 
 const MUTATING_TOOLS = new Set([
   "write_file", "edit_file", "move_file", "copy_file", "delete_file",
@@ -712,11 +720,30 @@ export class WorkspacePanel {
     }
   }
 
+  async rollbackLatestCheckpoint(
+    scope: "last_action" | "run",
+  ): Promise<WorkspaceRollbackOutcome> {
+    if (this.checkpointActionInFlight) return { kind: "busy" };
+    if (!this.projectPath) return { kind: "unavailable" };
+
+    await this.refreshCheckpoints();
+    const checkpoint = this.checkpoints.find(
+      (item) =>
+        item.status !== "active" &&
+        item.status !== "rolled_back" &&
+        item.actions?.some((action) => action.status === "recorded"),
+    );
+    if (!checkpoint) return { kind: "unavailable" };
+
+    this.activateTab("changes");
+    return this.requestCheckpointRollback(checkpoint, scope);
+  }
+
   private async requestCheckpointRollback(
     checkpoint: CheckpointSummary,
     scope: "last_action" | "run",
-  ) {
-    if (this.checkpointActionInFlight) return;
+  ): Promise<WorkspaceRollbackOutcome> {
+    if (this.checkpointActionInFlight) return { kind: "busy" };
     const entireRun = scope === "run";
     const confirmed = await this.confirmProjectFileAction({
       title: entireRun ? "Roll back this agent run?" : "Undo the latest agent action?",
@@ -725,23 +752,26 @@ export class WorkspacePanel {
         : "Only the most recent recorded file action will be restored. Newer user edits are preserved as conflicts.",
       confirmLabel: entireRun ? "Roll back run" : "Undo last action",
     });
-    if (!confirmed) return;
+    if (!confirmed) return { kind: "cancelled" };
 
     this.checkpointActionInFlight = true;
     this.renderCheckpoint();
     this.setCheckpointNotice(entireRun ? "Rolling back protected changes…" : "Undoing the latest protected action…");
     try {
       const result = await api.rollbackRunCheckpoint(checkpoint.id, scope);
-      const conflictDetail = result.conflicts.length ? ` ${result.conflicts.slice(0, 3).join("; ")}` : "";
+      const conflictDetail = result.conflicts.length ? " " + result.conflicts.slice(0, 3).join("; ") : "";
       this.setCheckpointNotice(
-        `${result.message}${conflictDetail}`,
+        result.message + conflictDetail,
         result.conflicts.length ? "error" : "success",
       );
       this.changes.clear();
       this.addChange("Rollback", "command", result.message);
       await Promise.all([this.refresh(), this.refreshCheckpoints()]);
+      return { kind: "completed", result };
     } catch (error) {
-      this.setCheckpointNotice(`Rollback could not be completed: ${String(error)}`, "error");
+      const message = String(error);
+      this.setCheckpointNotice("Rollback could not be completed: " + message, "error");
+      return { kind: "error", message };
     } finally {
       this.checkpointActionInFlight = false;
       this.renderCheckpoint();
