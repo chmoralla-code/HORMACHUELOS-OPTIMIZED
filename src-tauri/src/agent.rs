@@ -5148,20 +5148,51 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     "tool_result",
                     json!({ "id": tc.id, "name": tc.name, "ok": true, "content": summary }),
                 );
-                emit(
-                    &app,
-                    &session_id,
-                    "done",
-                    json!({
-                        "summary": summary,
-                        "title": title,
-                        "description": description,
-                        "files": files,
-                        "tech": tech,
-                        "features": features,
-                        "total_tokens": total_tokens,
-                    }),
-                );
+                let mut done_payload = json!({
+                    "summary": summary,
+                    "title": title,
+                    "description": description,
+                    "files": files,
+                    "tech": tech,
+                    "features": features,
+                    "total_tokens": total_tokens,
+                });
+                if let Some(plan) = agentic_plan.as_ref() {
+                    crate::agentic::emit_phase(
+                        &app,
+                        &session_id,
+                        plan.effective_phase(),
+                        crate::agentic::AgenticPhaseState::Completed,
+                        "Director implementation, integration, and delivery completed.",
+                    );
+                    crate::agentic::emit_agent(
+                        &app,
+                        &session_id,
+                        &crate::agentic::AgenticWorkerResult {
+                            id: "director".into(),
+                            name: "Director".into(),
+                            role: "Orchestration and integration".into(),
+                            assignment: "Own scope, permissions, integration, writes, verification, and delivery.".into(),
+                            status: "completed".into(),
+                            tool_count: agentic_director_tool_count,
+                            total_tokens,
+                            result_summary: summary.clone(),
+                            error: None,
+                        },
+                    );
+                    done_payload["agentic"] = crate::agentic::completion_payload(
+                        plan,
+                        &agentic_workers,
+                        &summary,
+                        &files,
+                        &features,
+                        &agentic_verification,
+                        total_tokens,
+                        agentic_director_tool_count,
+                        agentic_started.elapsed().as_millis() as u64,
+                    );
+                }
+                emit(&app, &session_id, "done", done_payload);
                 return Ok(None);
             }
 
