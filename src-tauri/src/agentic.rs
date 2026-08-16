@@ -208,7 +208,13 @@ impl AgenticPlan {
         );
         let explicit_mutation_request = starts_with_any(
             &input,
-            &["can you ", "could you ", "would you ", "will you ", "please "],
+            &[
+                "can you ",
+                "could you ",
+                "would you ",
+                "will you ",
+                "please ",
+            ],
         ) && mutation_action;
         let explanatory_question = !explicit_mutation_request
             && (asked_as_question
@@ -1223,7 +1229,10 @@ mod tests {
         .expect("valid two-worker plan");
         assert_eq!(valid.len(), 2);
         assert_eq!(valid[0].id, "worker-1");
-        assert!(parse_specs(r#"{"workers":[{"role":"Only","assignment":"One worker is invalid."}]}"#).is_none());
+        assert!(parse_specs(
+            r#"{"workers":[{"role":"Only","assignment":"One worker is invalid."}]}"#
+        )
+        .is_none());
         assert!(parse_specs("not json").is_none());
     }
 
@@ -1277,17 +1286,7 @@ mod tests {
         assert!(!unverified["risks"].as_array().unwrap().is_empty());
 
         let read_only = AgenticPlan::classify("Audit security and tests");
-        let audit = completion_payload(
-            &read_only,
-            &[],
-            "Audit complete.",
-            &[],
-            &[],
-            &[],
-            0,
-            0,
-            10,
-        );
+        let audit = completion_payload(&read_only, &[], "Audit complete.", &[], &[], &[], 0, 0, 10);
         assert_eq!(audit["status"], "completed");
         assert!(audit["changes"].as_array().unwrap().is_empty());
     }
