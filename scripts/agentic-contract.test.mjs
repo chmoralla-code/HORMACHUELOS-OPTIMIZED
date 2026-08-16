@@ -16,9 +16,9 @@ test("AGENTIC is an opt-in public mode while Adaptive remains the default", asyn
   assert.match(ipc, /export type AgenticPhase\s*=/);
   assert.match(ipc, /export type AgenticPhaseState\s*=/);
   assert.match(ipc, /export (?:type|interface) AgenticAgent/);
-  assert.match(modelbar, /value:\s*"agentic"/);
+  assert.match(modelbar, /id:\s*"agentic"/);
   assert.match(modelbar, /label:\s*"AGENTIC"/);
-  assert.ok(modelbar.indexOf('value: "adaptive"') < modelbar.indexOf('value: "agentic"'));
+  assert.ok(modelbar.indexOf('id: "adaptive"') < modelbar.indexOf('id: "agentic"'));
   assert.match(settings, /"agentic"/);
   assert.match(rustConfig, /"agentic"/);
   assert.doesNotMatch(settings, /default[^\n]{0,80}"agentic"/i);
