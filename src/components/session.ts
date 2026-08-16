@@ -8,6 +8,11 @@ import type {
 } from "../ipc";
 import { looksLikeProvisionalToolNarration, mergeReasoningStream, normalizeAssistantMarkdown } from "./util";
 
+export type AgenticRunSnapshot = {
+  phases: { phase: AgenticPhase; state: AgenticPhaseState }[];
+  agents: AgenticAgent[];
+};
+
 export type SessionMessage =
   | {
       type: "user";
@@ -23,6 +28,7 @@ export type SessionMessage =
       permissionMode: "agentic" | "ask" | "research" | "plan" | "build" | "multi_agent";
       executionProfile?: "fast" | "balanced" | "thorough" | "safe";
       runId?: string;
+      agenticState?: AgenticRunSnapshot;
       at?: number;
     }
   | { type: "agentic_plan"; runId: string; phases: { phase: AgenticPhase; state: AgenticPhaseState }[]; maxWorkers: number; at?: number }
@@ -1356,6 +1362,38 @@ export function buildLlmHistory(messages: SessionMessage[], currentPrompt: strin
   }));
 }
 
+function latestAgenticRunStart(
+  messages: SessionMessage[],
+  runId?: string,
+): Extract<SessionMessage, { type: "run_start" }> | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.type === "user") break;
+    if (
+      message.type === "run_start"
+      && message.permissionMode === "agentic"
+      && (!runId || !message.runId || message.runId === runId)
+    ) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function sanitizeAgenticAgent(value: any): AgenticAgent {
+  return {
+    ...value,
+    id: clip(redactChatCredentials(value?.id || ""), 96),
+    name: clip(redactChatCredentials(value?.name || "Worker"), 96),
+    role: clip(redactChatCredentials(value?.role || ""), 240),
+    assignment: clip(redactChatCredentials(value?.assignment || ""), 600),
+    resultSummary: value?.resultSummary
+      ? clip(redactChatCredentials(value.resultSummary), 1_400)
+      : undefined,
+    toolCount: Math.max(0, Math.min(10_000, Number(value?.toolCount) || 0)),
+  } as AgenticAgent;
+}
+
 /** Append an agent event into a session transcript (no DOM). Used for background sessions. */
 export function recordAgentEvent(
   messages: SessionMessage[],
@@ -1366,47 +1404,77 @@ export function recordAgentEvent(
 ): void {
   const at = Date.now();
   switch (e.kind) {
-    case "start":
+    case "start": {
+      const permissionMode = normalizeSessionPermissionMode(e.payload?.permission_mode);
       messages.push({
         type: "run_start",
-        permissionMode: normalizeSessionPermissionMode(e.payload?.permission_mode),
+        permissionMode,
         executionProfile: e.payload?.execution_profile,
         runId: e.payload?.run_id,
+        agenticState: permissionMode === "agentic" ? { phases: [], agents: [] } : undefined,
         at,
       });
       break;
-    case "agentic_plan":
+    }
+    case "agentic_plan": {
+      const phases = (e.payload.phases || []).slice(0, 5);
+      const start = latestAgenticRunStart(messages, e.payload.run_id);
+      if (start) {
+        start.runId = e.payload.run_id;
+        start.agenticState = {
+          phases,
+          agents: start.agenticState?.agents || [],
+        };
+      }
       messages.push({
         type: "agentic_plan",
         runId: e.payload.run_id,
-        phases: e.payload.phases || [],
-        maxWorkers: e.payload.max_workers || 3,
+        phases,
+        maxWorkers: Math.max(0, Math.min(3, Number(e.payload.max_workers) || 3)),
         at,
       });
       break;
-    case "agentic_phase":
+    }
+    case "agentic_phase": {
+      const start = latestAgenticRunStart(messages, e.payload.run_id);
+      if (start?.agenticState) {
+        const existing = start.agenticState.phases.find(
+          (item) => item.phase === e.payload.phase,
+        );
+        if (existing) existing.state = e.payload.state;
+        else if (start.agenticState.phases.length < 5) {
+          start.agenticState.phases.push({
+            phase: e.payload.phase,
+            state: e.payload.state,
+          });
+        }
+      }
       messages.push({
         type: "agentic_phase",
         runId: e.payload.run_id,
         phase: e.payload.phase,
         state: e.payload.state,
-        detail: redactChatCredentials(e.payload.detail || ""),
+        detail: clip(redactChatCredentials(e.payload.detail || ""), 360),
         at,
       });
       break;
-    case "agentic_agent":
+    }
+    case "agentic_agent": {
+      const agent = sanitizeAgenticAgent(e.payload.agent);
+      const start = latestAgenticRunStart(messages, e.payload.run_id);
+      if (start?.agenticState && agent.id) {
+        const index = start.agenticState.agents.findIndex((item) => item.id === agent.id);
+        if (index >= 0) start.agenticState.agents[index] = agent;
+        else if (start.agenticState.agents.length < 4) start.agenticState.agents.push(agent);
+      }
       messages.push({
         type: "agentic_agent",
         runId: e.payload.run_id,
-        agent: {
-          ...e.payload.agent,
-          role: redactChatCredentials(e.payload.agent?.role || ""),
-          assignment: redactChatCredentials(e.payload.agent?.assignment || ""),
-          resultSummary: redactChatCredentials(e.payload.agent?.resultSummary || ""),
-        },
+        agent,
         at,
       });
       break;
+    }
     case "multi_agent_batch": {
       appendMultiAgentBatchSnapshot(messages, e.payload?.tools, at);
       break;
