@@ -351,8 +351,9 @@ async fn run_worker(
             } else {
                 let name = call.name.clone(); let arguments = call.arguments.clone();
                 let tool_root = root.clone(); let context = context.clone();
+                let timeout = config.command_timeout_secs;
                 match tokio::task::spawn_blocking(move || {
-                    tools::execute(&name, &arguments, &tool_root, config.command_timeout_secs, &context)
+                    tools::execute(&name, &arguments, &tool_root, timeout, &context)
                 }).await {
                     Ok(Ok(content)) => (true, content),
                     Ok(Err(error)) => (false, format!("Error: {error}")),
