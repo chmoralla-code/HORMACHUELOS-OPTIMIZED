@@ -326,7 +326,7 @@ const numberedReport = renderMarkdown([
   "",
   "1. Add E2E coverage.",
 ].join("\n"));
-assert.equal((numberedReport.match(/<ol class="md-list">/g) || []).length, 1);
+assert.equal((numberedReport.match(/<ol class="md-list md-list-depth-0">/g) || []).length, 1);
 assert.equal((numberedReport.match(/<li>/g) || []).length, 3);
 
 assert.equal(
