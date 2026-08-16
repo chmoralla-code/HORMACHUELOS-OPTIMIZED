@@ -366,8 +366,20 @@ async fn execute_cursor_host_tool(
     raw_name: &str,
     raw_arguments: Value,
     known_secrets: &[String],
+    scope: Option<&CursorAgenticScope>,
 ) -> (bool, String) {
     let mut name = crate::tools::normalize_tool_name(raw_name);
+    if let Some(scope) = scope {
+        if !crate::agentic::worker_tool_allowed(&scope.agent_id, &name) {
+            return (
+                false,
+                format!(
+                    "AGENTIC worker {} is read-only; native tool {raw_name:?} is denied by the execution invariant.",
+                    scope.agent_id
+                ),
+            );
+        }
+    }
     if !cursor_host_tool_is_available(&name, permission_mode) {
         return (
             false,
@@ -1270,11 +1282,19 @@ async fn run_cursor_attempt(
     let computer_use_active = computer_use_enabled && !crate::computer_use::is_paused();
     let desktop_computer_use_active =
         desktop_computer_use_enabled && !crate::desktop_computer_use::is_paused();
-    let host_tool_schemas = cursor_host_tool_schemas(
+    let mut host_tool_schemas = cursor_host_tool_schemas(
         permission_mode,
         computer_use_active,
         desktop_computer_use_active,
     );
+    if let Some(scope) = scope.as_ref() {
+        host_tool_schemas.retain(|schema| {
+            schema
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| crate::agentic::worker_tool_allowed(&scope.agent_id, name))
+        });
+    }
 
     if !suppress_reasoning {
         emit(&app, session_id, "thinking", json!({ "iteration": 0 }));
@@ -1475,6 +1495,7 @@ async fn run_cursor_attempt(
                             &raw_name,
                             raw_arguments.clone(),
                             &known_integration_secrets,
+                            scope.as_ref(),
                         )
                         .await;
                         if run.plan_implementation_unlocked()
