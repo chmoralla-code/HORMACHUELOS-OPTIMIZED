@@ -395,6 +395,7 @@ assert.match(renderedEditorial, /<strong class="md-lead">Standard view:<\/strong
 assert.match(renderedEditorial, /<span class="md-file"[^>]*>util\.ts<\/span>/);
 assert.match(renderedEditorial, /<blockquote class="md-callout">/);
 assert.match(renderedEditorial, /<pre class="md-code" data-language="ts">/);
+assert.doesNotMatch(renderedEditorial, /<p><pre/);
 assert.ok(
   renderedEditorial.indexOf("md-list-depth-1") > renderedEditorial.indexOf("md-list-depth-0"),
   "nested details should stay inside their parent list",
