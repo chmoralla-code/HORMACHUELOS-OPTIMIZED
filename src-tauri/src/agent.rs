@@ -2950,6 +2950,11 @@ Describe each image briefly in the visible reply. Do not mention vision provider
             .as_deref()
             .unwrap_or(&settings.permission_mode),
     );
+    let agentic_plan = (requested_mode == "agentic")
+        .then(|| crate::agentic::AgenticPlan::classify(&user_request));
+    let is_agentic = agentic_plan.is_some();
+    let agentic_started = Instant::now();
+    let mut agentic_workers: Vec<crate::agentic::AgenticWorkerResult> = Vec::new();
     let mut adaptive_route = None;
     let mut permission_mode = if task_profile.is_design_edit() {
         if requested_mode == "adaptive" {
@@ -2961,6 +2966,8 @@ Describe each image briefly in the visible reply. Do not mention vision provider
             });
         }
         "build".into()
+    } else if let Some(plan) = agentic_plan.as_ref() {
+        plan.effective_mode().into()
     } else if requested_mode == "adaptive" {
         adaptive_route = infer_adaptive_route(&user_request).or_else(|| {
             let fallback = match captured_effective_mode.as_str() {
@@ -3067,6 +3074,41 @@ Describe each image briefly in the visible reply. Do not mention vision provider
         &prompt,
         settings.desktop_computer_use_enabled,
     );
+    if let Some(plan) = agentic_plan.as_ref() {
+        emit(
+            &app,
+            &session_id,
+            "start",
+            json!({
+                "prompt": prompt,
+                "permission_mode": "agentic",
+                "requested_permission_mode": "agentic",
+                "effective_phase": plan.effective_phase().wire(),
+                "smart_agent_enabled": settings.smart_agent_enabled,
+                "flavour_enabled": flavour.is_enabled(),
+                "task_profile": task_profile.wire_name(),
+                "execution_profile": execution_profile.wire_name(),
+                "repair_budget": execution_profile.repair_budget(),
+                "checkpoint_id": run.checkpoint().map(|checkpoint| checkpoint.id()),
+            }),
+        );
+        crate::agentic::emit_plan(&app, &session_id, plan);
+        crate::agentic::emit_phase(
+            &app, &session_id, crate::agentic::AgenticPhase::Ask,
+            crate::agentic::AgenticPhaseState::Completed,
+            "Request scope and mutation intent captured by the Director.",
+        );
+        crate::agentic::emit_phase(
+            &app, &session_id, crate::agentic::AgenticPhase::Plan,
+            if plan.plan { crate::agentic::AgenticPhaseState::Completed } else { crate::agentic::AgenticPhaseState::Skipped },
+            if plan.plan { "Execution path and safety boundaries prepared." } else { "A separate plan would not add value for this request." },
+        );
+        crate::agentic::emit_phase(
+            &app, &session_id, crate::agentic::AgenticPhase::Research,
+            if plan.research { crate::agentic::AgenticPhaseState::Active } else { crate::agentic::AgenticPhaseState::Skipped },
+            if plan.research { "Gathering workspace or public evidence." } else { "No additional evidence phase is required." },
+        );
+    }
     if uses_cursor_sdk(&settings.provider) {
         match crate::config::load_cursor_sdk_api_key(&settings.provider) {
             Ok(key) => {
@@ -3268,6 +3310,51 @@ Current user request:\n{prompt}",
     } else {
         (String::new(), settings.base_url.clone())
     };
+
+    if let Some(plan) = agentic_plan.as_ref().filter(|plan| plan.multi_agent) {
+        agentic_workers = crate::agentic::run_native_workers(
+            app.clone(),
+            &session_id,
+            root,
+            &user_request,
+            crate::agentic::NativeWorkerConfig {
+                provider: settings.provider.clone(),
+                api_key: key.clone(),
+                base_url: base_url_override.clone(),
+                model: settings.model.clone(),
+                effort: settings.model_effort.clone(),
+                command_timeout_secs: settings.command_timeout_secs,
+                hosted: use_hosted,
+            },
+            run.clone(),
+            plan,
+        ).await;
+        prompt.push_str(&crate::agentic::evidence_context(&agentic_workers));
+        if run.cancel.load(Ordering::SeqCst) {
+            crate::agentic::emit_phase(
+                &app, &session_id, crate::agentic::AgenticPhase::MultiAgent,
+                crate::agentic::AgenticPhaseState::Cancelled, "Cancelled with the parent run.",
+            );
+            emit_cancelled(&app, &session_id, 0);
+            return Ok(None);
+        }
+    }
+    if let Some(plan) = agentic_plan.as_ref() {
+        if plan.research {
+            crate::agentic::emit_phase(
+                &app, &session_id, crate::agentic::AgenticPhase::Research,
+                crate::agentic::AgenticPhaseState::Completed,
+                "Evidence is ready for Director synthesis and integration.",
+            );
+        }
+        if plan.build {
+            crate::agentic::emit_phase(
+                &app, &session_id, crate::agentic::AgenticPhase::Build,
+                crate::agentic::AgenticPhaseState::Active,
+                "The Director is the sole writer for implementation and verification.",
+            );
+        }
+    }
 
     let provider = crate::llm::build_provider_with_effort(
         &settings.provider,
@@ -3702,17 +3789,19 @@ The tool entries are historical summaries; use fresh tools for the current works
     let mut resume_assistant_next_iteration = false;
     let mut consecutive_failed_tool_iterations: u8 = 0;
     let mut previous_failed_tool_signature = String::new();
+    let mut agentic_director_tool_count = 0usize;
     let mut smart_agent = crate::smart_agent::SmartAgentRun::for_job(
         director_job,
         settings.smart_agent_enabled,
         fast_execution,
     );
-    emit(
-        &app,
-        &session_id,
-        "start",
-        json!({
-            "prompt": prompt,
+    if !is_agentic {
+        emit(
+            &app,
+            &session_id,
+            "start",
+            json!({
+                "prompt": prompt,
             "permission_mode": mode,
             "requested_permission_mode": requested_mode,
             "adaptive_reason": adaptive_route.map(|route| route.reason),
@@ -3723,9 +3812,10 @@ The tool entries are historical summaries; use fresh tools for the current works
             "task_profile": task_profile.wire_name(),
             "execution_profile": execution_profile.wire_name(),
             "repair_budget": execution_profile.repair_budget(),
-            "checkpoint_id": run.checkpoint().map(|checkpoint| checkpoint.id()),
-        }),
-    );
+                "checkpoint_id": run.checkpoint().map(|checkpoint| checkpoint.id()),
+            }),
+        );
+    }
     if flavour.is_enabled() {
         emit(
             &app,
@@ -3764,12 +3854,14 @@ The tool entries are historical summaries; use fresh tools for the current works
         ));
         compact_active_run_messages(&mut messages, pinned_message_count);
 
-        emit(
-            &app,
-            &session_id,
-            "thinking",
-            json!({ "iteration": iteration }),
-        );
+        if !is_agentic {
+            emit(
+                &app,
+                &session_id,
+                "thinking",
+                json!({ "iteration": iteration }),
+            );
+        }
         let resume_assistant = std::mem::take(&mut resume_assistant_next_iteration);
 
         let reasoning_streamed = Arc::new(AtomicBool::new(false));
@@ -3784,6 +3876,9 @@ The tool entries are historical summaries; use fresh tools for the current works
                 return;
             }
             reasoning_streamed_for_sink.store(true, Ordering::SeqCst);
+            if is_agentic {
+                return;
+            }
             emit(
                 &app_for_reasoning,
                 &sid_for_reasoning,
@@ -4133,7 +4228,7 @@ The tool entries are historical summaries; use fresh tools for the current works
 
         // Providers without streaming support still expose their supplied
         // reasoning after completion; animate that as a compatibility fallback.
-        if !reasoning_streamed.load(Ordering::SeqCst) {
+        if !is_agentic && !reasoning_streamed.load(Ordering::SeqCst) {
             if let Some(reason) = &resp.reasoning_content {
                 let trimmed = reason.trim();
                 if !trimmed.is_empty() {
@@ -4409,6 +4504,9 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
         let mut failed_tool_results: Vec<(String, String)> = Vec::new();
         let mut final_review_instruction: Option<&'static str> = None;
         for (tool_index, tc) in resp.tool_calls.iter().enumerate() {
+            if is_agentic {
+                agentic_director_tool_count = agentic_director_tool_count.saturating_add(1);
+            }
             if cancel.load(Ordering::SeqCst) {
                 emit_cancelled(&app, &session_id, iteration);
                 return Ok(None);
@@ -4473,6 +4571,9 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     "name": tc.name,
                     "arguments": public_arguments,
                     "preview_id": format!("tool-preview-{iteration}-{tool_index}"),
+                    "run_id": is_agentic.then_some(session_id.as_str()),
+                    "agent_id": is_agentic.then_some("director"),
+                    "phase": is_agentic.then_some(mode.as_str()),
                 }),
             );
 
@@ -4987,6 +5088,9 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     "ok": ok,
                     "content": preview,
                     "streamed": streamed,
+                    "run_id": is_agentic.then_some(session_id.as_str()),
+                    "agent_id": is_agentic.then_some("director"),
+                    "phase": is_agentic.then_some(mode.as_str()),
                 }),
             );
 
