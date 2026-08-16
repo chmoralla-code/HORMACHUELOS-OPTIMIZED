@@ -3158,6 +3158,54 @@ Describe each image briefly in the visible reply. Do not mention vision provider
                             && crate::desktop_computer_use::status().supported
                     )
                 );
+                let mut agentic_evidence = String::new();
+                if let Some(plan) = agentic_plan.as_ref() {
+                    if plan.multi_agent {
+                        agentic_workers = crate::cursor_bridge::run_cursor_agentic_workers(
+                            app.clone(),
+                            &project_root,
+                            &user_request,
+                            &key,
+                            &settings.model,
+                            &effort,
+                            settings.command_timeout_secs,
+                            &session_id,
+                            run.clone(),
+                            &plan.workers,
+                        )
+                        .await;
+                        agentic_evidence = crate::agentic::evidence_context(&agentic_workers);
+                        if run.cancel.load(Ordering::SeqCst) {
+                            crate::agentic::emit_phase(
+                                &app,
+                                &session_id,
+                                crate::agentic::AgenticPhase::MultiAgent,
+                                crate::agentic::AgenticPhaseState::Cancelled,
+                                "Cancelled with the parent run.",
+                            );
+                            emit_cancelled(&app, &session_id, 0);
+                            return Ok(None);
+                        }
+                    }
+                    if plan.research {
+                        crate::agentic::emit_phase(
+                            &app,
+                            &session_id,
+                            crate::agentic::AgenticPhase::Research,
+                            crate::agentic::AgenticPhaseState::Completed,
+                            "Workspace evidence is ready for Director synthesis.",
+                        );
+                    }
+                    if plan.build {
+                        crate::agentic::emit_phase(
+                            &app,
+                            &session_id,
+                            crate::agentic::AgenticPhase::Build,
+                            crate::agentic::AgenticPhaseState::Active,
+                            "The Director is the sole writer for implementation and verification.",
+                        );
+                    }
+                }
                 let wrapped_prompt = format!(
                     "{identity}\n\n{policy}\n\n{visible_reply}{computer_policy}{completion_contract}{smart_agent_policy}{task_profile_policy}{execution_profile_policy}{trading_policy}\n\n{project_context}{flavour_context}\n\n\
 IN-APP PREVIEW:\n\
@@ -3178,6 +3226,7 @@ Current user request:\n{prompt}",
                     flavour_context = flavour_context,
                     prompt = prompt,
                 );
+                let wrapped_prompt = format!("{wrapped_prompt}{agentic_evidence}");
                 let resume_agent_id =
                     cursor_resume_id_for_task(cursor_resume_agent_id.clone(), task_profile);
                 let cursor_result = crate::cursor_bridge::run_cursor_turn(
