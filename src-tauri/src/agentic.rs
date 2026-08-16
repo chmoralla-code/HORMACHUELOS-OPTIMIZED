@@ -179,32 +179,37 @@ impl AgenticPlan {
                 "read-only",
             ],
         ) || (explicit_plan && !plan_requests_build);
-        let explicit_mutation_request = has_any(
-            &format!(" {input} "),
+        let padded = format!(" {input} ");
+        let mutation_action = has_any(
+            &padded,
             &[
-                " can you implement ",
-                " can you fix ",
-                " can you add ",
-                " can you build ",
-                " can you create ",
-                " can you change ",
-                " can you update ",
-                " can you improve ",
-                " can you refactor ",
-                " can you remove ",
-                " can you delete ",
-                " can you apply ",
-                " could you implement ",
-                " could you fix ",
-                " could you add ",
-                " could you update ",
-                " please implement ",
-                " please fix ",
-                " please add ",
-                " please update ",
-                " please improve ",
+                " implement ",
+                " fix ",
+                " add ",
+                " build ",
+                " create ",
+                " change ",
+                " update ",
+                " improve ",
+                " refactor ",
+                " remove ",
+                " delete ",
+                " rename ",
+                " move ",
+                " replace ",
+                " install ",
+                " deploy ",
+                " release ",
+                " publish ",
+                " write ",
+                " apply ",
+                " tweak ",
             ],
         );
+        let explicit_mutation_request = starts_with_any(
+            &input,
+            &["can you ", "could you ", "would you ", "will you ", "please "],
+        ) && mutation_action;
         let explanatory_question = !explicit_mutation_request
             && (asked_as_question
                 || starts_with_any(
@@ -224,34 +229,7 @@ impl AgenticPlan {
                         "should we ",
                     ],
                 ));
-        let mutation = !plan_only
-            && !explanatory_question
-            && has_any(
-                &format!(" {input} "),
-                &[
-                    " implement ",
-                    " fix ",
-                    " add ",
-                    " build ",
-                    " create ",
-                    " change ",
-                    " update ",
-                    " improve ",
-                    " refactor ",
-                    " remove ",
-                    " delete ",
-                    " rename ",
-                    " move ",
-                    " replace ",
-                    " install ",
-                    " deploy ",
-                    " release ",
-                    " publish ",
-                    " write ",
-                    " apply ",
-                    " tweak ",
-                ],
-            );
+        let mutation = !plan_only && !explanatory_question && mutation_action;
         let investigation = has_any(
             &input,
             &[
@@ -1214,6 +1192,127 @@ mod tests {
         assert!(heading.plan && heading.research && heading.build && !heading.multi_agent);
         let broad = AgenticPlan::classify("Improve frontend, backend, and tests");
         assert!(broad.plan && broad.research && broad.multi_agent && broad.build);
+    }
+
+    #[test]
+    fn question_shape_never_silently_authorizes_build() {
+        for request in [
+            "How can I fix this heading?",
+            "Should we refactor the backend?",
+            "Explain how to delete this file",
+            "What files should I change?",
+        ] {
+            assert!(!AgenticPlan::classify(request).build, "{request}");
+        }
+        for request in [
+            "Can you fix this heading?",
+            "Could you remove the obsolete file?",
+            "Please publish this release",
+        ] {
+            assert!(AgenticPlan::classify(request).build, "{request}");
+        }
+        let plan = AgenticPlan::classify("Create a plan for improving the frontend");
+        assert!(plan.plan && !plan.build);
+    }
+
+    #[test]
+    fn structured_decomposition_is_strict_and_bounded() {
+        let valid = parse_specs(
+            r#"{"workers":[{"role":"Frontend","assignment":"Inspect layout evidence."},{"role":"Tests","assignment":"Inspect test coverage."}]}"#,
+        )
+        .expect("valid two-worker plan");
+        assert_eq!(valid.len(), 2);
+        assert_eq!(valid[0].id, "worker-1");
+        assert!(parse_specs(r#"{"workers":[{"role":"Only","assignment":"One worker is invalid."}]}"#).is_none());
+        assert!(parse_specs("not json").is_none());
+    }
+
+    #[test]
+    fn delivery_board_reports_partial_and_unverified_states_honestly() {
+        let build = AgenticPlan::classify("Improve frontend and backend");
+        let failed = AgenticWorkerResult {
+            id: "worker-1".into(),
+            name: "Worker 1".into(),
+            role: "Reviewer".into(),
+            assignment: "Inspect evidence.".into(),
+            status: "failed".into(),
+            tool_count: 0,
+            total_tokens: 17,
+            result_summary: "Provider failed.".into(),
+            error: Some("permanent".into()),
+        };
+        let partial = completion_payload(
+            &build,
+            std::slice::from_ref(&failed),
+            "Integrated available evidence.",
+            &["src/main.ts".into()],
+            &["Improved routing.".into()],
+            &[AgenticVerificationEvidence {
+                name: "Tests".into(),
+                status: "passed".into(),
+                evidence: "Mock tests passed.".into(),
+                tool_id: Some("test-1".into()),
+            }],
+            23,
+            2,
+            50,
+        );
+        assert_eq!(partial["status"], "partial");
+        assert_eq!(partial["facts"]["totalTokens"], 40);
+        assert_eq!(partial["facts"]["workers"], 1);
+
+        let unverified = completion_payload(
+            &build,
+            &[],
+            "Changed the heading.",
+            &["src/view.ts".into()],
+            &[],
+            &[],
+            0,
+            0,
+            10,
+        );
+        assert_eq!(unverified["status"], "needs_attention");
+        assert_eq!(unverified["verification"].as_array().unwrap().len(), 0);
+        assert!(!unverified["risks"].as_array().unwrap().is_empty());
+
+        let read_only = AgenticPlan::classify("Audit security and tests");
+        let audit = completion_payload(
+            &read_only,
+            &[],
+            "Audit complete.",
+            &[],
+            &[],
+            &[],
+            0,
+            0,
+            10,
+        );
+        assert_eq!(audit["status"], "completed");
+        assert!(audit["changes"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn shared_worker_gate_overlaps_without_exceeding_three() {
+        use std::sync::atomic::AtomicUsize;
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let mut tasks = JoinSet::new();
+        for _ in 0..6 {
+            let active = active.clone();
+            let maximum = maximum.clone();
+            tasks.spawn(async move {
+                let _permit = worker_semaphore().acquire_owned().await.unwrap();
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+        while tasks.join_next().await.is_some() {}
+        let observed = maximum.load(Ordering::SeqCst);
+        assert!((2..=MAX_AGENTIC_WORKERS).contains(&observed));
     }
 
     #[test]
