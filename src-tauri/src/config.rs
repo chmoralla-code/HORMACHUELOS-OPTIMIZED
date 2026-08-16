@@ -962,9 +962,9 @@ mod tests {
             serde_json::from_str(&json).expect("reload AGENTIC settings from saved JSON");
         loaded.capability_mode =
             normalize_capability_for_mode(&loaded.permission_mode, &loaded.capability_mode);
-        loaded
-            .validate()
-            .unwrap_or_else(|error| panic!("reloaded AGENTIC + {capability} must validate: {error}"));
+        loaded.validate().unwrap_or_else(|error| {
+            panic!("reloaded AGENTIC + {capability} must validate: {error}")
+        });
         assert_eq!(loaded.permission_mode, "agentic");
         assert_eq!(loaded.capability_mode, capability);
     }
