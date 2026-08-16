@@ -293,6 +293,36 @@ export class AgenticWorkbench {
     this.announce(`Run ${label(value.status)}. ${value.outcome}`);
   }
 
+  finish(reason: string): void {
+    if (this.terminal) return;
+    const failedTools = [...this.tools.values()].filter((tool) => tool.state === "failed").length;
+    const successful = ["completed", "no_tool_calls"].includes(reason.trim().toLowerCase());
+    this.complete({
+      status: successful && failedTools === 0 ? "partial" : "needs_attention",
+      outcome: successful
+        ? "The answer finished, but the provider did not return a structured Delivery Board."
+        : `The run ended with ${label(reason)} before structured delivery evidence was available.`,
+      changes: [],
+      verification: [],
+      contributions: [...this.agents.values()].map((agent) => ({
+        agentId: agent.id,
+        name: agent.name,
+        result: agent.resultSummary || "No final contribution was recorded.",
+      })),
+      risks: ["Structured completion evidence is unavailable for this run."],
+      nextActions: successful ? [] : ["Inspect the run details and retry the incomplete phase."],
+      facts: {
+        elapsedMs: Date.now() - this.startedAt,
+        totalTokens: [...this.agents.values()].reduce(
+          (sum, agent) => sum + (agent.usage?.totalTokens || 0), 0,
+        ),
+        workers: [...this.agents.values()].filter((agent) => agent.id !== "director").length,
+        tools: this.tools.size,
+        changedFiles: 0,
+      },
+    });
+  }
+
   cancel(): void {
     if (this.terminal) return;
     for (const { id } of PHASES) {
