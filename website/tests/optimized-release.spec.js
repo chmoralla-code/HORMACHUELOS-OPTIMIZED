@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const VERSION = "1.2.16";
+const VERSION = "1.3.0";
 const RELEASE_BASE =
   `https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v${VERSION}`;
 const BASE_URL = process.env.HORMACHUELOS_WEBSITE_TEST_URL || "http://127.0.0.1:5174";
@@ -31,11 +31,11 @@ for (const viewport of [
     await expect(card).toBeVisible();
     await expect(card.locator("h3")).toHaveText(`Hormachuelos Optimized v${VERSION}`);
     await expect(card.locator("li")).toHaveCount(5);
-    await expect(card).toContainText("One-command rollback");
-    await expect(card).toContainText("Clearline AI replies");
-    await expect(card).toContainText("Mission Control");
-    await expect(card).toContainText("Workspace Time Machine");
-    await expect(card).toContainText("Test & Fix Everything");
+    await expect(card).toContainText("AGENTIC Director");
+    await expect(card).toContainText("Real read-only workers");
+    await expect(card).toContainText("Execution Workbench");
+    await expect(card).toContainText("Evidence-backed Delivery Board");
+    await expect(card).toContainText("Clearline answers and safety");
 
     await expect(page.locator("#optimized-exe")).toHaveAttribute(
       "href",
