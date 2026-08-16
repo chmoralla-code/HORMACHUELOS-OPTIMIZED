@@ -857,15 +857,17 @@ export function normalizeSettings(s: Settings): Settings {
     ? "adaptive"
     : rawMode === "full"
       ? "build"
-      : ["adaptive", "ask", "research", "plan", "build", "multi_agent"].includes(rawMode)
+      : ["adaptive", "agentic", "ask", "research", "plan", "build", "multi_agent"].includes(rawMode)
         ? rawMode
         : "adaptive";
   s.auto_approve =
     s.permission_mode === "adaptive" ||
+    s.permission_mode === "agentic" ||
     s.permission_mode === "build" ||
     s.permission_mode === "multi_agent";
   const capsByMode: Record<string, string[]> = {
     adaptive: ["balanced", "agent"],
+    agentic: ["orchestrated", "thorough"],
     ask: ["answer_max", "brief"],
     research: ["investigate", "answer_max"],
     plan: ["thinking", "guided"],
@@ -1546,6 +1548,7 @@ export class SettingsModal {
       const sel = el("select", { class: "field" }) as HTMLSelectElement;
       for (const [value, label] of [
         ["adaptive", "Adaptive Director (recommended) — auto-route each turn by intent, complexity, and risk"],
+        ["agentic", "AGENTIC — adaptive phases, isolated read-only workers, one writer"],
         ["ask", "Ask — direct bounded answer; project writes locked"],
         ["research", "Research — deep read-only evidence, cross-checking, and synthesis"],
         ["plan", "Plan — scope, decisions, acceptance criteria, and verification before changes"],
@@ -1559,12 +1562,12 @@ export class SettingsModal {
       sel.addEventListener("change", () => {
         this.settings.permission_mode = sel.value;
         this.settings.auto_approve =
-          sel.value === "adaptive" || sel.value === "build" || sel.value === "multi_agent";
+          sel.value === "adaptive" || sel.value === "agentic" || sel.value === "build" || sel.value === "multi_agent";
       });
       return sel;
     }));
     body.appendChild(el("div", { class: "set-hint", style: "margin-top:-6px;margin-bottom:12px" }, [
-      "Adaptive keeps your selection stable while routing each turn to Ask, Research, Plan, Build, or Parallel. Ask is direct and bounded. Research performs deeper read-only evidence gathering. Plan stays locked until Apply. Build uses one focused owner and verifies the requested change. Parallel is for genuinely separable workstreams; dependent edits remain ordered and one Director synthesizes the delivery.",
+      "Adaptive keeps your selection stable while routing each turn to Ask, Research, Plan, Build, or Parallel. AGENTIC is opt-in and adds a split Execution Workbench, real isolated read-only workers when workstreams are independent, and one Director-controlled writer. Ask is direct and bounded. Research performs deeper read-only evidence gathering. Plan stays locked until Apply. Build uses one focused owner and verifies the requested change. Parallel is for genuinely separable workstreams; dependent edits remain ordered and one Director synthesizes the delivery.",
     ]));
 
     body.appendChild(this.renderComputerUsePanel());
@@ -1664,6 +1667,7 @@ export class SettingsModal {
       this.settings.permission_mode = (this.settings.permission_mode || "adaptive").toLowerCase();
       this.settings.auto_approve =
         this.settings.permission_mode === "adaptive" ||
+        this.settings.permission_mode === "agentic" ||
         this.settings.permission_mode === "build" ||
         this.settings.permission_mode === "multi_agent";
       try {
