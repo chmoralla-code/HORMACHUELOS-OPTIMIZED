@@ -21,9 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 fn oauth_client_id() -> String {
     format!(
         "{}-{}.{}",
-        "681255809395",
-        "oo8ft2oprdrnp9e3aqf6av3hmdib135j",
-        "apps.googleusercontent.com"
+        "681255809395", "oo8ft2oprdrnp9e3aqf6av3hmdib135j", "apps.googleusercontent.com"
     )
 }
 
