@@ -928,41 +928,50 @@ fn handle_event(
         "usage" => {
             let raw = event.turn_tokens.unwrap_or(0);
             let billable = crate::license::to_billable_tokens("cursor", model, raw);
+            activity.total_tokens = activity
+                .total_tokens
+                .saturating_add(event.total_tokens.unwrap_or(raw));
             // Cursor uses the customer's Cursor subscription/API key. It is
             // useful to show per-session tokens, but it must never burn or
             // hard-stop the separate Hormachuelos hosted-plan wallet.
-            emit(
-                app,
-                session_id,
-                "usage",
-                json!({
-                    "iteration": event.iteration.unwrap_or(0),
-                    "turn_tokens": billable,
-                    "raw_tokens": raw,
-                    "total_tokens": event.total_tokens.unwrap_or(raw),
-                    "license": null,
-                }),
-            );
+            if scope.is_none() {
+                emit(
+                    app,
+                    session_id,
+                    "usage",
+                    json!({
+                        "iteration": event.iteration.unwrap_or(0),
+                        "turn_tokens": billable,
+                        "raw_tokens": raw,
+                        "total_tokens": event.total_tokens.unwrap_or(raw),
+                        "license": null,
+                    }),
+                );
+            }
         }
         "error" => {
             let msg = event
                 .message
                 .or(event.text)
                 .unwrap_or_else(|| "Cursor SDK error".into());
-            emit(
-                app,
-                session_id,
-                "text",
-                json!({ "text": format!("Error: {msg}") }),
-            );
+            if scope.is_none() {
+                emit(
+                    app,
+                    session_id,
+                    "text",
+                    json!({ "text": format!("Error: {msg}") }),
+                );
+            }
             *saw_error = Some(msg);
         }
         "status" => {
-            let message = event
-                .message
-                .or(event.text)
-                .unwrap_or_else(|| "Working…".into());
-            emit(app, session_id, "status", json!({ "message": message }));
+            if scope.is_none() {
+                let message = event
+                    .message
+                    .or(event.text)
+                    .unwrap_or_else(|| "Working…".into());
+                emit(app, session_id, "status", json!({ "message": message }));
+            }
         }
         _ => {}
     }
