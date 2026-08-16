@@ -61,7 +61,7 @@ jobs:
   native-compile:
     name: Windows native compile
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Check out source
         uses: actions/checkout@v5
@@ -83,6 +83,9 @@ jobs:
 
       - name: Compile native library
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Run native AGENTIC and regression tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
 
 
   reply-layout-browser:
