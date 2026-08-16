@@ -55,11 +55,11 @@ pub struct Settings {
     pub max_iterations: u32,
     pub command_timeout_secs: u64,
     pub auto_approve: bool,
-    /// Permission mode: adaptive | ask | research | plan | build | multi_agent.
+    /// Permission mode: adaptive | agentic | ask | research | plan | build | multi_agent.
     /// Legacy auto/full values are migrated to adaptive/build.
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
-    /// Capability chip: thinking | guided | agent | balanced | investigate | brief | autonomous | max
+    /// Capability chip: thinking | guided | agent | balanced | investigate | brief | autonomous | max | orchestrated | thorough
     #[serde(default = "default_capability_mode")]
     pub capability_mode: String,
     /// Mix English + Filipino (Taglish) in agent replies — PH freelancer default off.
@@ -165,6 +165,7 @@ fn is_hormachuelos_model_alias(model: &str) -> bool {
 fn capability_for_mode(mode: &str) -> &'static str {
     match mode {
         "adaptive" | "auto" => "balanced",
+        "agentic" => "orchestrated",
         "ask" => "answer_max",
         "research" => "investigate",
         "build" | "full" => "agent",
@@ -178,6 +179,7 @@ pub(crate) fn normalize_capability_for_mode(mode: &str, capability: &str) -> Str
     let capability = capability.trim().to_ascii_lowercase();
     let allowed = match mode.as_str() {
         "adaptive" | "auto" => matches!(capability.as_str(), "balanced" | "agent"),
+        "agentic" => matches!(capability.as_str(), "orchestrated" | "thorough"),
         "ask" => matches!(capability.as_str(), "answer_max" | "brief"),
         "research" => matches!(capability.as_str(), "investigate" | "answer_max"),
         "plan" => matches!(capability.as_str(), "thinking" | "guided"),
@@ -287,7 +289,7 @@ impl Settings {
         // Keep auto_approve in sync with mode for older code paths
         let mode = s.permission_mode.to_ascii_lowercase();
         match mode.as_str() {
-            "adaptive" | "multi_agent" => {
+            "adaptive" | "agentic" | "multi_agent" => {
                 s.permission_mode = mode;
                 s.auto_approve = true;
             }
@@ -317,7 +319,7 @@ impl Settings {
                 };
                 s.auto_approve = matches!(
                     s.permission_mode.as_str(),
-                    "adaptive" | "build" | "multi_agent"
+                    "adaptive" | "agentic" | "build" | "multi_agent"
                 );
             }
         }

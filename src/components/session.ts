@@ -1,6 +1,17 @@
 // Session storage and types — persisted to localStorage per project.
 
+import type {
+  AgenticAgent,
+  AgenticCompletion,
+  AgenticPhase,
+  AgenticPhaseState,
+} from "../ipc";
 import { looksLikeProvisionalToolNarration, mergeReasoningStream, normalizeAssistantMarkdown } from "./util";
+
+export type AgenticRunSnapshot = {
+  phases: { phase: AgenticPhase; state: AgenticPhaseState }[];
+  agents: AgenticAgent[];
+};
 
 export type SessionMessage =
   | {
@@ -14,18 +25,23 @@ export type SessionMessage =
   /** Restores the visual run mode when a transcript is opened again. */
   | {
       type: "run_start";
-      permissionMode: "ask" | "research" | "plan" | "build" | "multi_agent";
+      permissionMode: "agentic" | "ask" | "research" | "plan" | "build" | "multi_agent";
       executionProfile?: "fast" | "balanced" | "thorough" | "safe";
+      runId?: string;
+      agenticState?: AgenticRunSnapshot;
       at?: number;
     }
+  | { type: "agentic_plan"; runId: string; phases: { phase: AgenticPhase; state: AgenticPhaseState }[]; maxWorkers: number; at?: number }
+  | { type: "agentic_phase"; runId: string; phase: AgenticPhase; state: AgenticPhaseState; detail?: string; at?: number }
+  | { type: "agentic_agent"; runId: string; agent: AgenticAgent; at?: number }
   /** Keeps the visual Multi-Agent activity batch with the session it belongs to. */
   | { type: "multi_agent_batch"; tools: SessionMultiAgentTool[]; at?: number }
   | { type: "thinking"; iteration: number; text: string; at?: number }
   | { type: "assistant"; text: string; at?: number }
-  | { type: "tool_call"; id: string; name: string; arguments: any; at?: number }
-  | { type: "tool_result"; id: string; name: string; ok: boolean; content: string; at?: number }
+  | { type: "tool_call"; id: string; name: string; arguments: any; runId?: string; agentId?: string; phase?: AgenticPhase; at?: number }
+  | { type: "tool_result"; id: string; name: string; ok: boolean; content: string; runId?: string; agentId?: string; phase?: AgenticPhase; at?: number }
   | { type: "question"; id: string; question: string; options: string[]; allow_other: boolean; answer: string | null; at?: number }
-  | { type: "done"; summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; kind?: string; at?: number; workMs?: number }
+  | { type: "done"; summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; kind?: string; agentic?: AgenticCompletion; at?: number; workMs?: number }
   | { type: "end"; reason: string; at?: number; workMs?: number }
   | { type: "cancelled"; at?: number; workMs?: number };
 
@@ -189,7 +205,10 @@ function mergeTurnAssistant(turn: SessionMessage[]): Extract<SessionMessage, { t
 
 function coalesceOneTurn(turn: SessionMessage[]): SessionMessage[] {
   if (!turn.length) return [];
-  const thinking = mergeTurnThinking(turn);
+  const agentic = turn.some(
+    (message) => message.type === "run_start" && message.permissionMode === "agentic",
+  );
+  const thinking = agentic ? null : mergeTurnThinking(turn);
   const assistant = mergeTurnAssistant(turn);
   const head: SessionMessage[] = [];
   const body: SessionMessage[] = [];
@@ -513,8 +532,9 @@ export function appendMultiAgentBatchSnapshot(
 
 export function normalizeSessionPermissionMode(
   value: unknown,
-): "ask" | "research" | "plan" | "build" | "multi_agent" {
+): "agentic" | "ask" | "research" | "plan" | "build" | "multi_agent" {
   const mode = String(value || "").trim().toLowerCase();
+  if (mode === "agentic") return "agentic";
   if (mode === "research") return "research";
   if (mode === "ask") return "ask";
   if (mode === "build" || mode === "auto" || mode === "full") return "build";
@@ -532,6 +552,16 @@ function redactSessionMessage(message: SessionMessage): SessionMessage {
           ? redactChatCredentials(message.agentText)
           : undefined,
       };
+    case "run_start":
+      return {
+        ...message,
+        agenticState: message.agenticState
+          ? {
+              phases: message.agenticState.phases.slice(0, 5),
+              agents: message.agenticState.agents.slice(0, 4).map(sanitizeAgenticAgent),
+            }
+          : undefined,
+      };
     case "assistant":
     case "thinking":
       return { ...message, text: redactChatCredentials(message.text) };
@@ -539,6 +569,20 @@ function redactSessionMessage(message: SessionMessage): SessionMessage {
       return {
         ...message,
         arguments: redactToolArguments(message.name, message.arguments),
+      };
+    case "agentic_phase":
+      return { ...message, detail: message.detail ? redactChatCredentials(message.detail) : undefined };
+    case "agentic_agent":
+      return {
+        ...message,
+        agent: {
+          ...message.agent,
+          role: redactChatCredentials(message.agent.role),
+          assignment: redactChatCredentials(message.agent.assignment),
+          resultSummary: message.agent.resultSummary
+            ? redactChatCredentials(message.agent.resultSummary)
+            : undefined,
+        },
       };
     case "multi_agent_batch":
       return {
@@ -563,10 +607,43 @@ function redactSessionMessage(message: SessionMessage): SessionMessage {
         files: message.files.map(redactChatCredentials),
         tech: message.tech.map(redactChatCredentials),
         features: message.features.map(redactChatCredentials),
+        agentic: message.agentic ? redactAgenticCompletion(message.agentic) : undefined,
       };
     default:
       return { ...message };
   }
+}
+
+function redactAgenticCompletion(value: AgenticCompletion): AgenticCompletion {
+  return {
+    ...value,
+    outcome: redactChatCredentials(value.outcome),
+    changes: (value.changes || []).slice(0, 40).map((change) => ({
+      behavior: redactChatCredentials(change.behavior),
+      files: change.files?.slice(0, 80).map(redactChatCredentials),
+    })),
+    verification: (value.verification || []).slice(0, 40).map((check) => ({
+      ...check,
+      name: redactChatCredentials(check.name),
+      evidence: redactChatCredentials(check.evidence),
+    })),
+    contributions: (value.contributions || []).slice(0, 4).map((item) => ({
+      ...item,
+      name: redactChatCredentials(item.name),
+      result: redactChatCredentials(item.result),
+    })),
+    risks: (value.risks || []).slice(0, 20).map(redactChatCredentials),
+    nextActions: (value.nextActions || []).slice(0, 20).map(redactChatCredentials),
+  };
+}
+
+function latestRunIsAgentic(messages: SessionMessage[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.type === "run_start") return message.permissionMode === "agentic";
+    if (message.type === "user") break;
+  }
+  return false;
 }
 
 function boundedStoredText(value: string, max: number, label: string): string {
@@ -1295,6 +1372,38 @@ export function buildLlmHistory(messages: SessionMessage[], currentPrompt: strin
   }));
 }
 
+function latestAgenticRunStart(
+  messages: SessionMessage[],
+  runId?: string,
+): Extract<SessionMessage, { type: "run_start" }> | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.type === "user") break;
+    if (
+      message.type === "run_start"
+      && message.permissionMode === "agentic"
+      && (!runId || !message.runId || message.runId === runId)
+    ) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function sanitizeAgenticAgent(value: any): AgenticAgent {
+  return {
+    ...value,
+    id: clip(redactChatCredentials(value?.id || ""), 96),
+    name: clip(redactChatCredentials(value?.name || "Worker"), 96),
+    role: clip(redactChatCredentials(value?.role || ""), 240),
+    assignment: clip(redactChatCredentials(value?.assignment || ""), 600),
+    resultSummary: value?.resultSummary
+      ? clip(redactChatCredentials(value.resultSummary), 1_400)
+      : undefined,
+    toolCount: Math.max(0, Math.min(10_000, Number(value?.toolCount) || 0)),
+  } as AgenticAgent;
+}
+
 /** Append an agent event into a session transcript (no DOM). Used for background sessions. */
 export function recordAgentEvent(
   messages: SessionMessage[],
@@ -1302,26 +1411,94 @@ export function recordAgentEvent(
     kind: string;
     payload: any;
   },
+  atOverride?: number,
 ): void {
-  const at = Date.now();
+  const at = atOverride ?? Date.now();
   switch (e.kind) {
-    case "start":
+    case "start": {
+      const permissionMode = normalizeSessionPermissionMode(e.payload?.permission_mode);
       messages.push({
         type: "run_start",
-        permissionMode: normalizeSessionPermissionMode(e.payload?.permission_mode),
+        permissionMode,
         executionProfile: e.payload?.execution_profile,
+        runId: e.payload?.run_id,
+        agenticState: permissionMode === "agentic" ? { phases: [], agents: [] } : undefined,
         at,
       });
       break;
+    }
+    case "agentic_plan": {
+      const phases = (e.payload.phases || []).slice(0, 5);
+      const start = latestAgenticRunStart(messages, e.payload.run_id);
+      if (start) {
+        start.runId = e.payload.run_id;
+        start.agenticState = {
+          phases,
+          agents: start.agenticState?.agents || [],
+        };
+      }
+      messages.push({
+        type: "agentic_plan",
+        runId: e.payload.run_id,
+        phases,
+        maxWorkers: Math.max(0, Math.min(3, Number(e.payload.max_workers) || 3)),
+        at,
+      });
+      break;
+    }
+    case "agentic_phase": {
+      const start = latestAgenticRunStart(messages, e.payload.run_id);
+      if (start?.agenticState) {
+        const existing = start.agenticState.phases.find(
+          (item) => item.phase === e.payload.phase,
+        );
+        if (existing) existing.state = e.payload.state;
+        else if (start.agenticState.phases.length < 5) {
+          start.agenticState.phases.push({
+            phase: e.payload.phase,
+            state: e.payload.state,
+          });
+        }
+      }
+      messages.push({
+        type: "agentic_phase",
+        runId: e.payload.run_id,
+        phase: e.payload.phase,
+        state: e.payload.state,
+        detail: clip(redactChatCredentials(e.payload.detail || ""), 360),
+        at,
+      });
+      break;
+    }
+    case "agentic_agent": {
+      const agent = sanitizeAgenticAgent(e.payload.agent);
+      const start = latestAgenticRunStart(messages, e.payload.run_id);
+      if (start?.agenticState && agent.id) {
+        const index = start.agenticState.agents.findIndex((item) => item.id === agent.id);
+        if (index >= 0) start.agenticState.agents[index] = agent;
+        else if (start.agenticState.agents.length < 4) start.agenticState.agents.push(agent);
+      }
+      messages.push({
+        type: "agentic_agent",
+        runId: e.payload.run_id,
+        agent,
+        at,
+      });
+      break;
+    }
     case "multi_agent_batch": {
       appendMultiAgentBatchSnapshot(messages, e.payload?.tools, at);
       break;
     }
     case "thinking":
-      appendThinkingTranscriptEvent(messages, e.payload.iteration ?? 0, at);
+      if (!latestRunIsAgentic(messages)) {
+        appendThinkingTranscriptEvent(messages, e.payload.iteration ?? 0, at);
+      }
       break;
     case "reasoning": {
-      appendThinkingReasoningChunk(messages, e.payload.text || "", e.payload.iteration ?? 0, at);
+      if (!latestRunIsAgentic(messages)) {
+        appendThinkingReasoningChunk(messages, e.payload.text || "", e.payload.iteration ?? 0, at);
+      }
       break;
     }
     case "text": {
@@ -1340,6 +1517,9 @@ export function recordAgentEvent(
         id: e.payload.id,
         name: e.payload.name,
         arguments: redactToolArguments(e.payload.name, e.payload.arguments),
+        runId: e.payload.run_id,
+        agentId: e.payload.agent_id,
+        phase: e.payload.phase,
         at,
       });
       break;
@@ -1354,6 +1534,9 @@ export function recordAgentEvent(
         name: e.payload.name,
         ok: e.payload.ok,
         content: redactChatCredentials(e.payload.content || ""),
+        runId: e.payload.run_id,
+        agentId: e.payload.agent_id,
+        phase: e.payload.phase,
         at,
       });
       break;
@@ -1368,6 +1551,7 @@ export function recordAgentEvent(
         tech: (e.payload.tech || []).map(redactChatCredentials),
         features: (e.payload.features || []).map(redactChatCredentials),
         kind: e.payload.kind,
+        agentic: e.payload.agentic ? redactAgenticCompletion(e.payload.agentic) : undefined,
         at,
       });
       normalizeLatestAssistantMessage(messages);

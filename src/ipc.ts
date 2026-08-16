@@ -11,9 +11,9 @@ export type Settings = {
   max_iterations: number;
   command_timeout_secs: number;
   auto_approve: boolean;
-  /** adaptive | ask | research | plan | build | multi_agent (legacy: auto/full) */
+  /** adaptive | agentic | ask | research | plan | build | multi_agent (legacy: auto/full) */
   permission_mode: string;
-  /** thinking | guided | agent | balanced | investigate | brief | autonomous | max */
+  /** thinking | guided | agent | balanced | investigate | brief | autonomous | max | orchestrated | thorough */
   capability_mode: string;
   /** Reply in Taglish when enabled */
   taglish: boolean;
@@ -627,31 +627,73 @@ export type IntegrationTestResult = {
   detail: string | null;
 };
 
+export type AgenticPhase = "ask" | "plan" | "research" | "multi_agent" | "build";
+export type AgenticPhaseState = "pending" | "active" | "completed" | "skipped" | "failed" | "cancelled";
+export type AgenticAgentStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export type AgenticAgent = {
+  id: string;
+  name: string;
+  role: string;
+  assignment: string;
+  status: AgenticAgentStatus;
+  toolCount: number;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens: number };
+  resultSummary?: string;
+};
+
+export type AgenticVerification = {
+  name: string;
+  status: "passed" | "failed" | "not_run";
+  evidence: string;
+  toolId?: string;
+};
+
+export type AgenticCompletion = {
+  status: "completed" | "partial" | "needs_attention" | "cancelled";
+  outcome: string;
+  changes: { behavior: string; files?: string[] }[];
+  verification: AgenticVerification[];
+  contributions: { agentId: string; name: string; result: string }[];
+  risks: string[];
+  nextActions: string[];
+  facts: {
+    elapsedMs: number;
+    totalTokens: number;
+    workers: number;
+    tools: number;
+    changedFiles: number;
+  };
+};
+
 export type AgentEventPayload =
-  | { kind: "start"; payload: { prompt: string; permission_mode?: string; requested_permission_mode?: string; adaptive_reason?: string; adaptive_complexity?: "low" | "medium" | "high"; adaptive_risk?: "low" | "guarded" | "high"; smart_agent_enabled?: boolean; flavour_enabled?: boolean; task_profile?: AgentTaskProfile; execution_profile?: Exclude<AgentExecutionProfile, "auto">; repair_budget?: number; checkpoint_id?: string | null } }
+  | { kind: "start"; payload: { prompt: string; permission_mode?: string; requested_permission_mode?: string; effective_phase?: AgenticPhase; adaptive_reason?: string; adaptive_complexity?: "low" | "medium" | "high"; adaptive_risk?: "low" | "guarded" | "high"; smart_agent_enabled?: boolean; flavour_enabled?: boolean; task_profile?: AgentTaskProfile; execution_profile?: Exclude<AgentExecutionProfile, "auto">; repair_budget?: number; checkpoint_id?: string | null } }
+  | { kind: "agentic_plan"; payload: { run_id: string; phases: { phase: AgenticPhase; state: AgenticPhaseState }[]; max_workers: number } }
+  | { kind: "agentic_phase"; payload: { run_id: string; phase: AgenticPhase; state: AgenticPhaseState; detail?: string } }
+  | { kind: "agentic_agent"; payload: { run_id: string; agent: AgenticAgent } }
   | { kind: "task_plan"; payload: { title: string; summary: string; steps: { id: string; label: string; state: string }[]; active_step: number; status: string; detail?: string } }
   | { kind: "task_progress"; payload: { step: number; phase: string; status: string; detail: string; completed_before?: number; complete_all?: boolean } }
   | { kind: "thinking"; payload: { iteration: number } }
   | { kind: "status"; payload: { message: string; attempt?: number; detail?: string } }
   | { kind: "reasoning"; payload: { text: string; iteration?: number } }
   | { kind: "text"; payload: { text: string; continuation?: boolean } }
-  | { kind: "tool_preview"; payload: { id: string; name: string; arguments_delta?: string } }
-  | { kind: "tool_preview_end"; payload: { id: string; name: string; reason: string } }
+  | { kind: "tool_preview"; payload: { id: string; name: string; arguments_delta?: string; run_id?: string; agent_id?: string; phase?: AgenticPhase } }
+  | { kind: "tool_preview_end"; payload: { id: string; name: string; reason: string; run_id?: string; agent_id?: string; phase?: AgenticPhase } }
   | {
       kind: "multi_agent_batch";
       payload: {
         tools: { id: string; name: string; arguments: any }[];
       };
     }
-  | { kind: "tool_call"; payload: { id: string; name: string; arguments: any; preview_id?: string } }
+  | { kind: "tool_call"; payload: { id: string; name: string; arguments: any; preview_id?: string; run_id?: string; agent_id?: string; phase?: AgenticPhase } }
   | { kind: "integration_auth"; payload: { service: string; secure_entry: boolean } }
   | { kind: "tool_args_truncated"; payload: { id: string; preview: string } }
-  | { kind: "tool_result"; payload: { id: string; name: string; ok: boolean; content: string; streamed?: boolean } }
+  | { kind: "tool_result"; payload: { id: string; name: string; ok: boolean; content: string; streamed?: boolean; run_id?: string; agent_id?: string; phase?: AgenticPhase } }
   | { kind: "tool_confirm"; payload: { id: string; name: string; arguments: any; summary: string } }
   | { kind: "console_chunk"; payload: { stream: string; text: string } }
   | { kind: "usage"; payload: { iteration: number; turn_tokens: number; total_tokens: number; raw_tokens?: number; license?: LicenseStatus | null } }
   | { kind: "question"; payload: { id: string; question: string; options: string[]; allow_other: boolean } }
-  | { kind: "done"; payload: { summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; kind?: string; total_tokens?: number } }
+  | { kind: "done"; payload: { summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; kind?: string; total_tokens?: number; agentic?: AgenticCompletion } }
   | { kind: "cancelled"; payload: { iteration: number } }
   | { kind: "end"; payload: { reason: string; iteration: number; total_tokens?: number } };
 

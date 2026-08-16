@@ -5,6 +5,7 @@ import { icon, icons } from "./icons";
 
 export type PermissionMode =
   | "adaptive"
+  | "agentic"
   | "ask"
   | "research"
   | "plan"
@@ -12,7 +13,7 @@ export type PermissionMode =
   | "multi_agent";
 
 export type AdaptiveRouteSummary = {
-  mode: Exclude<PermissionMode, "adaptive">;
+  mode: Exclude<PermissionMode, "adaptive" | "agentic">;
   reason: string;
   complexity?: "low" | "medium" | "high";
   risk?: "low" | "guarded" | "high";
@@ -20,7 +21,7 @@ export type AdaptiveRouteSummary = {
 };
 
 const modeAutoApproves = (mode: PermissionMode) =>
-  mode === "adaptive" || mode === "build" || mode === "multi_agent";
+  mode === "adaptive" || mode === "agentic" || mode === "build" || mode === "multi_agent";
 
 /** Agent permission modes (OpenCode-style chip labels). */
 const MODES: {
@@ -37,6 +38,14 @@ const MODES: {
     title:
       "Adaptive Director (Auto) — routes each turn to Ask, Research, Plan, Build, or Parallel without changing your selection.",
     capability: "Balanced",
+  },
+  {
+    id: "agentic",
+    chip: "agentic",
+    label: "AGENTIC",
+    title:
+      "AGENTIC Workbench — an adaptive Director scopes, plans, researches, delegates read-only evidence work, and gives one writer control of implementation and verification.",
+    capability: "Orchestrated",
   },
   {
     id: "ask",
@@ -89,8 +98,19 @@ const CAPABILITIES: Record<
     { id: "balanced", label: "Director", title: "Score intent, complexity, and risk; choose the safest effective workflow" },
     { id: "agent", label: "Action", title: "Prefer focused implementation when intent clearly requests a change" },
   ],
-  ask: [
+  agentic: [
     {
+      id: "orchestrated",
+      label: "Orchestrated",
+      title: "Adaptive phases, real isolated evidence workers, and one Director-controlled writer",
+    },
+    {
+      id: "thorough",
+      label: "Thorough",
+      title: "Favor deeper decomposition and verification for broad requests",
+    },
+  ],
+  ask: [    {
       id: "answer_max",
       label: "Answer Max",
       title: "Reliable, complete answers with bounded evidence and automatic recovery",
@@ -436,6 +456,7 @@ export class ModelBar {
       this.settings.permission_mode = "build";
     } else if (
       m === "adaptive" ||
+      m === "agentic" ||
       m === "ask" ||
       m === "research" ||
       m === "plan" ||
@@ -541,6 +562,7 @@ export class ModelBar {
       this.renderProviderRail();
       const labels: Record<PermissionMode, string> = {
         adaptive: "Adaptive Director — automatic per-turn routing",
+        agentic: "AGENTIC — adaptive phases, isolated workers, one writer",
         ask: "Ask — direct bounded answer; no project writes",
         research: "Research — deep read-only evidence and synthesis",
         plan: "Plan — decisions and acceptance criteria before changes",
@@ -664,6 +686,7 @@ export class ModelBar {
       routeMeta ? `Mode: Adaptive, routed to ${routeMeta.label}` : `Mode: ${modeMeta.label}`,
       "chip-mode" +
         (mode === "multi_agent" ? " chip-mode-multi-agent" : "") +
+        (mode === "agentic" ? " chip-mode-agentic" : "") +
         (routeMeta ? " chip-mode-adaptive-routed" : ""),
     );
     modeBtn.addEventListener("click", (ev) => {
@@ -684,7 +707,9 @@ export class ModelBar {
         }, [
           m.id === "multi_agent"
             ? "parallel — Multi-Agent coordination"
-            : m.id === "adaptive"
+            : m.id === "agentic"
+              ? "agentic — AGENTIC Workbench"
+              : m.id === "adaptive"
               ? "auto — Adaptive Director (recommended)"
               : `${m.chip} — ${m.label}`,
         ]) as HTMLButtonElement;
@@ -877,7 +902,7 @@ export class ModelBar {
       const caps = CAPABILITIES[mode];
       const cap = caps.find((c) => c.id === this.capabilityId) || caps[0];
       const capWrap = el("div", { class: "chip-wrap" });
-      const agentic = mode === "adaptive" || mode === "build" || mode === "multi_agent";
+      const agentic = mode === "adaptive" || mode === "agentic" || mode === "build" || mode === "multi_agent";
       const capBtn = this.chipBtn(
         cap.label,
         cap.title,
@@ -1101,7 +1126,9 @@ export class ModelBar {
     const capability =
       mode === "adaptive"
         ? "balanced"
-        : mode === "ask"
+        : mode === "agentic"
+          ? "orchestrated"
+          : mode === "ask"
           ? "answer_max"
           : mode === "research"
             ? "investigate"
@@ -1113,7 +1140,9 @@ export class ModelBar {
     const status =
       mode === "adaptive"
         ? "Adaptive Director"
-        : mode === "ask"
+        : mode === "agentic"
+          ? "AGENTIC Workbench"
+          : mode === "ask"
           ? "Ask · Answer Max"
           : mode === "research"
             ? "Research · Deep evidence"

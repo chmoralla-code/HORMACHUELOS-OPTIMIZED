@@ -17,4 +17,6 @@ test("treats revision builds as newer than the same three-part version", () => {
   assert.equal(isVersionNewer("1.2.11-1", "1.2.11-1"), false);
   assert.equal(isVersionNewer("1.2.12", "1.2.11-beta"), true);
   assert.equal(compareAppVersion("1.2.11-2", "1.2.11-1") > 0, true);
+  assert.equal(isVersionNewer("1.3.0", "1.2.16"), true);
+  assert.equal(isVersionNewer("1.2.16", "1.3.0"), false);
 });

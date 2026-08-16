@@ -23,6 +23,7 @@ export default defineConfig({
         main: "src/index.html",
         computerFx: "src/computer-fx.html",
         replyLayout: "src/reply-layout-harness.html",
+        agenticLayout: "src/agentic-layout-harness.html",
       },
     },
   },

@@ -58,6 +58,9 @@ jobs:
       - name: Run reply-formatting guard
         run: npm run test:reply-formatting
 
+      - name: Run deterministic AGENTIC routing, permission, persistence, and UI guards
+        run: npm run test:agentic
+
       - name: Install Playwright test runner
         run: npm install --no-save --package-lock=false @playwright/test@1.55.0
 
@@ -66,6 +69,9 @@ jobs:
 
       - name: Test AI reply at desktop, narrow, and mobile widths
         run: npx playwright test --config=playwright.reply.config.mjs
+
+      - name: Test AGENTIC Workbench at desktop, narrow, and mobile widths
+        run: npx playwright test --config=playwright.agentic.config.mjs
 
       - name: Test the Optimized website release card
         run: npx playwright test --config=playwright.optimized-website.config.mjs
@@ -93,28 +99,37 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Safe chat rollback
+          releaseName: Hormachuelos Optimized v__VERSION__ · AGENTIC Workbench
           releaseBody: |
-            Independent FPS-focused Windows edition.
+            Optional feature release: **AGENTIC Workbench**.
 
-            Safe chat rollback in 1.2.16:
-            - typing rollback, roll back, revert, or undo now opens the protected Time Machine restoration flow
-            - deterministic host routing performs the rollback without calling a model or consuming AI usage
-            - Ask mode remains read-only for every ordinary edit; only explicit restoration commands use this path
-            - the existing confirmation dialog runs before files are restored
-            - newer user edits remain protected as conflicts instead of being overwritten
-            - chat reports complete, partial, cancelled, busy, unavailable, and error outcomes clearly
-            - Adaptive recognizes rollback as a guarded change request instead of falling back to an unable Ask reply
+            Adaptive phases:
+            - scopes every turn through Ask, Plan, Research, Multi-Agent, and Build
+            - skips phases that do not add value and never turns question-, plan-, or research-only requests into writes
+            - keeps Adaptive as the default; AGENTIC is separate and opt-in
+
+            Real workers, one writer:
+            - creates two or three isolated read-only workers only for independent evidence workstreams
+            - uses the selected provider, model, and effort without silent substitution
+            - enforces worker read-only permissions at schema and execution time
+            - keeps all mutation, integration, repair, verification, and delivery under one Director
+            - fans Stop out to queued and active workers and preserves an inspectable partial run
+
+            Execution Workbench:
+            - separate Progress, Tools, and Agents lanes replace stacked AGENTIC thought/tool cards
+            - wide, narrow-tabbed, and 390px mobile layouts are keyboard accessible and overflow-safe
+            - Clearline Markdown answers remain full-width below the lanes
+            - terminal runs collapse behind Inspect run and lead with an evidence-backed Delivery Board
+
+            Delivery Board:
+            - Outcome, Changes, Verification, Agent Contributions, Risks & Next Actions, and Run facts
+            - no inferred verification passes; unverified, partial, failed, and cancelled runs stay honest
+            - existing Time Machine, Review changes, Export Client Pack, Copy reply, and feedback actions remain compatible
 
             Remote release gates:
-            - rollback intent tests cover direct commands, polite commands, undo scope, how-to questions, negation, and ambiguous file-scoped requests
-            - TypeScript, production Vite build, Ask-mode guards, reply-formatting guards, and Rust formatting
-            - Playwright desktop, narrow, and mobile reply-layout coverage plus the v1.2.16 website card
-            - Windows native compilation and installer build
-
-            Also included from 1.2.15:
-            - Clearline AI replies with section dividers, stronger bold hierarchy, true nested lists, refined code and file chips, and visible reply actions
-            - Mission Control, Workspace Time Machine, Test & Fix Everything, Adaptive Director improvements, Gemini CLI support, and Desktop mode
+            - deterministic routing, permission, decomposition, cancellation, concurrency, persistence, and Cursor ownership coverage
+            - TypeScript, production build, FPS, Preview Computer Use, Ask-mode, reply-formatting, Cursor lifecycle, Rust formatting, and Windows native tests
+            - Playwright live/simple/success/partial/cancelled/unverified Workbench coverage at desktop, narrow, and mobile widths
 
             Windows note:
             - installers are not Authenticode-signed yet, so Windows may show Unknown publisher
@@ -128,5 +143,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: Type rollback or undo in chat to restore the latest protected AI change through Time Machine without model usage; Ask stays read-only, confirmations remain required, and newer user edits are preserved as conflicts. Includes Clearline AI replies, Mission Control, and Test & Fix Everything.
+          UPDATE_WHATS_NEW: Optional AGENTIC Workbench adds adaptive Ask-to-Build phases, up to three real isolated read-only evidence workers, one Director-controlled writer, split Progress/Tools/Agents lanes, and an evidence-backed Delivery Board. Adaptive remains the default and this update is not forced.
         run: node scripts/publish-update-manifest.mjs --push-pages
