@@ -2223,8 +2223,9 @@ async function sendPrompt(submission: ChatPromptSubmission) {
   const previousRunMode = [...chat.getMessages()]
     .reverse()
     .find((message) => message.type === "run_start")?.permissionMode ?? null;
+  const previousAdaptiveMode = previousRunMode === "agentic" ? null : previousRunMode;
   const adaptiveRoute = taskProfile === "default" && selectedMode === "adaptive"
-    ? inferAdaptiveRoute(visiblePrompt, previousRunMode)
+    ? inferAdaptiveRoute(visiblePrompt, previousAdaptiveMode)
       ?? {
         mode: "ask" as const,
         reason: "ambiguous request; safest useful route",
