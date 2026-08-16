@@ -5084,7 +5084,7 @@ fn normalized_permission_mode(mode: &str) -> String {
     match mode.trim().to_ascii_lowercase().as_str() {
         "auto" => "adaptive".into(),
         "full" => "build".into(),
-        "adaptive" | "ask" | "research" | "plan" | "build" | "multi_agent" => {
+        "adaptive" | "agentic" | "ask" | "research" | "plan" | "build" | "multi_agent" => {
             mode.trim().to_ascii_lowercase()
         }
         _ => "plan".into(),
