@@ -552,6 +552,16 @@ function redactSessionMessage(message: SessionMessage): SessionMessage {
           ? redactChatCredentials(message.agentText)
           : undefined,
       };
+    case "run_start":
+      return {
+        ...message,
+        agenticState: message.agenticState
+          ? {
+              phases: message.agenticState.phases.slice(0, 5),
+              agents: message.agenticState.agents.slice(0, 4).map(sanitizeAgenticAgent),
+            }
+          : undefined,
+      };
     case "assistant":
     case "thinking":
       return { ...message, text: redactChatCredentials(message.text) };
