@@ -2107,7 +2107,10 @@ mod tests {
         activity.record_tool_call("call-1", "grep", &json!({ "pattern": "agentic" }));
         assert!(!activity.made_concrete_progress);
         assert_eq!(
-            activity.open_tools.get("call-1").map(|(name, _)| name.as_str()),
+            activity
+                .open_tools
+                .get("call-1")
+                .map(|(name, _)| name.as_str()),
             Some("grep")
         );
 
