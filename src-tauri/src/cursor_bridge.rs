@@ -2104,23 +2104,23 @@ mod tests {
     #[test]
     fn failed_or_unresolved_cursor_tools_do_not_count_as_progress() {
         let mut activity = CursorPassActivity::default();
-        activity.record_tool_call("call-1", "grep");
+        activity.record_tool_call("call-1", "grep", &json!({ "pattern": "agentic" }));
         assert!(!activity.made_concrete_progress);
         assert_eq!(
-            activity.open_tools.get("call-1").map(String::as_str),
+            activity.open_tools.get("call-1").map(|(name, _)| name.as_str()),
             Some("grep")
         );
 
-        activity.record_tool_result("call-1", "grep", false);
+        activity.record_tool_result("call-1", "grep", false, "Search failed.");
         assert!(!activity.made_concrete_progress);
         assert!(activity.open_tools.is_empty());
 
-        activity.record_tool_call("todo-1", "TodoWrite");
-        activity.record_tool_result("todo-1", "TodoWrite", true);
+        activity.record_tool_call("todo-1", "TodoWrite", &json!({}));
+        activity.record_tool_result("todo-1", "TodoWrite", true, "Todo updated.");
         assert!(!activity.made_concrete_progress);
 
-        activity.record_tool_call("call-2", "read_file");
-        activity.record_tool_result("call-2", "read_file", true);
+        activity.record_tool_call("call-2", "read_file", &json!({ "path": "src/main.ts" }));
+        activity.record_tool_result("call-2", "read_file", true, "File contents.");
         assert!(activity.made_concrete_progress);
     }
 
