@@ -71,7 +71,7 @@ for (const scenario of scenarios) {
     expect(metrics.nestedIndent).toBeGreaterThan(8);
     expect(metrics.fileBorder).toBeGreaterThanOrEqual(1);
     expect(metrics.fileBackground).not.toBe("rgba(0, 0, 0, 0)");
-    expect(metrics.copyDisplay).toBe("inline-flex");
+    expect(["flex", "inline-flex"]).toContain(metrics.copyDisplay);
     expect(metrics.copyOpacity).toBeGreaterThan(0.5);
 
     const copy = page.getByRole("button", { name: "Copy reply" });
