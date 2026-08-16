@@ -153,30 +153,10 @@ async fn get_original_model_selection() -> Result<Option<config::OriginalModelSe
 
 #[tauri::command]
 async fn save_settings(
-    mut settings: config::Settings,
+    settings: config::Settings,
     state: tauri::State<'_, state::AppState>,
 ) -> Result<(), String> {
-    // Normalize permission mode + auto_approve together
-    let mode = settings.permission_mode.trim().to_ascii_lowercase();
-    settings.permission_mode = match mode.as_str() {
-        "auto" => "adaptive".into(),
-        "full" => "build".into(),
-        "adaptive" | "agentic" | "ask" | "research" | "plan" | "build" | "multi_agent" => mode,
-        _ => {
-            if settings.auto_approve {
-                "adaptive".into()
-            } else {
-                "plan".into()
-            }
-        }
-    };
-    settings.auto_approve = matches!(
-        settings.permission_mode.as_str(),
-        "adaptive" | "agentic" | "build" | "multi_agent"
-    );
-    settings.capability_mode =
-        config::normalize_capability_for_mode(&settings.permission_mode, &settings.capability_mode);
-    settings.validate().map_err(|e| e.to_string())?;
+    let mut settings = config::prepare_settings_for_save(settings).map_err(|e| e.to_string())?;
     settings.desktop_computer_use_allowed_apps =
         desktop_computer_use::sanitize_allowed_apps(settings.desktop_computer_use_allowed_apps);
     settings.save().map_err(|e| e.to_string())?;

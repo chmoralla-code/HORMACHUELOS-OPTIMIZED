@@ -35,6 +35,22 @@ export function escapeHtml(s: string): string {
   }[c]!));
 }
 
+/** Short, user-visible backend reason. Paths, URLs, and quotes are stripped. */
+export function sanitizedSettingsSaveError(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  const text = raw
+    .replace(/\\/g, "/")
+    .replace(/[A-Za-z]:\/\S+/g, "")
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/[`'"]/g, "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+  if (!text) return fallback;
+  return `${fallback}: ${text}`;
+}
+
 /**
  * Paint one lightweight live-activity label.
  *

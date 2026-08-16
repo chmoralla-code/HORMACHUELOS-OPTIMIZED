@@ -114,6 +114,33 @@ test("AGENTIC persistence excludes public reasoning and retains scoped evidence"
   assert.match(session, /atOverride \?\? Date\.now\(\)/);
 });
 
+test("save_settings persists AGENTIC with orchestrated or thorough capability", async () => {
+  const [config, lib, modelbar, util, harness, spec] = await Promise.all([
+    read("src-tauri/src/config.rs"),
+    read("src-tauri/src/lib.rs"),
+    read("src/components/modelbar.ts"),
+    read("src/components/util.ts"),
+    read("src/agentic-mode-harness.html"),
+    read("tests/agentic-mode.spec.mjs"),
+  ]);
+
+  assert.match(config, /"adaptive"\s*\|\s*"agentic"\s*\|\s*"ask"/);
+  assert.match(config, /"orchestrated"\s*\|\s*"thorough"/);
+  assert.match(config, /fn prepare_settings_for_save/);
+  assert.match(config, /fn agentic_orchestrated_settings_save_and_reload/);
+  assert.match(config, /fn agentic_thorough_settings_save_and_reload/);
+  assert.match(config, /fn save_settings_ipc_accepts_an_agentic_payload/);
+  assert.match(lib, /config::prepare_settings_for_save\(settings\)/);
+  assert.match(modelbar, /previousSettings/);
+  assert.match(modelbar, /previousCapabilityId/);
+  assert.match(modelbar, /sanitizedSettingsSaveError\(e, "Could not save mode"\)/);
+  assert.match(util, /export function sanitizedSettingsSaveError/);
+  assert.match(harness, /permission_mode: "ask"/);
+  assert.match(spec, /saved\?\.permission_mode\)\.toBe\("agentic"\)/);
+  assert.match(spec, /chip-mode-agentic/);
+  assert.match(spec, /not\.toContainText\("Could not save mode"\)/);
+});
+
 test("Execution Workbench and Delivery Board meet the responsive accessibility contract", async () => {
   const [component, css, harness, spec] = await Promise.all([
     read("src/components/agentic-workbench.ts"),
@@ -145,7 +172,7 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
   assert.match(spec, /reducedMotion/);
 });
 
-test("v1.3.0 release metadata is synchronized and remains optional", async () => {
+test("v1.3.1 release metadata is synchronized and remains optional", async () => {
   const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest] = await Promise.all([
     read("package.json"),
     read("package-lock.json"),
@@ -153,18 +180,18 @@ test("v1.3.0 release metadata is synchronized and remains optional", async () =>
     read("src-tauri/Cargo.lock"),
     read("src-tauri/tauri.conf.json"),
     read(".github/workflows/release-optimized.yml"),
-    read("release-notes/1.3.0.md"),
+    read("release-notes/1.3.1.md"),
     read("scripts/publish-update-manifest.mjs"),
   ]);
   const pkg = JSON.parse(pkgRaw);
-  assert.equal(pkg.version, "1.3.0");
-  assert.match(lock, /"version": "1\.3\.0"/);
-  assert.match(cargo, /version = "1\.3\.0"/);
-  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.0"/);
-  assert.equal(JSON.parse(tauri).version, "1.3.0");
+  assert.equal(pkg.version, "1.3.1");
+  assert.match(lock, /"version": "1\.3\.1"/);
+  assert.match(cargo, /version = "1\.3\.1"/);
+  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.1"/);
+  assert.equal(JSON.parse(tauri).version, "1.3.1");
   assert.match(workflow, /AGENTIC Workbench/);
   assert.match(workflow, /test:agentic/);
   assert.match(workflow, /playwright\.agentic\.config\.mjs/);
-  assert.match(notes, /This release is published as an optional feature update/);
+  assert.match(notes, /AGENTIC mode can be selected and persisted/);
   assert.match(manifest, /forceUpdate:\s*false/);
 });

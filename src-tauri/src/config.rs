@@ -194,6 +194,33 @@ pub(crate) fn normalize_capability_for_mode(mode: &str, capability: &str) -> Str
     }
 }
 
+/// Normalize permission/capability fields the same way `save_settings` does
+/// before the payload is validated and written. Tests use this as the IPC
+/// contract without opening a Tauri window or touching the user config file.
+pub(crate) fn prepare_settings_for_save(mut settings: Settings) -> Result<Settings> {
+    let mode = settings.permission_mode.trim().to_ascii_lowercase();
+    settings.permission_mode = match mode.as_str() {
+        "auto" => "adaptive".into(),
+        "full" => "build".into(),
+        "adaptive" | "agentic" | "ask" | "research" | "plan" | "build" | "multi_agent" => mode,
+        _ => {
+            if settings.auto_approve {
+                "adaptive".into()
+            } else {
+                "plan".into()
+            }
+        }
+    };
+    settings.auto_approve = matches!(
+        settings.permission_mode.as_str(),
+        "adaptive" | "agentic" | "build" | "multi_agent"
+    );
+    settings.capability_mode =
+        normalize_capability_for_mode(&settings.permission_mode, &settings.capability_mode);
+    settings.validate()?;
+    Ok(settings)
+}
+
 fn should_migrate_cursor_grok_to_xai(
     provider: &str,
     model: &str,
@@ -480,6 +507,7 @@ impl Settings {
             matches!(
                 self.permission_mode.as_str(),
                 "adaptive"
+                    | "agentic"
                     | "ask"
                     | "research"
                     | "plan"
@@ -488,7 +516,7 @@ impl Settings {
                     | "auto"
                     | "full"
             ),
-            "Permission mode must be adaptive, ask, research, plan, build, or multi_agent."
+            "Permission mode must be adaptive, agentic, ask, research, plan, build, or multi_agent."
         );
         ensure!(
             matches!(
@@ -502,6 +530,8 @@ impl Settings {
                     | "brief"
                     | "autonomous"
                     | "max"
+                    | "orchestrated"
+                    | "thorough"
             ),
             "Capability mode is invalid."
         );
@@ -750,7 +780,8 @@ mod tests {
     use super::{
         capability_for_mode, is_custom_hosted_provider_alias, is_hormachuelos_model_alias,
         normalize_capability_for_mode, original_model_selection_from_json,
-        should_migrate_cursor_grok_to_xai, validate_provider_id, Settings, XAI_API_BASE_URL,
+        prepare_settings_for_save, should_migrate_cursor_grok_to_xai, validate_provider_id,
+        Settings, XAI_API_BASE_URL,
     };
 
     #[test]
@@ -908,6 +939,60 @@ mod tests {
             normalize_capability_for_mode("multi_agent", "agent"),
             "autonomous"
         );
+    }
+
+    fn agentic_settings(capability: &str) -> Settings {
+        Settings {
+            permission_mode: "agentic".into(),
+            capability_mode: capability.into(),
+            auto_approve: true,
+            ..Settings::default()
+        }
+    }
+
+    fn assert_agentic_round_trip(capability: &str) {
+        let prepared = prepare_settings_for_save(agentic_settings(capability))
+            .unwrap_or_else(|error| panic!("AGENTIC + {capability} must save: {error}"));
+        assert_eq!(prepared.permission_mode, "agentic");
+        assert_eq!(prepared.capability_mode, capability);
+        assert!(prepared.auto_approve);
+
+        let json = serde_json::to_string(&prepared).expect("serialize AGENTIC settings");
+        let mut loaded: Settings =
+            serde_json::from_str(&json).expect("reload AGENTIC settings from saved JSON");
+        loaded.capability_mode =
+            normalize_capability_for_mode(&loaded.permission_mode, &loaded.capability_mode);
+        loaded
+            .validate()
+            .unwrap_or_else(|error| panic!("reloaded AGENTIC + {capability} must validate: {error}"));
+        assert_eq!(loaded.permission_mode, "agentic");
+        assert_eq!(loaded.capability_mode, capability);
+    }
+
+    #[test]
+    fn agentic_orchestrated_settings_save_and_reload() {
+        assert_agentic_round_trip("orchestrated");
+    }
+
+    #[test]
+    fn agentic_thorough_settings_save_and_reload() {
+        assert_agentic_round_trip("thorough");
+    }
+
+    #[test]
+    fn save_settings_ipc_accepts_an_agentic_payload() {
+        let prepared = prepare_settings_for_save(agentic_settings("orchestrated"))
+            .expect("save_settings must accept an AGENTIC settings payload");
+        assert_eq!(prepared.permission_mode, "agentic");
+        assert_eq!(prepared.capability_mode, "orchestrated");
+
+        let thorough = prepare_settings_for_save(Settings {
+            capability_mode: "thorough".into(),
+            ..agentic_settings("orchestrated")
+        })
+        .expect("save_settings must accept AGENTIC + thorough");
+        assert_eq!(thorough.permission_mode, "agentic");
+        assert_eq!(thorough.capability_mode, "thorough");
     }
 
     #[test]

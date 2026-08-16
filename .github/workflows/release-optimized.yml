@@ -99,35 +99,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · AGENTIC Workbench
+          releaseName: Hormachuelos Optimized v__VERSION__ · AGENTIC persistence hotfix
           releaseBody: |
-            Optional feature release: **AGENTIC Workbench**.
+            Hotfix: **AGENTIC mode can now be saved**.
 
-            Adaptive phases:
-            - scopes every turn through Ask, Plan, Research, Multi-Agent, and Build
-            - skips phases that do not add value and never turns question-, plan-, or research-only requests into writes
-            - keeps Adaptive as the default; AGENTIC is separate and opt-in
+            v1.3.0 showed AGENTIC in the composer, but the settings validator rejected `agentic`, `orchestrated`, and `thorough`. Selecting AGENTIC failed with "Could not save mode" and rolled back, so the Workbench never started.
 
-            Real workers, one writer:
-            - creates two or three isolated read-only workers only for independent evidence workstreams
-            - uses the selected provider, model, and effort without silent substitution
-            - enforces worker read-only permissions at schema and execution time
-            - keeps all mutation, integration, repair, verification, and delivery under one Director
-            - fans Stop out to queued and active workers and preserves an inspectable partial run
-
-            Execution Workbench:
-            - separate Progress, Tools, and Agents lanes replace stacked AGENTIC thought/tool cards
-            - wide, narrow-tabbed, and 390px mobile layouts are keyboard accessible and overflow-safe
-            - Clearline Markdown answers remain full-width below the lanes
-            - terminal runs collapse behind Inspect run and lead with an evidence-backed Delivery Board
-
-            Delivery Board:
-            - Outcome, Changes, Verification, Agent Contributions, Risks & Next Actions, and Run facts
-            - no inferred verification passes; unverified, partial, failed, and cancelled runs stay honest
-            - existing Time Machine, Review changes, Export Client Pack, Copy reply, and feedback actions remain compatible
+            This release:
+            - persists AGENTIC with Orchestrated or Thorough capability
+            - restores the previous mode and capability if a save fails
+            - shows a short backend reason instead of only "Could not save mode"
+            - keeps Adaptive as the default; this update is not forced
 
             Remote release gates:
-            - deterministic routing, permission, decomposition, cancellation, concurrency, persistence, and Cursor ownership coverage
+            - native AGENTIC save/reload coverage for orchestrated and thorough
+            - IPC save_settings acceptance of an AGENTIC payload
+            - Playwright composer coverage that the AGENTIC chip persists without a red save error
             - TypeScript, production build, FPS, Preview Computer Use, Ask-mode, reply-formatting, Cursor lifecycle, Rust formatting, and Windows native tests
             - Playwright live/simple/success/partial/cancelled/unverified Workbench coverage at desktop, narrow, and mobile widths
 
@@ -143,5 +130,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: Optional AGENTIC Workbench adds adaptive Ask-to-Build phases, up to three real isolated read-only evidence workers, one Director-controlled writer, split Progress/Tools/Agents lanes, and an evidence-backed Delivery Board. Adaptive remains the default and this update is not forced.
+          UPDATE_WHATS_NEW: Hotfix: AGENTIC can now be selected and saved. v1.3.0 rejected agentic/orchestrated/thorough in the settings validator, so the composer rolled back with "Could not save mode". Adaptive remains the default and this update is not forced.
         run: node scripts/publish-update-manifest.mjs --push-pages

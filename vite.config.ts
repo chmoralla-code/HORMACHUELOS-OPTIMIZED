@@ -24,6 +24,7 @@ export default defineConfig({
         computerFx: "src/computer-fx.html",
         replyLayout: "src/reply-layout-harness.html",
         agenticLayout: "src/agentic-layout-harness.html",
+        agenticMode: "src/agentic-mode-harness.html",
       },
     },
   },

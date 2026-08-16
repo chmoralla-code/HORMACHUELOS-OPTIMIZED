@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" data-appearance="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/theme/tokens.css" />
+    <link rel="stylesheet" href="/theme/globals.css" />
+    <link rel="stylesheet" href="/app.css" />
+    <title>AGENTIC composer mode harness</title>
+    <style>
+      html, body { width: 100%; min-height: 100%; margin: 0; background: var(--canvas); }
+      .agentic-mode-shell { width: min(100%, 920px); margin: 0 auto; padding: 24px; }
+    </style>
+  </head>
+  <body class="fps-optimized">
+    <main class="agentic-mode-shell">
+      <section id="composer" aria-label="Composer"></section>
+    </main>
+    <script type="module">
+      const params = new URLSearchParams(location.search);
+      const failSave = params.get("fail") === "1";
+      const stored = {
+        provider: "cursor",
+        model: "grok-4.5",
+        base_url: "https://api.cursor.com/v1",
+        max_iterations: 0,
+        command_timeout_secs: 120,
+        auto_approve: false,
+        permission_mode: "ask",
+        capability_mode: "answer_max",
+        taglish: false,
+        computer_use_enabled: false,
+        computer_use_prompt_activation: true,
+        desktop_computer_use_enabled: false,
+        desktop_computer_use_allowed_apps: [],
+        smart_agent_enabled: true,
+        flavour_enabled: true,
+        model_effort: "high",
+      };
+      const saveCalls = [];
+
+      window.__TAURI_INTERNALS__ = {
+        invoke: async (cmd, args = {}) => {
+          if (cmd === "get_settings") return { ...stored };
+          if (cmd === "save_settings") {
+            saveCalls.push({ ...(args.settings || {}) });
+            if (failSave) {
+              throw new Error(
+                "Permission mode must be adaptive, ask, research, plan, build, or multi_agent.",
+              );
+            }
+            Object.assign(stored, args.settings || {});
+            window.__savedSettings = { ...stored };
+            return null;
+          }
+          if (cmd === "list_hosted_provider_catalog") return { data: [], restricted: false };
+          if (cmd === "list_provider_models") return ["grok-4.5"];
+          if (cmd === "has_api_key") return false;
+          if (cmd === "get_original_model_selection") return null;
+          return null;
+        },
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { label: "main" },
+        },
+      };
+
+      const { ModelBar } = await import("/components/modelbar.ts");
+      const bar = new ModelBar(() => {});
+      document.getElementById("composer").append(bar.providerRail);
+      await bar.load();
+      window.__agenticModeHarness = {
+        bar,
+        saveCalls,
+        getSaved: () => ({ ...stored }),
+      };
+    </script>
+  </body>
+</html>
