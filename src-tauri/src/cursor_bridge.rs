@@ -8,11 +8,11 @@ use crate::state::SessionRun;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -77,9 +77,33 @@ struct CursorTurnOutcome {
     answer_text: String,
     total_tokens: u64,
     tool_count: usize,
+    verification: Vec<crate::agentic::AgenticVerificationEvidence>,
+    changed_files: Vec<String>,
     terminal: bool,
     made_concrete_progress: bool,
     recoverable_interruption: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CursorAgenticMetrics {
+    pub tool_count: usize,
+    pub total_tokens: u64,
+    pub verification: Vec<crate::agentic::AgenticVerificationEvidence>,
+    pub changed_files: Vec<String>,
+}
+
+impl CursorAgenticMetrics {
+    fn absorb(&mut self, outcome: &CursorTurnOutcome) {
+        self.tool_count = self.tool_count.saturating_add(outcome.tool_count);
+        self.total_tokens = self.total_tokens.saturating_add(outcome.total_tokens);
+        self.verification.extend(outcome.verification.iter().cloned());
+        let mut known = self.changed_files.iter().cloned().collect::<HashSet<_>>();
+        for path in &outcome.changed_files {
+            if known.insert(path.clone()) {
+                self.changed_files.push(path.clone());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +121,8 @@ impl CursorTurnOutcome {
             answer_text: String::new(),
             total_tokens: 0,
             tool_count: 0,
+            verification: Vec::new(),
+            changed_files: Vec::new(),
             terminal: true,
             made_concrete_progress: false,
             recoverable_interruption: None,
@@ -114,23 +140,32 @@ fn is_verified_cursor_completion(
 #[derive(Default)]
 struct CursorPassActivity {
     made_concrete_progress: bool,
-    open_tools: HashMap<String, String>,
+    open_tools: HashMap<String, (String, Value)>,
     answer_text: String,
     total_tokens: u64,
     tool_count: usize,
+    verification: Vec<crate::agentic::AgenticVerificationEvidence>,
+    changed_files: Vec<String>,
 }
 
 impl CursorPassActivity {
-    fn record_tool_call(&mut self, id: &str, name: &str) {
-        self.open_tools.insert(id.to_string(), name.to_string());
+    fn record_tool_call(&mut self, id: &str, name: &str, arguments: &Value) {
+        self.open_tools
+            .insert(id.to_string(), (name.to_string(), arguments.clone()));
         self.tool_count = self.tool_count.saturating_add(1);
     }
 
-    fn record_tool_result(&mut self, id: &str, result_name: &str, ok: bool) {
-        let name = self
+    fn record_tool_result(
+        &mut self,
+        id: &str,
+        result_name: &str,
+        ok: bool,
+        content: &str,
+    ) {
+        let (name, arguments) = self
             .open_tools
             .remove(id)
-            .unwrap_or_else(|| result_name.to_string());
+            .unwrap_or_else(|| (result_name.to_string(), json!({})));
         // A started tool or a failed result is not durable progress. Counting
         // either one allowed an identical broken call to reset the recovery
         // watchdog forever while the UI remained stuck on a working card.
@@ -138,6 +173,36 @@ impl CursorPassActivity {
         // not evidence that an implementation or investigation advanced.
         if ok && crate::tools::normalize_tool_name(&name) != "todo_write" {
             self.made_concrete_progress = true;
+        }
+        if let Some(evidence) =
+            crate::agentic::verification_from_tool(id, &name, &arguments, ok, content)
+        {
+            self.verification.push(evidence);
+        }
+        let normalized = crate::tools::normalize_tool_name(&name);
+        if ok
+            && (crate::tools::is_file_mutating_tool(&normalized)
+                || matches!(
+                    normalized.as_str(),
+                    "write" | "edit" | "apply_patch" | "str_replace"
+                ))
+        {
+            let mut known = self.changed_files.iter().cloned().collect::<HashSet<_>>();
+            for key in [
+                "path",
+                "file_path",
+                "target_file",
+                "destination",
+                "destination_path",
+                "to",
+            ] {
+                if let Some(path) = arguments.get(key).and_then(Value::as_str) {
+                    let path = path.trim();
+                    if !path.is_empty() && known.insert(path.to_string()) {
+                        self.changed_files.push(path.to_string());
+                    }
+                }
+            }
         }
     }
 }
@@ -881,7 +946,7 @@ fn handle_event(
                 }
                 smart_agent.on_tool_call(app, session_id, &id, &name, &arguments);
             }
-            activity.record_tool_call(&id, &name);
+            activity.record_tool_call(&id, &name, &arguments);
             let public_id = scope
                 .map(|scope| format!("{}:{id}", scope.agent_id))
                 .unwrap_or_else(|| id.clone());
@@ -906,7 +971,7 @@ fn handle_event(
                 smart_agent.on_tool_result(app, session_id, &id, &name, ok);
                 flavour.record_tool_result(&id, &name, &json!({}), ok, &content);
             }
-            activity.record_tool_result(&id, &name, ok);
+            activity.record_tool_result(&id, &name, ok, &content);
             let public_id = scope
                 .map(|scope| format!("{}:{id}", scope.agent_id))
                 .unwrap_or_else(|| id.clone());
@@ -1882,6 +1947,8 @@ async fn run_cursor_attempt(
         answer_text: activity.answer_text,
         total_tokens: activity.total_tokens,
         tool_count: activity.tool_count,
+        verification: activity.verification,
+        changed_files: activity.changed_files,
         terminal: false,
         made_concrete_progress: activity.made_concrete_progress,
         recoverable_interruption,
