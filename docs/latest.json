@@ -1,11 +1,11 @@
 {
-  "version": "1.2.16",
-  "title": "Hormachuelos Optimized v1.2.16",
-  "whatsNew": "Type rollback or undo in chat to restore the latest protected AI change through Time Machine without model usage; Ask stays read-only, confirmations remain required, and newer user edits are preserved as conflicts. Includes Clearline AI replies, Mission Control, and Test & Fix Everything.",
-  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.16/Hormachuelos_Optimized_1.2.16_x64.msi",
-  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.16/Hormachuelos_Optimized_1.2.16_x64-setup.exe",
-  "msiSha256": "cab4973a15977fc4e4ba5902d7ed72ae5a60a5f435b5008d397be426a90f82fd",
-  "exeSha256": "9f48eb470ce33292538a2709e6664fdf7da3a76985bb88d1c80ce47336a62ea6",
+  "version": "1.3.0",
+  "title": "Hormachuelos Optimized v1.3.0",
+  "whatsNew": "Optional AGENTIC Workbench adds adaptive Ask-to-Build phases, up to three real isolated read-only evidence workers, one Director-controlled writer, split Progress/Tools/Agents lanes, and an evidence-backed Delivery Board. Adaptive remains the default and this update is not forced.",
+  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.0/Hormachuelos_Optimized_1.3.0_x64.msi",
+  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.0/Hormachuelos_Optimized_1.3.0_x64-setup.exe",
+  "msiSha256": "4f5cb3dd0873a52c6ea08d1d6dc524a6de3e620a0396096c594cb92fdcd76ffc",
+  "exeSha256": "2444709463eb728bae19125ebcb9db22f149dd44698bac3dda33e543c100612f",
   "forceUpdate": false,
-  "publishedAt": "2026-08-16T04:26:25.406Z"
+  "publishedAt": "2026-08-16T14:15:47.739Z"
 }
