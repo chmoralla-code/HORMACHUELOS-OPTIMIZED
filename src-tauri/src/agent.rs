@@ -3229,6 +3229,11 @@ Current user request:\n{prompt}",
                 let wrapped_prompt = format!("{wrapped_prompt}{agentic_evidence}");
                 let resume_agent_id =
                     cursor_resume_id_for_task(cursor_resume_agent_id.clone(), task_profile);
+                let cursor_agentic_metrics = is_agentic.then(|| {
+                    Arc::new(Mutex::new(
+                        crate::cursor_bridge::CursorAgenticMetrics::default(),
+                    ))
+                });
                 let cursor_result = crate::cursor_bridge::run_cursor_turn(
                     app.clone(),
                     &project_root,
@@ -3243,7 +3248,7 @@ Current user request:\n{prompt}",
                         && crate::desktop_computer_use::status().supported,
                     settings.command_timeout_secs,
                     &session_id,
-                    run,
+                    run.clone(),
                     &history,
                     resume_agent_id,
                     requires_project_completion,
@@ -3254,12 +3259,88 @@ Current user request:\n{prompt}",
                     adaptive_route.map(|route| route.reason),
                     adaptive_route.map(|route| route.complexity),
                     adaptive_route.map(|route| route.risk),
+                    cursor_agentic_metrics.clone(),
                     &mut flavour,
                 )
                 .await;
                 match &cursor_result {
                     Ok(_) => flavour.finish("finished", None, &[]),
                     Err(error) => flavour.finish("error", Some(&error.to_string()), &[]),
+                }
+                if cursor_result.is_ok() {
+                    if let Some(plan) = agentic_plan.as_ref() {
+                        let metrics = cursor_agentic_metrics
+                            .as_ref()
+                            .and_then(|metrics| metrics.lock().ok().map(|metrics| metrics.clone()))
+                            .unwrap_or_default();
+                        let safe_answer = integration_chat::redact_sensitive_text(
+                            &metrics.answer_text,
+                            known_integration_secrets.as_ref(),
+                        );
+                        let summary = if safe_answer.trim().is_empty() {
+                            "The Cursor Director completed the requested AGENTIC run.".to_string()
+                        } else {
+                            safe_answer.trim().to_string()
+                        };
+                        crate::agentic::emit_phase(
+                            &app,
+                            &session_id,
+                            plan.effective_phase(),
+                            crate::agentic::AgenticPhaseState::Completed,
+                            "Cursor Director synthesis and delivery completed.",
+                        );
+                        crate::agentic::emit_agent(
+                            &app,
+                            &session_id,
+                            &crate::agentic::AgenticWorkerResult {
+                                id: "director".into(),
+                                name: "Director".into(),
+                                role: "Orchestration and integration".into(),
+                                assignment: "Own scope, permissions, integration, writes, verification, and delivery.".into(),
+                                status: "completed".into(),
+                                tool_count: metrics.tool_count,
+                                total_tokens: metrics.total_tokens,
+                                result_summary: summary.clone(),
+                                error: None,
+                            },
+                        );
+                        let agentic = crate::agentic::completion_payload(
+                            plan,
+                            &agentic_workers,
+                            &summary,
+                            &metrics.changed_files,
+                            &[],
+                            &metrics.verification,
+                            metrics.total_tokens,
+                            metrics.tool_count,
+                            agentic_started.elapsed().as_millis() as u64,
+                        );
+                        emit(
+                            &app,
+                            &session_id,
+                            "done",
+                            json!({
+                                "summary": summary,
+                                "title": "AGENTIC delivery",
+                                "description": "",
+                                "files": metrics.changed_files,
+                                "tech": [],
+                                "features": [],
+                                "total_tokens": metrics.total_tokens,
+                                "agentic": agentic,
+                            }),
+                        );
+                        emit(
+                            &app,
+                            &session_id,
+                            "end",
+                            json!({
+                                "reason": if plan.build { "completed" } else { "no_tool_calls" },
+                                "iteration": 0,
+                                "total_tokens": metrics.total_tokens,
+                            }),
+                        );
+                    }
                 }
                 // Fast Design turns use an isolated Cursor agent. Preserve the
                 // main conversation's durable id instead of replacing it with
