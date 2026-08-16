@@ -130,5 +130,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: Hotfix: AGENTIC can now be selected and saved. v1.3.0 rejected agentic/orchestrated/thorough in the settings validator, so the composer rolled back with "Could not save mode". Adaptive remains the default and this update is not forced.
+          UPDATE_WHATS_NEW: "Hotfix: AGENTIC can now be selected and saved. v1.3.0 rejected agentic/orchestrated/thorough in the settings validator, so the composer rolled back with Could not save mode. Adaptive remains the default and this update is not forced."
         run: node scripts/publish-update-manifest.mjs --push-pages
