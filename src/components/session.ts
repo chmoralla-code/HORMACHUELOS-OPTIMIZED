@@ -1411,8 +1411,9 @@ export function recordAgentEvent(
     kind: string;
     payload: any;
   },
+  atOverride?: number,
 ): void {
-  const at = Date.now();
+  const at = atOverride ?? Date.now();
   switch (e.kind) {
     case "start": {
       const permissionMode = normalizeSessionPermissionMode(e.payload?.permission_mode);
