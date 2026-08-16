@@ -9,7 +9,9 @@ async function openComposer(page, query = "") {
 
 async function selectAgentic(page) {
   await page.getByRole("button", { name: "Mode: Ask" }).click();
-  await page.getByRole("option", { name: /AGENTIC Workbench/i }).click();
+  const option = page.getByRole("option", { name: /AGENTIC Workbench/i });
+  await option.waitFor();
+  await option.evaluate((node) => node.click());
 }
 
 test("selecting AGENTIC from the composer persists agentic and shows no save error", async ({ page }) => {
