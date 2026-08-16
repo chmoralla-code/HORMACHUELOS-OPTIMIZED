@@ -1475,7 +1475,9 @@ async fn run_cursor_attempt(
                         };
                         let raw_name = event.name.unwrap_or_default();
                         let raw_arguments = event.arguments.unwrap_or_else(|| json!({}));
-                        if flavour.record_tool_call(&request_id, &raw_name, &raw_arguments) {
+                        if scope.is_none()
+                            && flavour.record_tool_call(&request_id, &raw_name, &raw_arguments)
+                        {
                             emit(
                                 &app,
                                 session_id,
@@ -1498,19 +1500,22 @@ async fn run_cursor_attempt(
                             scope.as_ref(),
                         )
                         .await;
-                        if run.plan_implementation_unlocked()
+                        if scope.is_none()
+                            && run.plan_implementation_unlocked()
                             && smart_agent.job() == DirectorJob::Answer
                             && permission_mode.eq_ignore_ascii_case("plan")
                         {
                             smart_agent.promote_to_change(&app, session_id);
                         }
-                        flavour.record_tool_result(
-                            &request_id,
-                            &raw_name,
-                            &raw_arguments,
-                            ok,
-                            &content,
-                        );
+                        if scope.is_none() {
+                            flavour.record_tool_result(
+                                &request_id,
+                                &raw_name,
+                                &raw_arguments,
+                                ok,
+                                &content,
+                            );
+                        }
                         let response = json!({
                             "type": "host_tool_response",
                             "requestId": request_id,
@@ -1549,16 +1554,20 @@ async fn run_cursor_attempt(
                             .summary
                             .filter(|value| !value.is_empty())
                             .unwrap_or_else(|| format!("Allow {name}?"));
-                        let approved = await_bridge_approval(
-                            &app,
-                            session_id,
-                            &run,
-                            &request_id,
-                            &name,
-                            &arguments,
-                            &summary,
-                        )
-                        .await;
+                        let approved = if scope.is_some() {
+                            false
+                        } else {
+                            await_bridge_approval(
+                                &app,
+                                session_id,
+                                &run,
+                                &request_id,
+                                &name,
+                                &arguments,
+                                &summary,
+                            )
+                            .await
+                        };
                         let response = json!({
                             "type": "approval_response",
                             "requestId": request_id,
