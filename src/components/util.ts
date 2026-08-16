@@ -1030,7 +1030,7 @@ export function renderMarkdown(src: string): string {
     .map((block) => {
       const t = block.trim();
       if (!t) return "";
-      if (/^\\u0000FENCE\\d+\\u0000$/.test(t)) return t;
+      if (/^\u0000FENCE\d+\u0000$/.test(t)) return t;
       if (/^<(h[1-6]|ul|ol|pre|blockquote|div|table|hr)/.test(t)) return t;
       return `<p>${t.replace(/\n/g, "<br>")}</p>`;
     })
