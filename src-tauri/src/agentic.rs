@@ -95,6 +95,18 @@ pub struct AgenticWorkerResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AgenticWorkerBatch {
+    pub workers: Vec<AgenticWorkerResult>,
+    pub orchestration_tokens: u64,
+}
+
+impl AgenticWorkerBatch {
+    fn empty() -> Self {
+        Self::default()
+    }
+}
+
 impl AgenticWorkerResult {
     fn new(spec: &AgenticWorkerSpec, status: &str) -> Self {
         Self {
@@ -466,11 +478,12 @@ pub async fn run_native_workers(
     config: NativeWorkerConfig,
     run: Arc<SessionRun>,
     plan: &AgenticPlan,
-) -> Vec<AgenticWorkerResult> {
+) -> AgenticWorkerBatch {
     if plan.workers.len() < 2 {
-        return Vec::new();
+        return AgenticWorkerBatch::empty();
     }
-    let mut specs = refine_specs(&config, request, &plan.workers, run.clone()).await;
+    let (mut specs, orchestration_tokens) =
+        refine_specs(&config, request, &plan.workers, run.clone()).await;
     if specs.len() < 2 {
         specs = plan.workers.clone();
     }
@@ -484,7 +497,10 @@ pub async fn run_native_workers(
             AgenticPhaseState::Skipped,
             "The run could not afford two real workers; the Director will continue alone.",
         );
-        return Vec::new();
+        return AgenticWorkerBatch {
+            workers: Vec::new(),
+            orchestration_tokens,
+        };
     }
     for spec in &specs {
         emit_agent(&app, session_id, &AgenticWorkerResult::new(spec, "queued"));
@@ -577,7 +593,10 @@ pub async fn run_native_workers(
             results.len()
         ),
     );
-    results
+    AgenticWorkerBatch {
+        workers: results,
+        orchestration_tokens,
+    }
 }
 
 async fn run_worker(
@@ -824,7 +843,7 @@ async fn refine_specs(
     request: &str,
     fallback: &[AgenticWorkerSpec],
     run: Arc<SessionRun>,
-) -> Vec<AgenticWorkerSpec> {
+) -> (Vec<AgenticWorkerSpec>, u64) {
     let Ok(provider) = llm::build_provider_with_effort(
         &config.provider,
         &config.api_key,
@@ -832,8 +851,9 @@ async fn refine_specs(
         &config.model,
         Some(&config.effort),
     ) else {
-        return fallback.to_vec();
+        return (fallback.to_vec(), 0);
     };
+    let mut total_tokens = 0_u64;
     let base = format!(
         "Split this request into 2 or 3 independent READ-ONLY evidence assignments. Return JSON only: {{\"workers\":[{{\"role\":\"short\",\"assignment\":\"narrow evidence task\"}}]}}. Workers cannot write, execute, control apps, connect accounts, ask questions, or approve actions.\n\n{}",
         request,
@@ -855,15 +875,23 @@ async fn refine_specs(
             ChatMessage::user(&prompt),
         ];
         if let Ok(response) = provider.chat(&messages, &[], None, None, None).await {
+            total_tokens = total_tokens.saturating_add(response.usage_tokens);
+            if config.hosted && response.usage_tokens > 0 {
+                let _ = crate::license::record_provider_usage(
+                    &config.provider,
+                    &config.model,
+                    response.usage_tokens,
+                );
+            }
             if let Some(specs) = response.text.as_deref().and_then(parse_specs) {
-                return specs;
+                return (specs, total_tokens);
             }
         }
     }
-    fallback.to_vec()
+    (fallback.to_vec(), total_tokens)
 }
 
-fn parse_specs(text: &str) -> Option<Vec<AgenticWorkerSpec>> {
+pub(crate) fn parse_specs(text: &str) -> Option<Vec<AgenticWorkerSpec>> {
     let workers = serde_json::from_str::<Value>(text.trim())
         .ok()?
         .get("workers")?
