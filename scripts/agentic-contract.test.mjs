@@ -12,7 +12,7 @@ test("AGENTIC is an opt-in public mode while Adaptive remains the default", asyn
     read("src-tauri/src/config.rs"),
   ]);
 
-  assert.match(ipc, /"adaptive"\s*\|\s*"agentic"/);
+  assert.match(ipc, /adaptive \| agentic \| ask/);
   assert.match(ipc, /export type AgenticPhase\s*=/);
   assert.match(ipc, /export type AgenticPhaseState\s*=/);
   assert.match(ipc, /export (?:type|interface) AgenticAgent/);
@@ -55,6 +55,8 @@ test("Director phase classifier and one-writer worker invariant are deterministi
   assert.match(source, /if !worker_tool_allowed\(&spec\.id, &call\.name\)/);
   assert.match(source, /schemas_with\(false, false\)/);
   assert.match(source, /JoinSet::new\(\)/);
+  assert.match(source, /Semaphore::new\(MAX_AGENTIC_WORKERS\)/);
+  assert.match(source, /wait_cancelled/);
   assert.match(source, /specs\.truncate\(MAX_AGENTIC_WORKERS\)/);
   assert.match(source, /is_transient_provider_error/);
   assert.match(source, /retrying affected workers serially/i);
@@ -107,8 +109,8 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
     read("tests/agentic-layout.spec.mjs"),
   ]);
 
-  assert.match(component, /const LANES: Lane\\[\\] = \\["progress", "tools", "agents"\\]/);
-  assert.match(component, /agentic-lane-\\$\\{lane\\}/);
+  assert.match(component, /const LANES: Lane\[\] = \["progress", "tools", "agents"\]/);
+  assert.match(component, /agentic-lane-\$\{lane\}/);
   for (const phase of ["ask", "plan", "research", "multi_agent", "build"]) {
     assert.ok(component.includes(`"${phase}"`), `missing phase ${phase}`);
   }
