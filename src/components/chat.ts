@@ -13,6 +13,7 @@ import {
   type SessionMultiAgentTool,
 } from "./session";
 import { ToolArgsStreamDecoder, type ToolArgField } from "./tool-args-stream";
+import { AgenticWorkbench } from "./agentic-workbench";
 import { clear, div, el, escapeHtml, formatChatTime, normalizeAssistantMarkdown, renderMarkdown, setShimmerText, visibleAnswerFromThought, compactVisibleReply, looksLikeDeliveryEssay, deliveryLeadFromReply, mergeReasoningStream, looksLikeProvisionalToolNarration, appendVisibleAssistantChunk } from "./util";
 
 type ToolCardEl = { head: HTMLElement; body: HTMLElement; card: HTMLElement };
@@ -49,7 +50,7 @@ export type ChatPromptSubmission = {
   titleHint: string;
   taskProfile: AgentTaskProfile;
   /** Trusted in-app workflows may choose a safer one-run mode without changing the user's saved mode. */
-  requestedMode?: "adaptive" | "ask" | "research" | "plan" | "build" | "multi_agent";
+  requestedMode?: "adaptive" | "agentic" | "ask" | "research" | "plan" | "build" | "multi_agent";
   executionProfile?: AgentExecutionProfile;
   computerUseOverride?: boolean;
 };
@@ -201,6 +202,9 @@ export class Chat {
   private activePermissionMode = "plan";
   /** Tool ids announced as one safe parallel Multi-Agent inspection pack. */
   private multiAgentToolIds = new Set<string>();
+  /** Current AGENTIC turn; older terminal workbenches remain in the transcript. */
+  private agenticWorkbench: AgenticWorkbench | null = null;
+  private agenticRun = false;
 
   constructor(handlers: {
     onSend: (submission: ChatPromptSubmission) => void;
@@ -1907,6 +1911,9 @@ export class Chat {
     this.clearPendingQueue();
     this.cancelAssistantPaints();
     this.replaying = true;
+    this.agenticWorkbench?.dispose();
+    this.agenticWorkbench = null;
+    this.agenticRun = false;
     this.runCompleted = false;
     this.hasUsedTools = msgs.some((m) => m.type === "tool_call");
     clear(this.node);
@@ -2263,10 +2270,39 @@ export class Chat {
     return pretty || "Action";
   }
 
+  private startAgenticWorkbench(runId: string, at = this.now()) {
+    if (this.agenticWorkbench?.root.dataset.runId === runId) return;
+    this.agenticWorkbench?.dispose();
+    this.agenticRun = true;
+    this.setActivePermissionMode("agentic");
+    const workbench = new AgenticWorkbench(runId, at, async (summary) => {
+      await api.exportClientPack(undefined, summary);
+    });
+    this.agenticWorkbench = workbench;
+    this.node.appendChild(workbench.root);
+    this.scrollToBottom();
+  }
+
+  private completeAgenticWorkbench(completion: NonNullable<Extract<AgentEvent, { kind: "done" }>["payload"]["agentic"]>, at?: number, workMs?: number) {
+    this.runCompleted = completion.status === "completed";
+    this.normalizeLatestAssistantReply();
+    this.flushAssistantPaints();
+    this.finalizeThinking();
+    this.sealPendingTools(completion.status === "cancelled" ? "cancelled" : "done");
+    this.pendingAssistant = null;
+    this.pendingAssistantMsg = null;
+    this.agenticWorkbench?.complete(completion);
+    this.sealAiTimestamp(at, workMs ?? this.currentWorkMs(at) ?? undefined);
+    this.scrollToBottom();
+    this.scheduleStableMessageVirtualization();
+  }
+
   private setActivePermissionMode(mode: unknown) {
     const normalized = String(mode || "").trim().toLowerCase();
     this.activePermissionMode =
-      normalized === "research"
+      normalized === "agentic"
+        ? "agentic"
+        : normalized === "research"
         ? "research"
         : normalized === "ask"
           ? "ask"
@@ -2276,6 +2312,7 @@ export class Chat {
               ? "multi_agent"
               : "plan";
     this.node.classList.toggle("chat-multi-agent", this.activePermissionMode === "multi_agent");
+    this.node.classList.toggle("chat-agentic", this.activePermissionMode === "agentic");
     if (this.activePermissionMode !== "multi_agent") this.multiAgentToolIds.clear();
   }
 
