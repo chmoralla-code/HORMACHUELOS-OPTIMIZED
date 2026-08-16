@@ -605,14 +605,14 @@ export function looksLikeProjectFilePath(value: string): boolean {
   const text = String(value || "").trim().replace(/^[`'"]+|[`'"]+$/g, "");
   if (!text || looksLikeAbsoluteFilePath(text)) return false;
   const pattern = projectFilePathPattern();
-  const standaloneFile = new RegExp(
-    "^[A-Za-z0-9_@.-]+\\\." + PROJECT_PATH_EXT + "$",
-    "i",
-  );
+  const extension = text.includes(".") ? text.slice(text.lastIndexOf(".") + 1) : "";
+  const standaloneFile =
+    /^[A-Za-z0-9_@.-]+$/.test(text) &&
+    new RegExp("^" + PROJECT_PATH_EXT + "$", "i").test(extension);
   return (
     pattern.test(text.replace(/\\/g, "/")) ||
     pattern.test(text) ||
-    standaloneFile.test(text)
+    standaloneFile
   );
 }
 
