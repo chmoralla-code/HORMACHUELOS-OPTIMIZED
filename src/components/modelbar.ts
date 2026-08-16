@@ -1,6 +1,6 @@
 import { api, type Settings } from "../ipc";
 import { PROVIDERS, effortOptionsForProvider, displayModelName, getProviderMeta, getSettingsSafe, hasStaticModelCatalog, isHostedCatalogRestricted, isLocalMachineProvider, isUltraEffort, mergeProviderModelCatalog, normalizeEffortForProvider, refreshHostedProviderCatalog, uiProviderId, usesReasoningEffort, visibleProviders } from "./settings";
-import { clear, el, escapeHtml } from "./util";
+import { clear, el, escapeHtml, sanitizedSettingsSaveError } from "./util";
 import { icon, icons } from "./icons";
 
 export type PermissionMode =
@@ -547,7 +547,12 @@ export class ModelBar {
   }
 
   private async saveMode(mode: PermissionMode) {
-    const prev = this.getMode();
+    const previousSettings: Settings = {
+      ...this.settings,
+      desktop_computer_use_allowed_apps: [...(this.settings.desktop_computer_use_allowed_apps || [])],
+    };
+    const previousCapabilityId = this.capabilityId;
+    const previousRoute = this.activeAdaptiveRoute;
     this.activeAdaptiveRoute = null;
     this.settings.permission_mode = mode;
     this.settings.auto_approve = modeAutoApproves(mode);
@@ -573,10 +578,13 @@ export class ModelBar {
       this.onChange();
     } catch (e) {
       console.error("Failed to save permission mode", e);
-      this.settings.permission_mode = prev;
+      this.settings = previousSettings;
+      this.capabilityId = previousCapabilityId;
+      this.activeAdaptiveRoute = previousRoute;
       this.normalizeMode();
+      this.syncCapabilityDefault();
       this.renderProviderRail();
-      this.setStatus("Could not save mode", true);
+      this.setStatus(sanitizedSettingsSaveError(e, "Could not save mode"), true);
     }
   }
 

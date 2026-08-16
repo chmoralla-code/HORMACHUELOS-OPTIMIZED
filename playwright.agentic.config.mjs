@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests",
-  testMatch: "agentic-layout.spec.mjs",
+  testMatch: "{agentic-layout,agentic-mode}.spec.mjs",
   timeout: 45_000,
   expect: { timeout: 8_000 },
   retries: 0,
