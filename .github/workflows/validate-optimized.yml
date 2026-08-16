@@ -49,6 +49,9 @@ jobs:
       - name: Run reply-formatting guard
         run: npm run test:reply-formatting
 
+      - name: Run deterministic AGENTIC routing, permission, persistence, and UI guards
+        run: npm run test:agentic
+
       - name: Run cursor persistence guards
         run: node --test scripts/cursor-completion.test.mjs scripts/cursor-bridge-lifecycle.test.mjs
 
@@ -111,6 +114,9 @@ jobs:
       - name: Test AI reply at desktop, narrow, and mobile widths
         run: npx playwright test --config=playwright.reply.config.mjs
 
+      - name: Test AGENTIC Workbench at desktop, narrow, and mobile widths
+        run: npx playwright test --config=playwright.agentic.config.mjs
+
       - name: Test the Optimized website release card
         run: npx playwright test --config=playwright.optimized-website.config.mjs
 
@@ -118,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reply-layout-evidence
+          name: reply-and-agentic-layout-evidence
           path: test-results
           if-no-files-found: ignore
           retention-days: 14
