@@ -1280,6 +1280,7 @@ pub async fn run_cursor_turn(
     adaptive_reason: Option<&str>,
     adaptive_complexity: Option<&str>,
     adaptive_risk: Option<&str>,
+    agentic_metrics: Option<Arc<Mutex<CursorAgenticMetrics>>>,
     flavour: &mut FlavourRun,
 ) -> Result<Option<String>> {
     let mut continuation_pass: u32 = 0;
@@ -1358,6 +1359,11 @@ pub async fn run_cursor_turn(
         )
         .await?;
 
+        if let Some(metrics) = agentic_metrics.as_ref() {
+            if let Ok(mut metrics) = metrics.lock() {
+                metrics.absorb(&outcome);
+            }
+        }
         if let Some(id) = outcome.agent_id.filter(|id| !id.is_empty()) {
             current_agent_id = Some(id);
         }
