@@ -74,6 +74,9 @@ test("native and Cursor workers preserve selected provider/model and parent owne
 
   assert.match(native, /build_provider_with_effort\([\s\S]*?&config\.provider[\s\S]*?&config\.model/);
   assert.match(cursor, /run_cursor_agentic_workers/);
+  assert.match(cursor, /refine_cursor_worker_specs/);
+  assert.match(cursor, /public_events: false/);
+  assert.match(cursor, /crate::agentic::parse_specs/);
   assert.match(cursor, /specs\.iter\(\)\.take\(crate::agentic::MAX_AGENTIC_WORKERS\)/);
   assert.match(cursor, /worker_tool_allowed\(&scope\.agent_id, &name\)/);
   assert.match(cursor, /payload\["run_id"\]/);
@@ -83,6 +86,7 @@ test("native and Cursor workers preserve selected provider/model and parent owne
   assert.match(agent, /run_cursor_agentic_workers/);
   assert.match(agent, /CursorAgenticMetrics::default/);
   assert.match(agent, /phase_for_tool_preview/);
+  assert.match(agent, /agentic_orchestration_tokens/);
   assert.match(agent, /Running the final Director verification pass/);
   assert.match(agent, /completion_payload/);
 });
@@ -98,10 +102,14 @@ test("AGENTIC persistence excludes public reasoning and retains scoped evidence"
   assert.match(session, /agentId\?: string/);
   assert.match(session, /phase\?: AgenticPhase/);
   assert.match(session, /redactAgenticCompletion/);
+  assert.match(session, /agenticState\?: AgenticRunSnapshot/);
+  assert.match(session, /latestAgenticRunStart/);
+  assert.match(session, /sanitizeAgenticAgent/);
   assert.match(chat, /if \(!this\.agenticRun\)[\s\S]{0,120}appendThinkingTranscriptEvent/);
   assert.match(chat, /case "reasoning":[\s\S]{0,120}if \(!this\.agenticRun\)/);
   assert.match(chat, /startAgenticWorkbench/);
   assert.match(chat, /completeAgenticWorkbench/);
+  assert.match(chat, /msg\.agenticState/);
 });
 
 test("Execution Workbench and Delivery Board meet the responsive accessibility contract", async () => {
@@ -133,4 +141,28 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
   assert.match(spec, /scrollWidth/);
   assert.match(spec, /toBeFocused/);
   assert.match(spec, /reducedMotion/);
+});
+
+test("v1.3.0 release metadata is synchronized and remains optional", async () => {
+  const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest] = await Promise.all([
+    read("package.json"),
+    read("package-lock.json"),
+    read("src-tauri/Cargo.toml"),
+    read("src-tauri/Cargo.lock"),
+    read("src-tauri/tauri.conf.json"),
+    read(".github/workflows/release-optimized.yml"),
+    read("release-notes/1.3.0.md"),
+    read("scripts/publish-update-manifest.mjs"),
+  ]);
+  const pkg = JSON.parse(pkgRaw);
+  assert.equal(pkg.version, "1.3.0");
+  assert.match(lock, /"version": "1\.3\.0"/);
+  assert.match(cargo, /version = "1\.3\.0"/);
+  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.0"/);
+  assert.equal(JSON.parse(tauri).version, "1.3.0");
+  assert.match(workflow, /AGENTIC Workbench/);
+  assert.match(workflow, /test:agentic/);
+  assert.match(workflow, /playwright\.agentic\.config\.mjs/);
+  assert.match(notes, /This release is published as an optional feature update/);
+  assert.match(manifest, /forceUpdate:\s*false/);
 });
