@@ -114,7 +114,7 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
   for (const phase of ["ask", "plan", "research", "multi_agent", "build"]) {
     assert.ok(component.includes(`"${phase}"`), `missing phase ${phase}`);
   }
-  assert.match(component, /role="tablist"/);
+  assert.match(component, /setAttribute\("role", "tablist"\)/);
   assert.match(component, /aria-controls/);
   assert.match(component, /ArrowLeft|ArrowRight/);
   assert.match(component, /aria-live/);
