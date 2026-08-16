@@ -8,6 +8,7 @@ import {
   assistantReplyLooksOpen,
   coalesceSessionTurnLayout,
   normalizeSessionPermissionMode,
+  recordAgentEvent,
   redactToolArguments,
   type SessionMessage,
   type SessionMultiAgentTool,
@@ -5906,40 +5907,19 @@ export class Chat {
     const at = this.now();
     switch (e.kind) {
       case "start":
-        this.messages.push({
-          type: "run_start",
-          permissionMode: normalizeSessionPermissionMode(e.payload?.permission_mode),
-          executionProfile: e.payload?.execution_profile,
-          runId: e.session_id,
+        recordAgentEvent(
+          this.messages,
+          {
+            kind: e.kind,
+            payload: { ...e.payload, run_id: e.session_id },
+          },
           at,
-        });
+        );
         break;
       case "agentic_plan":
-        this.messages.push({
-          type: "agentic_plan",
-          runId: e.payload.run_id,
-          phases: e.payload.phases,
-          maxWorkers: e.payload.max_workers,
-          at,
-        });
-        break;
       case "agentic_phase":
-        this.messages.push({
-          type: "agentic_phase",
-          runId: e.payload.run_id,
-          phase: e.payload.phase,
-          state: e.payload.state,
-          detail: e.payload.detail,
-          at,
-        });
-        break;
       case "agentic_agent":
-        this.messages.push({
-          type: "agentic_agent",
-          runId: e.payload.run_id,
-          agent: e.payload.agent,
-          at,
-        });
+        recordAgentEvent(this.messages, { kind: e.kind, payload: e.payload }, at);
         break;
       case "multi_agent_batch": {
         appendMultiAgentBatchSnapshot(this.messages, e.payload?.tools, at);
