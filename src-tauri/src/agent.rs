@@ -4467,6 +4467,63 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
             if mode == "plan" && !run.plan_implementation_unlocked() && !plan_ready_emitted {
                 emit_plan_ready_card(&app, &session_id, total_tokens, "");
             }
+            if let Some(plan) = agentic_plan.as_ref() {
+                let terminal_summary = resp
+                    .text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or("The Director completed this AGENTIC answer.")
+                    .to_string();
+                crate::agentic::emit_phase(
+                    &app,
+                    &session_id,
+                    plan.effective_phase(),
+                    crate::agentic::AgenticPhaseState::Completed,
+                    "Director synthesis and delivery completed.",
+                );
+                crate::agentic::emit_agent(
+                    &app,
+                    &session_id,
+                    &crate::agentic::AgenticWorkerResult {
+                        id: "director".into(),
+                        name: "Director".into(),
+                        role: "Orchestration and integration".into(),
+                        assignment: "Own scope, permissions, integration, writes, verification, and delivery.".into(),
+                        status: "completed".into(),
+                        tool_count: agentic_director_tool_count,
+                        total_tokens,
+                        result_summary: terminal_summary.clone(),
+                        error: None,
+                    },
+                );
+                let agentic = crate::agentic::completion_payload(
+                    plan,
+                    &agentic_workers,
+                    &terminal_summary,
+                    &[],
+                    &[],
+                    &agentic_verification,
+                    total_tokens,
+                    agentic_director_tool_count,
+                    agentic_started.elapsed().as_millis() as u64,
+                );
+                emit(
+                    &app,
+                    &session_id,
+                    "done",
+                    json!({
+                        "summary": terminal_summary,
+                        "title": "AGENTIC delivery",
+                        "description": "",
+                        "files": [],
+                        "tech": [],
+                        "features": [],
+                        "total_tokens": total_tokens,
+                        "agentic": agentic,
+                    }),
+                );
+            }
             emit(
                 &app,
                 &session_id,
