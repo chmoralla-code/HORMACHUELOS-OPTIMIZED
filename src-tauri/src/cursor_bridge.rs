@@ -115,6 +115,7 @@ impl CursorAgenticMetrics {
 struct CursorAgenticScope {
     run_id: String,
     agent_id: String,
+    public_events: bool,
 }
 
 impl CursorTurnOutcome {
@@ -958,7 +959,9 @@ fn handle_event(
                 payload["agent_id"] = Value::String(scope.agent_id.clone());
                 payload["phase"] = Value::String("multi_agent".into());
             }
-            emit(app, session_id, "tool_call", payload);
+            if scope.map_or(true, |scope| scope.public_events) {
+                emit(app, session_id, "tool_call", payload);
+            }
         }
         "tool_result" => {
             let name = event.name.unwrap_or_else(|| "tool".into());
@@ -985,7 +988,9 @@ fn handle_event(
                 payload["agent_id"] = Value::String(scope.agent_id.clone());
                 payload["phase"] = Value::String("multi_agent".into());
             }
-            emit(app, session_id, "tool_result", payload);
+            if scope.map_or(true, |scope| scope.public_events) {
+                emit(app, session_id, "tool_result", payload);
+            }
         }
         "checkpoint" | "done" => {
             if let Some(id) = event.agent_id.filter(|s| !s.is_empty()) {
@@ -1081,6 +1086,86 @@ fn bounded_worker_summary(value: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn refine_cursor_worker_specs(
+    app: Arc<AppHandle>,
+    project_root: &str,
+    user_request: &str,
+    api_key: &str,
+    model: &str,
+    effort: &str,
+    command_timeout_secs: u64,
+    session_id: &str,
+    run: Arc<SessionRun>,
+    fallback: &[crate::agentic::AgenticWorkerSpec],
+) -> (Vec<crate::agentic::AgenticWorkerSpec>, u64) {
+    let base = format!(
+        "Split the request below into 2 or 3 genuinely independent READ-ONLY evidence assignments. Return exactly one JSON object and no markdown: {{\"workers\":[{{\"role\":\"short role\",\"assignment\":\"narrow evidence task\"}}]}}. Do not use tools. Workers cannot write, execute commands, control apps, connect accounts, ask questions, approve actions, or complete the parent turn.\n\nRequest:\n{user_request}"
+    );
+    let known_secrets = crate::integrations::loaded_tokens();
+    let mut total_tokens = 0_u64;
+    for attempt_index in 0..2 {
+        if run.cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        let prompt = if attempt_index == 0 {
+            base.clone()
+        } else {
+            format!("{base}\n\nYour prior output was malformed. Return JSON only with exactly 2 or 3 valid workers.")
+        };
+        let scope = CursorAgenticScope {
+            run_id: session_id.to_string(),
+            agent_id: "director-decomposition".into(),
+            public_events: false,
+        };
+        let mut smart_agent = SmartAgentRun::for_job(DirectorJob::Answer, false, false);
+        let mut flavour = FlavourRun::begin(
+            Path::new(project_root),
+            session_id,
+            user_request,
+            false,
+            &known_secrets,
+        );
+        if let Ok(outcome) = run_cursor_attempt(
+            app.clone(),
+            project_root,
+            &prompt,
+            user_request,
+            api_key,
+            model,
+            effort,
+            "research",
+            false,
+            false,
+            command_timeout_secs,
+            session_id,
+            run.clone(),
+            &[],
+            None,
+            false,
+            &mut smart_agent,
+            &mut flavour,
+            Some(scope),
+            true,
+        )
+        .await
+        {
+            total_tokens = total_tokens.saturating_add(outcome.total_tokens);
+            if let Some(specs) = crate::agentic::parse_specs(&outcome.answer_text) {
+                return (specs, total_tokens);
+            }
+        }
+    }
+    crate::agentic::emit_phase(
+        &app,
+        session_id,
+        crate::agentic::AgenticPhase::MultiAgent,
+        crate::agentic::AgenticPhaseState::Active,
+        "Structured Cursor decomposition was unavailable; using the validated deterministic assignments without inventing agents.",
+    );
+    (fallback.to_vec(), total_tokens)
+}
+
 /// Run real isolated Cursor agents as read-only evidence workers. The bridge
 /// owns one child-process slot, so worker calls are intentionally serialized;
 /// every worker still receives a fresh Cursor agent id and model conversation.
@@ -1096,7 +1181,32 @@ pub async fn run_cursor_agentic_workers(
     session_id: &str,
     run: Arc<SessionRun>,
     specs: &[crate::agentic::AgenticWorkerSpec],
-) -> Vec<crate::agentic::AgenticWorkerResult> {
+) -> crate::agentic::AgenticWorkerBatch {
+    crate::agentic::emit_phase(
+        &app,
+        session_id,
+        crate::agentic::AgenticPhase::MultiAgent,
+        crate::agentic::AgenticPhaseState::Active,
+        "Preparing bounded structured evidence assignments with the selected Cursor model.",
+    );
+    let (refined_specs, orchestration_tokens) = refine_cursor_worker_specs(
+        app.clone(),
+        project_root,
+        user_request,
+        api_key,
+        model,
+        effort,
+        command_timeout_secs,
+        session_id,
+        run.clone(),
+        specs,
+    )
+    .await;
+    let specs = if refined_specs.len() >= 2 {
+        refined_specs
+    } else {
+        specs.to_vec()
+    };
     crate::agentic::emit_phase(
         &app,
         session_id,
@@ -1137,6 +1247,7 @@ pub async fn run_cursor_agentic_workers(
         let scope = CursorAgenticScope {
             run_id: session_id.to_string(),
             agent_id: spec.id.clone(),
+            public_events: true,
         };
         let mut smart_agent = SmartAgentRun::for_job(DirectorJob::Answer, false, false);
         let mut flavour = FlavourRun::begin(
@@ -1265,7 +1376,10 @@ pub async fn run_cursor_agentic_workers(
             "Available worker evidence is ready; failed assignments remain visible for the Director."
         },
     );
-    results
+    crate::agentic::AgenticWorkerBatch {
+        workers: results,
+        orchestration_tokens,
+    }
 }
 
 /// Run one user turn through Cursor's local SDK agent.
