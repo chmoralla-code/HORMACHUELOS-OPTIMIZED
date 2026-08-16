@@ -1949,14 +1949,41 @@ export class Chat {
         case "run_start":
           this.runCompleted = false;
           this.setActivePermissionMode(msg.permissionMode);
+          this.agenticRun = msg.permissionMode === "agentic";
+          if (this.agenticRun) {
+            this.startAgenticWorkbench(msg.runId || `replay-${msg.at || this.now()}`, msg.at);
+          } else {
+            this.agenticWorkbench = null;
+          }
+          break;
+        case "agentic_plan":
+          this.startAgenticWorkbench(msg.runId, msg.at);
+          this.agenticWorkbench?.updatePlan({
+            run_id: msg.runId,
+            phases: msg.phases,
+            max_workers: msg.maxWorkers,
+          });
+          break;
+        case "agentic_phase":
+          this.agenticWorkbench?.updatePhase({
+            run_id: msg.runId,
+            phase: msg.phase,
+            state: msg.state,
+            detail: msg.detail,
+          });
+          break;
+        case "agentic_agent":
+          this.agenticWorkbench?.updateAgent(msg.agent);
           break;
         case "multi_agent_batch":
           this.showMultiAgentBatch(msg.tools);
           break;
         case "thinking":
-          this.showThinking(msg.iteration);
-          if (msg.text) this.appendThinkingText(msg.text);
-          this.markThinkingDone();
+          if (!this.agenticRun) {
+            this.showThinking(msg.iteration);
+            if (msg.text) this.appendThinkingText(msg.text);
+            this.markThinkingDone();
+          }
           break;
         case "assistant": {
           this.hideThinking();
@@ -1975,15 +2002,47 @@ export class Chat {
           this.node.appendChild(m);
           break;
         }
-        case "tool_call": this.queueTool(msg.id, msg.name, msg.arguments); break;
-        case "tool_result": this.appendToolResult(msg.id, msg.name, msg.ok, msg.content, msg.at); break;
-        case "done": this.appendDone(msg); break;
+        case "tool_call":
+          if (this.agenticRun || msg.runId) {
+            this.agenticWorkbench?.queueTool({
+              id: msg.id,
+              name: msg.name,
+              arguments: msg.arguments,
+              agent_id: msg.agentId,
+              phase: msg.phase,
+            });
+          } else {
+            this.queueTool(msg.id, msg.name, msg.arguments);
+          }
+          break;
+        case "tool_result":
+          if (this.agenticRun || msg.runId) {
+            this.agenticWorkbench?.finishTool({
+              id: msg.id,
+              name: msg.name,
+              ok: msg.ok,
+              content: msg.content,
+              agent_id: msg.agentId,
+              phase: msg.phase,
+            });
+          } else {
+            this.appendToolResult(msg.id, msg.name, msg.ok, msg.content, msg.at);
+          }
+          break;
+        case "done":
+          if (msg.agentic) {
+            this.completeAgenticWorkbench(msg.agentic, msg.at, msg.workMs);
+          } else {
+            this.appendDone(msg);
+          }
+          break;
         case "end": this.appendEnd(msg.reason, msg.at, msg.workMs); break;
         case "question": this.showQuestion(msg.id, msg.question, msg.options, msg.allow_other, msg.answer, msg.at); break;
         case "cancelled":
           this.runCompleted = false;
           this.sealPendingTools("cancelled");
-          this.appendSystemNote("Run cancelled.", msg.at);
+          if (this.agenticRun) this.agenticWorkbench?.cancel();
+          else this.appendSystemNote("Run cancelled.", msg.at);
           if (msg.workMs != null) this.sealAiTimestamp(msg.at, msg.workMs);
           break;
       }
