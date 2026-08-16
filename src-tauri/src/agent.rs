@@ -3197,8 +3197,8 @@ Describe each image briefly in the visible reply. Do not mention vision provider
                             &plan.workers,
                         )
                         .await;
-                        agentic_orchestration_tokens = agentic_orchestration_tokens
-                            .saturating_add(batch.orchestration_tokens);
+                        agentic_orchestration_tokens =
+                            agentic_orchestration_tokens.saturating_add(batch.orchestration_tokens);
                         agentic_workers = batch.workers;
                         agentic_evidence = crate::agentic::evidence_context(&agentic_workers);
                         if run.cancel.load(Ordering::SeqCst) {
@@ -3493,8 +3493,8 @@ Current user request:\n{prompt}",
             plan,
         )
         .await;
-        agentic_orchestration_tokens = agentic_orchestration_tokens
-            .saturating_add(batch.orchestration_tokens);
+        agentic_orchestration_tokens =
+            agentic_orchestration_tokens.saturating_add(batch.orchestration_tokens);
         agentic_workers = batch.workers;
         prompt.push_str(&crate::agentic::evidence_context(&agentic_workers));
         if run.cancel.load(Ordering::SeqCst) {
@@ -5336,8 +5336,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                         agentic_director_tool_count,
                         agentic_started.elapsed().as_millis() as u64,
                     );
-                    let aggregate_tokens =
-                        done_payload["agentic"]["facts"]["totalTokens"].clone();
+                    let aggregate_tokens = done_payload["agentic"]["facts"]["totalTokens"].clone();
                     done_payload["total_tokens"] = aggregate_tokens;
                 }
                 emit(&app, &session_id, "done", done_payload);
