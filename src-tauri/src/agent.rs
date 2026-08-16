@@ -4596,6 +4596,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
             if mode == "plan" && !run.plan_implementation_unlocked() && !plan_ready_emitted {
                 emit_plan_ready_card(&app, &session_id, total_tokens, "");
             }
+            let mut terminal_total_tokens = total_tokens;
             if let Some(plan) = agentic_plan.as_ref() {
                 let terminal_summary = resp
                     .text
@@ -4641,6 +4642,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 let aggregate_tokens = agentic["facts"]["totalTokens"]
                     .as_u64()
                     .unwrap_or(total_tokens);
+                terminal_total_tokens = aggregate_tokens;
                 emit(
                     &app,
                     &session_id,
@@ -4664,7 +4666,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                 json!({
                     "reason": "no_tool_calls",
                     "iteration": iteration,
-                    "total_tokens": total_tokens,
+                    "total_tokens": terminal_total_tokens,
                 }),
             );
             return Ok(None);
