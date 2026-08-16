@@ -4075,6 +4075,7 @@ The tool entries are historical summaries; use fresh tools for the current works
         let app_for_tool_preview = app.clone();
         let sid_for_tool_preview = session_id.clone();
         let secrets_for_tool_preview = known_integration_secrets.clone();
+        let phase_for_tool_preview = is_agentic.then(|| mode.clone());
         let tool_preview_names = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
             usize,
             String,
@@ -4119,6 +4120,9 @@ The tool entries are historical summaries; use fresh tools for the current works
                         "id": format!("tool-preview-{iteration}-{index}"),
                         "name": resolved_name,
                         "arguments_delta": arguments_delta,
+                        "run_id": is_agentic.then_some(sid_for_tool_preview.as_str()),
+                        "agent_id": is_agentic.then_some("director"),
+                        "phase": phase_for_tool_preview.as_deref(),
                     }),
                 );
             });
@@ -5179,15 +5183,25 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                             "content": "Running one final Director verification pass before delivery.",
                         }),
                     );
-                    emit(
-                        &app,
-                        &session_id,
-                        "reasoning",
-                        json!({
-                            "text": "Verifying the workspace before delivery...",
-                            "iteration": iteration,
-                        }),
-                    );
+                    if let Some(plan) = agentic_plan.as_ref() {
+                        crate::agentic::emit_phase(
+                            &app,
+                            &session_id,
+                            plan.effective_phase(),
+                            crate::agentic::AgenticPhaseState::Active,
+                            "Running the final Director verification pass before delivery.",
+                        );
+                    } else {
+                        emit(
+                            &app,
+                            &session_id,
+                            "reasoning",
+                            json!({
+                                "text": "Verifying the workspace before delivery...",
+                                "iteration": iteration,
+                            }),
+                        );
+                    }
                     // Finish every tool result declared by this assistant
                     // message before appending a new user instruction. Putting
                     // the review prompt between sibling tool results violates
