@@ -160,7 +160,7 @@ async fn save_settings(
     settings.permission_mode = match mode.as_str() {
         "auto" => "adaptive".into(),
         "full" => "build".into(),
-        "adaptive" | "ask" | "research" | "plan" | "build" | "multi_agent" => mode,
+        "adaptive" | "agentic" | "ask" | "research" | "plan" | "build" | "multi_agent" => mode,
         _ => {
             if settings.auto_approve {
                 "adaptive".into()
@@ -171,7 +171,7 @@ async fn save_settings(
     };
     settings.auto_approve = matches!(
         settings.permission_mode.as_str(),
-        "adaptive" | "build" | "multi_agent"
+        "adaptive" | "agentic" | "build" | "multi_agent"
     );
     settings.capability_mode =
         config::normalize_capability_for_mode(&settings.permission_mode, &settings.capability_mode);
