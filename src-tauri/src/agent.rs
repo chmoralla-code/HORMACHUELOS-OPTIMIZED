@@ -3345,6 +3345,9 @@ Current user request:\n{prompt}",
                             metrics.tool_count,
                             agentic_started.elapsed().as_millis() as u64,
                         );
+                        let aggregate_tokens = agentic["facts"]["totalTokens"]
+                            .as_u64()
+                            .unwrap_or(metrics.total_tokens);
                         emit(
                             &app,
                             &session_id,
@@ -3356,7 +3359,7 @@ Current user request:\n{prompt}",
                                 "files": metrics.changed_files,
                                 "tech": [],
                                 "features": [],
-                                "total_tokens": metrics.total_tokens,
+                                "total_tokens": aggregate_tokens,
                                 "agentic": agentic,
                             }),
                         );
@@ -3367,7 +3370,7 @@ Current user request:\n{prompt}",
                             json!({
                                 "reason": if plan.build { "completed" } else { "no_tool_calls" },
                                 "iteration": 0,
-                                "total_tokens": metrics.total_tokens,
+                                "total_tokens": aggregate_tokens,
                             }),
                         );
                     }
@@ -4635,6 +4638,9 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     agentic_director_tool_count,
                     agentic_started.elapsed().as_millis() as u64,
                 );
+                let aggregate_tokens = agentic["facts"]["totalTokens"]
+                    .as_u64()
+                    .unwrap_or(total_tokens);
                 emit(
                     &app,
                     &session_id,
@@ -4646,7 +4652,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                         "files": [],
                         "tech": [],
                         "features": [],
-                        "total_tokens": total_tokens,
+                        "total_tokens": aggregate_tokens,
                         "agentic": agentic,
                     }),
                 );
@@ -5328,6 +5334,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                         agentic_director_tool_count,
                         agentic_started.elapsed().as_millis() as u64,
                     );
+                    done_payload["total_tokens"] = done_payload["agentic"]["facts"]["totalTokens"].clone();
                 }
                 emit(&app, &session_id, "done", done_payload);
                 return Ok(None);
