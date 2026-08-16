@@ -30,7 +30,7 @@ test("live three-agent Workbench shows simultaneous desktop lanes and filtering"
   await expect(page.locator(".agentic-lane:visible")).toHaveCount(3);
   await expect(page.locator(".agentic-agent-card")).toHaveCount(4);
   await expect(page.locator(".agentic-tool-card")).toHaveCount(4);
-  await page.getByRole("button", { name: "Worker 1", exact: false }).click();
+  await page.getByRole("button", { name: "Worker 1", exact: true }).click();
   await expect(page.locator(".agentic-tool-card")).toHaveCount(1);
   await expect(page.locator(".agentic-tool-meta")).toContainText("Worker 1");
   await expect(page.getByRole("document", { name: "AI response" })).toBeVisible();
@@ -98,7 +98,7 @@ for (const scenario of ["simple", "partial", "cancelled", "unverified"]) {
 
 test("Inspect run restores lanes, collapse restores focus, and reply copy remains available", async ({ page }) => {
   await openScenario(page, "success", { width: 1180, height: 980 });
-  const inspect = page.getByRole("button", { name: "Inspect run" });
+  const inspect = page.locator(".agentic-inspect-button");
   await inspect.click();
   await expect(page.locator(".agentic-lanes")).not.toHaveClass(/is-collapsed/);
   const tool = page.locator(".agentic-tool-card summary").first();
@@ -115,6 +115,6 @@ test("reduced-motion preference preserves the complete accessible state", async 
   await expect(page.getByRole("heading", { name: "Delivery Board" })).toBeVisible();
   const duration = await page.locator(".agentic-workbench").evaluate((node) =>
     getComputedStyle(node).transitionDuration);
-  expect(["0s", "0.00001s"]).toContain(duration);
+  expect(["0s", "0.00001s", "1e-05s"]).toContain(duration);
   await expectNoHorizontalOverflow(page);
 });
