@@ -39,21 +39,21 @@ const DESKTOP_DOWNLOADS = {
   },
 };
 
-/** Independent FPS-focused edition with Adaptive Director and maximized modes. */
+/** Independent performance-focused edition with the opt-in AGENTIC Workbench. */
 const OPTIMIZED_DOWNLOAD_BASE =
-  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.16";
+  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.0";
 
 const OPTIMIZED_DOWNLOADS = {
-  version: "1.2.16",
-  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.2.16",
+  version: "1.3.0",
+  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.3.0",
   windows: {
     msi: {
       label: "Optimized installer (MSI)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.16_x64.msi`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.0_x64.msi`,
     },
     setup: {
       label: "Optimized setup (EXE)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.16_x64-setup.exe`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.0_x64-setup.exe`,
     },
   },
 };
@@ -2772,13 +2772,13 @@ function renderDownload() {
       <div class="card" id="optimized-download" style="margin:20px 0;border-color:var(--primary)">
         <div class="eyebrow" style="margin-bottom:10px"><span class="dot"></span> New optimized release</div>
         <h3 style="margin-top:0">Hormachuelos Optimized v${optimized.version}</h3>
-        <p class="muted small">The safer autonomous-work release with one-command checkpoint rollback and the Clearline AI response layout. Installs independently from the standard edition.</p>
+        <p class="muted small">The optional AGENTIC Workbench release adds a Director-led workflow, real read-only evidence workers, and a cleaner split execution layout. Adaptive remains the default, and this edition installs independently from the standard release.</p>
         <ul class="small" style="margin:14px 0 0;padding-left:20px">
-          <li><strong>One-command rollback</strong> — type rollback or undo, confirm the protected action, and restore the latest AI change without spending model usage.</li>
-          <li><strong>Clearline AI replies</strong> — quiet section dividers, stronger bold hierarchy, true nested lists, refined code and file chips, and visible reply actions.</li>
-          <li><strong>Mission Control</strong> — durable goals, boundaries, approval policy, execution depth, and measurable finish lines.</li>
-          <li><strong>Workspace Time Machine</strong> — protected run history, action evidence, Undo Last, and conflict-aware rollback.</li>
-          <li><strong>Test &amp; Fix Everything</strong> — a closed inspect, test, repair, and retest loop with honest proof states.</li>
+          <li><strong>AGENTIC Director</strong> — scopes Ask, Plan, Research, Multi-Agent, and Build, then skips phases that do not add value.</li>
+          <li><strong>Real read-only workers</strong> — runs up to three isolated workers on the selected model while one Director remains the only writer.</li>
+          <li><strong>Execution Workbench</strong> — separates public Progress, Tools, and Agents into responsive, keyboard-accessible lanes.</li>
+          <li><strong>Evidence-backed Delivery Board</strong> — reports outcome, changes, verification, contributions, risks, and run facts without inventing passes.</li>
+          <li><strong>Clearline answers and safety</strong> — keeps full-width readable replies, Mission Control, Time Machine, rollback, and approval boundaries.</li>
         </ul>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
           <a class="btn btn-primary" id="optimized-exe" href="${optimized.windows.setup.href}">${escapeHtml(optimized.windows.setup.label)}</a>
