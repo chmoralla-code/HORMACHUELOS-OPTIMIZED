@@ -1076,6 +1076,8 @@ pub async fn run_cursor_turn(
             requires_project_completion,
             &mut smart_agent,
             flavour,
+            None,
+            requested_permission_mode.eq_ignore_ascii_case("agentic"),
         )
         .await?;
 
@@ -1253,6 +1255,8 @@ async fn run_cursor_attempt(
     requires_project_completion: bool,
     smart_agent: &mut SmartAgentRun,
     flavour: &mut FlavourRun,
+    scope: Option<CursorAgenticScope>,
+    suppress_reasoning: bool,
 ) -> Result<CursorTurnOutcome> {
     let bridge = bridge_script_path()?;
     let node_runtime = node_runtime_path(&bridge);
@@ -1272,7 +1276,9 @@ async fn run_cursor_attempt(
         desktop_computer_use_active,
     );
 
-    emit(&app, session_id, "thinking", json!({ "iteration": 0 }));
+    if !suppress_reasoning {
+        emit(&app, session_id, "thinking", json!({ "iteration": 0 }));
+    }
 
     let bounded_history = bounded_cursor_history(history);
     let request = json!({
@@ -1563,6 +1569,8 @@ async fn run_cursor_attempt(
                         &mut activity,
                         flavour,
                         model,
+                        scope.as_ref(),
+                        suppress_reasoning,
                     );
                     if event_kind == "done" && recoverable_interruption.is_some() {
                         // The bridge has sealed every visible tool card and
@@ -1633,6 +1641,9 @@ async fn run_cursor_attempt(
         agent_id: agent_id_out,
         completion_marker_seen,
         answer_text_seen,
+        answer_text: activity.answer_text,
+        total_tokens: activity.total_tokens,
+        tool_count: activity.tool_count,
         terminal: false,
         made_concrete_progress: activity.made_concrete_progress,
         recoverable_interruption,
