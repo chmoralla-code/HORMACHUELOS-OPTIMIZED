@@ -1951,7 +1951,20 @@ export class Chat {
           this.setActivePermissionMode(msg.permissionMode);
           this.agenticRun = msg.permissionMode === "agentic";
           if (this.agenticRun) {
-            this.startAgenticWorkbench(msg.runId || `replay-${msg.at || this.now()}`, msg.at);
+            const runId = msg.runId || `replay-${msg.at || this.now()}`;
+            const workbench = this.startAgenticWorkbench(runId, msg.at);
+            if (msg.agenticState?.phases.length) {
+              workbench.updatePlan({
+                run_id: runId,
+                phases: msg.agenticState.phases,
+                max_workers: Math.min(3, msg.agenticState.agents.filter(
+                  (agent) => agent.id !== "director",
+                ).length || 3),
+              });
+            }
+            for (const agent of msg.agenticState?.agents || []) {
+              workbench.updateAgent(agent);
+            }
           } else {
             this.agenticWorkbench = null;
           }
