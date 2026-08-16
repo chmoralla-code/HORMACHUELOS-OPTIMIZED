@@ -10,7 +10,7 @@ export default defineConfig({
   reporter: [["list"], ["json", { outputFile: "test-results/reply-layout-report.json" }]],
   outputDir: "test-results/reply-layout",
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1",
+    command: "npm run preview -- --host 127.0.0.1 --port 1420",
     url: "http://127.0.0.1:1420/reply-layout-harness.html",
     reuseExistingServer: false,
     timeout: 120_000,

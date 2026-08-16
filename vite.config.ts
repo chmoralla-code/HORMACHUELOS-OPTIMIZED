@@ -22,6 +22,7 @@ export default defineConfig({
       input: {
         main: "src/index.html",
         computerFx: "src/computer-fx.html",
+        replyLayout: "src/reply-layout-harness.html",
       },
     },
   },

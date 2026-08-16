@@ -911,10 +911,15 @@ function renderMarkdownLists(text: string): string {
 }
 
 function emphasizeMarkdownLeadLabels(text: string): string {
-  return text.replace(
-    /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)((?:[A-Z][A-Za-z0-9/&+()'’ -]{1,36}):)(?=\s+\S)/gm,
-    '$1<strong class="md-lead">$2</strong>',
-  );
+  return text
+    .replace(
+      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)<strong>([A-Z][^<\n]{1,44}:)<\/strong>(?=\s+\S)/gm,
+      '$1<strong class="md-lead">$2</strong>',
+    )
+    .replace(
+      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)((?:[A-Z][A-Za-z0-9/&+()'’ -]{1,36}):)(?=\s+\S)/gm,
+      '$1<strong class="md-lead">$2</strong>',
+    );
 }
 
 function renderMarkdownBlockquotes(text: string): string {
