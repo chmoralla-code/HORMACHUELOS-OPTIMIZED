@@ -43,7 +43,7 @@ export const BUILTIN_HOSTED_PROVIDERS = Object.freeze([
 
 // Cursor uses its local SDK and Ollama is intentionally local-only. Neither
 // can be safely represented as a server-side OpenAI-compatible route.
-const LOCAL_ONLY_PROVIDERS = new Set(["cursor", "ollama"]);
+const LOCAL_ONLY_PROVIDERS = new Set(["cursor", "ollama", "gemini_cli"]);
 const PROVIDER_ALIAS_RE = /^[a-z][a-z0-9_-]{0,48}$/;
 // Model aliases may include provider-prefixed ids (e.g. "deepseek/deepseek-v4-pro")
 // so the desktop's real model ids can be used as public aliases. The alias is
@@ -130,7 +130,7 @@ export function normalizeHostedProviderAlias(value) {
   if (!isHostedProviderAlias(provider)) {
     throw Object.assign(
       new Error(
-        "Provider alias must use lowercase letters, numbers, dashes, or underscores (and cannot be cursor or ollama).",
+        "Provider alias must use lowercase letters, numbers, dashes, or underscores (and cannot be cursor, ollama, or gemini_cli).",
       ),
       { status: 400 },
     );

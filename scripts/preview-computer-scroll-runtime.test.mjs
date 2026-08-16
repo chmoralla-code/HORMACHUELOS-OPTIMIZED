@@ -29,6 +29,18 @@ class FakeElement {
     this.scrollTop = scrollTop;
     this.innerText = text;
     this.textContent = text;
+    this.className = "";
+    this.offsetWidth = 1;
+    this.classList = {
+      add: (...names) => {
+        this.className = [...new Set(`${this.className} ${names.join(" ")}`.trim().split(/\s+/))].join(" ");
+      },
+      remove: (...names) => {
+        const drop = new Set(names);
+        this.className = this.className.split(/\s+/).filter((name) => name && !drop.has(name)).join(" ");
+      },
+      contains: (name) => this.className.split(/\s+/).includes(name),
+    };
     this.style = {};
     this.dataset = {};
     this.isConnected = Boolean(parent);
@@ -59,22 +71,72 @@ class FakeElement {
   checkValidity() { return this.validationMessage === ""; }
   matches(selector) {
     return String(selector).split(",").some((part) => {
-      const value = part.trim().toLowerCase();
-      if (value.startsWith("#")) return value.slice(1) === this.id.toLowerCase();
-      if (value === "input" || value.startsWith("input[")) return this.tagName === "INPUT";
-      if (value === "textarea") return this.tagName === "TEXTAREA";
-      if (value === "select") return this.tagName === "SELECT";
-      if (value === "button") return this.tagName === "BUTTON";
-      if (value === "a[href]") return this.tagName === "A";
+      const value = part.trim();
+      const lower = value.toLowerCase();
+      if (!value) return false;
+      if (lower.startsWith("#")) return this.id.toLowerCase() === lower.slice(1);
+      if (lower.startsWith(".")) return this.className.split(/\s+/).includes(value.slice(1));
+      if (lower === "a[href]" || lower === "a") return this.tagName === "A";
+      if (lower.startsWith("input[type=")) {
+        const type = lower.slice("input[type=".length).replace(/['"\]]/g, "");
+        return this.tagName === "INPUT" && String(this.type).toLowerCase() === type;
+      }
+      if (lower === "input" || lower.startsWith("input[")) return this.tagName === "INPUT";
+      if (lower === "textarea") return this.tagName === "TEXTAREA";
+      if (lower === "select") return this.tagName === "SELECT";
+      if (lower === "option") return this.tagName === "OPTION";
+      if (lower === "button") return this.tagName === "BUTTON";
+      if (lower === "summary") return this.tagName === "SUMMARY";
+      if (lower === "canvas") return this.tagName === "CANVAS";
+      if (lower === "video") return this.tagName === "VIDEO";
+      if (lower === "tr") return this.tagName === "TR";
+      if (lower === "td") return this.tagName === "TD";
+      if (lower === "li") return this.tagName === "LI";
+      if (lower === "article") return this.tagName === "ARTICLE";
+      if (lower === "[data-href]") return this.hasAttribute("data-href");
+      if (lower === "[data-horma-ai-ref]") return this.hasAttribute("data-horma-ai-ref");
+      if (lower.startsWith("[contenteditable")) return Boolean(this.isContentEditable);
+      if (lower.startsWith("[role=")) {
+        const role = lower.slice(6).replace(/['"\]]/g, "");
+        return String(this.getAttribute("role") || "").toLowerCase() === role;
+      }
+      if (lower.startsWith("[tabindex]")) return this.hasAttribute("tabindex");
       return false;
     });
   }
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (typeof node.matches === "function" && node.matches(selector)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
   getBoundingClientRect() { return { ...this.rect }; }
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+  querySelectorAll(selector) {
+    const parts = String(selector).split(",").map((part) => part.trim()).filter(Boolean);
+    const matches = [];
+    const walk = (node) => {
+      for (const child of node.children || []) {
+        if (parts.some((part) => typeof child.matches === "function" && child.matches(part))) {
+          matches.push(child);
+        }
+        walk(child);
+      }
+    };
+    walk(this);
+    return matches;
+  }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   hasAttribute(name) { return this.attributes.has(name); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   removeAttribute(name) { this.attributes.delete(name); }
   dispatchEvent(event) { this.lastEvent = event; return true; }
+  addEventListener() {}
+  removeEventListener() {}
 
   append(...nodes) {
     for (const node of nodes) {
@@ -130,8 +192,27 @@ function makeScene() {
     id: "password", type: "password", parent: body, top: 545, left: 100,
     width: 220, height: 36, value: "",
   });
+  const table = new FakeElement("table", { parent: body, top: 80, left: 100, width: 600, height: 50 });
+  const row = new FakeElement("tr", {
+    parent: table, top: 90, left: 100, width: 600, height: 40, text: "Crispy King Ormoc Main",
+  });
+  row.computedStyle.cursor = "pointer";
+  const nameCell = new FakeElement("td", {
+    parent: row, top: 90, left: 100, width: 280, height: 40, text: "Crispy King Ormoc Main",
+  });
+  const link = new FakeElement("a", {
+    parent: nameCell, top: 94, left: 110, width: 220, height: 24, text: "Crispy King Ormoc Main",
+  });
+  link.setAttribute("href", "/payroll/1");
+  const periodCell = new FakeElement("td", {
+    parent: row, top: 90, left: 400, width: 200, height: 40, text: "August 2026",
+  });
+  const menu = new FakeElement("button", {
+    parent: row, top: 96, left: 640, width: 28, height: 28, text: "...",
+  });
 
   const hitPane = (x, y) => x >= 100 && x <= 700 && y >= 150 && y <= 450;
+  const collect = (selector) => page.querySelectorAll(selector);
   const document = {
     documentElement: page,
     head,
@@ -140,28 +221,25 @@ function makeScene() {
     activeElement: body,
     title: "Role Management",
     location: { href: "http://localhost:3100/supervisor/users" },
-    elementFromPoint: (x, y) => hitPane(Number(x), Number(y)) ? cell : body,
-    querySelector: (selector) => selector === "#roles-table"
-      ? pane
-      : selector === "#deadline"
-        ? deadline
-        : selector === "#password"
-          ? password
-          : null,
-    querySelectorAll: (selector) => {
-      if (selector === "#roles-table") return [pane];
-      if (selector === "#deadline") return [deadline];
-      if (selector === "#password") return [password];
-      if (String(selector).includes("input")) return [deadline, password];
-      if (selector === "[data-horma-ai-ref]") {
-        return pane.hasAttribute("data-horma-ai-ref") ? [pane] : [];
-      }
-      return [];
+    elementFromPoint: (x, y) => {
+      const px = Number(x);
+      const py = Number(y);
+      if (px >= 640 && px <= 668 && py >= 96 && py <= 124) return menu;
+      if (px >= 400 && px <= 600 && py >= 90 && py <= 130) return periodCell;
+      if (px >= 100 && px <= 399 && py >= 90 && py <= 130) return nameCell;
+      return hitPane(px, py) ? cell : body;
     },
+    querySelector: (selector) => collect(selector)[0] || null,
+    querySelectorAll: collect,
     createElement: (tag) => new FakeElement(tag),
+    addEventListener() {},
+    removeEventListener() {},
   };
 
-  return { page, head, body, pane, cell, deadline, password, document };
+  return {
+    page, head, body, pane, cell, deadline, password, document,
+    table, row, nameCell, link, periodCell, menu,
+  };
 }
 
 function setRootScroll(scene, y, mirror) {
@@ -286,6 +364,22 @@ async function exerciseNativeControlRuntime({ scene, drive, observe }) {
   assert.equal(Object.hasOwn(passwordTarget || {}, "value"), false);
 }
 
+async function exerciseRowClickRuntime({ scene, drive }) {
+  scene.link.clicked = 0;
+  scene.menu.clicked = 0;
+  scene.periodCell.clicked = 0;
+  scene.row.clicked = 0;
+
+  await drive([{ type: "click", x: 500, y: 110, duration_ms: 0 }]);
+  assert.equal(scene.link.clicked, 1, "clicking a period cell must activate the row's navigation link");
+  assert.equal(scene.menu.clicked || 0, 0, "row-link activation must not click a sibling menu button");
+  assert.equal(scene.periodCell.clicked || 0, 0, "the inert period cell must not be the activation target");
+
+  await drive([{ type: "click", x: 650, y: 110, duration_ms: 0 }]);
+  assert.equal(scene.menu.clicked, 1, "clicking a row action button must keep that button");
+  assert.equal(scene.link.clicked, 1, "a row menu click must not also activate the row link");
+}
+
 function compileTypeScript(source) {
   return ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
@@ -296,10 +390,24 @@ async function loadSameOriginController() {
   const policyUrl = `data:text/javascript;base64,${Buffer.from(
     compileTypeScript(read("src/components/preview-scroll-policy.ts")),
   ).toString("base64")}`;
+  const qaUrl = `data:text/javascript;base64,${Buffer.from(
+    compileTypeScript(read("src/components/preview-computer-qa.ts")),
+  ).toString("base64")}`;
+  const cursorUrl = `data:text/javascript;base64,${Buffer.from(
+    compileTypeScript(read("src/computer-cursor.ts")),
+  ).toString("base64")}`;
   const controller = compileTypeScript(read("src/components/preview-computer-use.ts"))
     .replace(
       /from\s+["']\.\/preview-scroll-policy["']/,
       `from ${JSON.stringify(policyUrl)}`,
+    )
+    .replace(
+      /from\s+["']\.\/preview-computer-qa["']/,
+      `from ${JSON.stringify(qaUrl)}`,
+    )
+    .replace(
+      /from\s+["']\.\.\/computer-cursor["']/,
+      `from ${JSON.stringify(cursorUrl)}`,
     );
   const controllerUrl = `data:text/javascript;base64,${Buffer.from(controller).toString("base64")}`;
   return import(controllerUrl);
@@ -333,6 +441,8 @@ test("same-origin controller scrolls nested panes and chains at their boundary",
     devicePixelRatio: 1,
     getComputedStyle: (element) => element.computedStyle,
     matchMedia: () => ({ matches: true }),
+    addEventListener() {},
+    removeEventListener() {},
     setTimeout,
     clearTimeout,
     scrollBy: ({ left = 0, top = 0 }) => scene.page.scrollBy({ left, top }),
@@ -345,6 +455,8 @@ test("same-origin controller scrolls nested panes and chains at their boundary",
   installGlobal(t, "window", view);
   installGlobal(t, "CSS", { escape: (value) => String(value) });
   installGlobal(t, "WheelEvent", FakeEvent);
+  installGlobal(t, "PointerEvent", FakeEvent);
+  installGlobal(t, "MouseEvent", FakeEvent);
   installGlobal(t, "InputEvent", FakeEvent);
   installGlobal(t, "Event", FakeEvent);
 
@@ -361,6 +473,7 @@ test("same-origin controller scrolls nested panes and chains at their boundary",
     drive,
     observe: () => runFrameComputerUse(frame, request("observe")),
   });
+  await exerciseRowClickRuntime({ scene, drive });
 });
 
 function extractNativeBrowserController() {
@@ -387,6 +500,8 @@ test("native Preview Browser script scrolls nested panes and chains at their bou
     CSS: { escape: (value) => String(value) },
     getComputedStyle: (element) => element.computedStyle,
     matchMedia: () => ({ matches: true }),
+    addEventListener() {},
+    removeEventListener() {},
     setTimeout,
     clearTimeout,
     console,
@@ -422,4 +537,5 @@ test("native Preview Browser script scrolls nested panes and chains at their bou
     drive,
     observe: () => controller.observe(),
   });
+  await exerciseRowClickRuntime({ scene, drive });
 });

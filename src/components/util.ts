@@ -394,8 +394,415 @@ function normalizePlainAssistantMarkdown(src: string): string {
   const withoutToolMarkup = src
     .replace(/<\s*(?:tool_call|function_call|tool_use)\b[^>]*>[\s\S]*?<\/\s*(?:tool_call|function_call|tool_use)\s*>/gi, "")
     .replace(/^\s*<\/?\s*(?:tool_call|function_call|tool_use)\b[^>]*>\s*$/gim, "");
-  const lines = repairFragmentedPaths(withoutToolMarkup.split("\n"));
+  const repaired = promoteReadableSections(repairGluedProse(withoutToolMarkup));
+  const lines = repairFragmentedPaths(repaired.split("\n"));
   return normalizeCompletionBlock(lines).join("\n");
+}
+
+function isProcessSentence(sentence: string): boolean {
+  const lower = sentence.trim().replace(/^["'`*]+/, "").toLowerCase();
+  if (!lower) return false;
+  if (
+    lower.includes("auto-view timed out") ||
+    lower.includes("autoview timed out") ||
+    lower.includes("let me call view_image") ||
+    lower.includes("call view_image on") ||
+    lower.includes("pure description request") ||
+    lower.includes("no tools needed")
+  ) {
+    return true;
+  }
+  return [
+    "the user wants",
+    "the user just wants",
+    "the user asked",
+    "the user is asking",
+    "this is a pure",
+    "let me describe",
+    "i'll describe",
+    "i will describe",
+    "let me call",
+    "let me look",
+    "let me explore",
+    "i'll explore",
+    "i will explore",
+    "let me inspect",
+    "i'll look",
+    "i will look",
+    "let and explore",
+    "let me also",
+    "i'll also",
+    "next i'll",
+    "now i'll",
+    "let me simplify",
+    "let me give",
+    "let me write",
+    "i'll write",
+    "i will write",
+    "let me provide",
+    "i'll provide",
+    "i will provide",
+    "let me compose",
+    "let me verify",
+    "let me check",
+    "let me start",
+    "let me dig",
+    "i'll dig",
+    "i will dig",
+    "okay, the user",
+    "ok, the user",
+  ].some((prefix) => lower.startsWith(prefix));
+}
+
+/** Drop a trailing "Let me…" / "I'll…" promise so the visible bubble keeps the answer. */
+export function stripTrailingPendingAction(text: string): string {
+  let out = String(text || "").trim();
+  const pending = out.match(
+    /(?:\s+|[—–;:]\s*)(?:let me|i(?:'|’)ll|i will)\s+(?:verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|explore|analy[sz]e|examine|review|investigate|search|scan|dig)\b[\s\S]*$/i,
+  );
+  if (pending?.index != null) {
+    const before = out.slice(0, pending.index).trim();
+    if ([...before].length >= 12) out = before;
+  }
+  return out;
+}
+
+/** Turn a sealed thought into the user-facing reply when the model never posted one. */
+export function visibleAnswerFromThought(thought: string): string {
+  const stripped = compactVisibleReply(thought);
+  return [...stripped].length >= 12 ? stripped : "";
+}
+
+const PROGRESS_ACTION =
+  /\blet me (verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|explore|analyze|dig)\b/i;
+
+function isProgressOnlyBlock(block: string): boolean {
+  const trimmed = block.trim();
+  if (!trimmed) return true;
+  const sentences = trimmed.split(/(?<=[.!?…])\s+/).map((part) => part.trim()).filter(Boolean);
+  if (!sentences.length) return true;
+  return sentences.every((sentence) => {
+    const lower = sentence.toLowerCase();
+    return (
+      /^(let me (verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|call|describe|explore|analyze|dig|write|provide|compose)\b)/i.test(sentence) ||
+      /^(let and explore\b)/i.test(sentence) ||
+      /^(i'll |i will |next i'll |now i'll )(verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|call|explore|analyze|dig)\b/i.test(sentence) ||
+      (PROGRESS_ACTION.test(lower) && sentence.length < 180 && /^(let me |i'll |i will )/i.test(sentence))
+    );
+  });
+}
+
+/** Insert a missing space when stream chunks glue "word.Word" or "**bold**Next". */
+export function repairGluedProse(text: string): string {
+  return String(text || "")
+    .split(/(```[\s\S]*?```)/g)
+    .map((segment, index) => {
+      if (index % 2 === 1) return segment;
+      return segment
+        .replace(/([a-z0-9])([.!?…])([A-Z])/g, "$1$2 $3")
+        .replace(/(\*\*[^*]+?\*\*)(?=[A-Za-z(])/g, "$1 ");
+    })
+    .join("");
+}
+
+function streamJoinGap(left: string, right: string): string {
+  if (/\s$/.test(left) || /^\s/.test(right)) return "";
+  const a = left.slice(-1);
+  const b = right.charAt(0);
+  if (!a || !b) return "";
+  if (/[.!?…]/.test(a) && /[A-Za-z]/.test(b)) return " ";
+  if (/[a-z0-9*]/.test(a) && /[A-Z]/.test(b)) return " ";
+  return "";
+}
+
+/** Merge a reasoning/prose delta without duplicating a full snapshot. */
+export function joinStreamChunks(left: string, right: string): string {
+  if (!right) return left || "";
+  if (!left) return right;
+  if (right.startsWith(left)) return right;
+  if (left.startsWith(right)) return left;
+  if (left.endsWith(right)) return left;
+  const max = Math.min(left.length, right.length, 240);
+  for (let n = max; n >= 12; n -= 1) {
+    if (left.slice(-n) === right.slice(0, n)) return left + right.slice(n);
+  }
+  return left + streamJoinGap(left, right) + right;
+}
+
+/** Cut a reasoning loop that reprints its opening paragraph. */
+export function dedupeLoopedReasoning(text: string): string {
+  const src = String(text || "");
+  if (src.length < 80) return src;
+  const probeLen = Math.min(140, Math.floor(src.length / 2));
+  const probe = src.slice(0, probeLen);
+  const second = src.indexOf(probe, Math.max(24, probeLen - 16));
+  if (second >= probeLen - 16) return src.slice(0, second).trimEnd();
+  return src;
+}
+
+export function mergeReasoningStream(existing: string, chunk: string): string {
+  return dedupeLoopedReasoning(repairGluedProse(joinStreamChunks(String(existing || ""), String(chunk || ""))));
+}
+
+function promoteReadableSections(src: string): string {
+  return String(src || "").replace(
+    /^(?:\*\*|__)([^\n*]{2,72}?)(?:-)?(?:\*\*|__)\s*-{0,3}\s*$/gm,
+    "## $1",
+  );
+}
+
+function dropOrphanContinuations(text: string, dropLowercase = false): string {
+  let remaining = String(text || "").trimStart();
+  while (remaining) {
+    const match = remaining.match(/^[\s\S]*?(?:[.!?…]|\n|$)/);
+    const sentence = match?.[0] || remaining;
+    if (!sentence) break;
+    if (!sentence.trim()) {
+      remaining = remaining.slice(sentence.length);
+      continue;
+    }
+    const trimmed = sentence.trim();
+    const danglingLead = /^-based\b|^based answer\.?$/i.test(trimmed);
+    const lowercaseFragment =
+      dropLowercase &&
+      /^[a-z]/.test(trimmed) &&
+      trimmed.length < 140 &&
+      !/^`|^[-*] |^#{1,3}\s/.test(trimmed);
+    if (danglingLead || lowercaseFragment) {
+      remaining = remaining.slice(sentence.length);
+      continue;
+    }
+    break;
+  }
+  return remaining.trim();
+}
+
+const PROJECT_PATH_ROOT =
+  "(?:src|app|apps|lib|libs|website|web|server|client|components|pages|hooks|utils|api|public|static|tests?|spec|scripts?|src-tauri|crates|packages?|modules?|config|configs|types|styles)";
+const PROJECT_PATH_EXT =
+  "(?:ts|tsx|js|jsx|mjs|cjs|cts|mts|css|scss|sass|less|html|htm|md|mdx|json|jsonc|rs|py|vue|svelte|go|java|kt|kts|sql|toml|yml|yaml|xml|sh|bash|ps1|svg|png|jpe?g|gif|webp|ico|txt|env)";
+function projectFilePathPattern(global = false): RegExp {
+  return new RegExp(
+    `(?:\\.?[/\\\\])?(?:${PROJECT_PATH_ROOT})(?:[/\\\\][^/\\\\\\s\`'"\\]]+)+\\.${PROJECT_PATH_EXT}`,
+    global ? "gi" : "i",
+  );
+}
+const ABSOLUTE_FILE_PATH_RE =
+  /(?:[a-zA-Z]:[\\/]|\\\\|\/(?:Users|home|var|opt|tmp|usr)\/)\S+/;
+
+function mapOutsideFences(text: string, transform: (segment: string) => string): string {
+  return String(text || "")
+    .split(/(```[\s\S]*?```)/g)
+    .map((segment, index) => (index % 2 === 1 ? segment : transform(segment)))
+    .join("");
+}
+
+function looksLikeAbsoluteFilePath(value: string): boolean {
+  return ABSOLUTE_FILE_PATH_RE.test(String(value || "").trim());
+}
+
+export function looksLikeProjectFilePath(value: string): boolean {
+  const text = String(value || "").trim().replace(/^[`'"]+|[`'"]+$/g, "");
+  if (!text || looksLikeAbsoluteFilePath(text)) return false;
+  const pattern = projectFilePathPattern();
+  const extension = text.includes(".") ? text.slice(text.lastIndexOf(".") + 1) : "";
+  const standaloneFile =
+    /^[A-Za-z0-9_@.-]+$/.test(text) &&
+    new RegExp("^" + PROJECT_PATH_EXT + "$", "i").test(extension);
+  return (
+    pattern.test(text.replace(/\\/g, "/")) ||
+    pattern.test(text) ||
+    standaloneFile
+  );
+}
+
+function isParentheticalPathCitation(inner: string): boolean {
+  const plain = String(inner || "").replace(/[`*]/g, "").trim();
+  if (!plain || looksLikeAbsoluteFilePath(plain)) return false;
+  const paths = plain.match(projectFilePathPattern(true));
+  if (!paths?.length) return false;
+  const leftover = plain
+    .replace(projectFilePathPattern(true), " ")
+    .replace(/\b(in|see|from|and|or|at|of|the|a|an|type|file|files|via|inside|within|for)\b/gi, " ")
+    .replace(/[\\/,;:|()[\]]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return leftover.length <= 4;
+}
+
+/** Drop `(src/app/.../page.tsx / src/lib/nav.ts)` citations that break reply layout. */
+export function stripParentheticalPathCitations(text: string): string {
+  const source = String(text || "");
+  let out = "";
+  for (let index = 0; index < source.length;) {
+    const char = source[index];
+    if (char === "(" && source[index - 1] !== "]") {
+      let depth = 1;
+      let cursor = index + 1;
+      while (cursor < source.length && depth > 0) {
+        if (source[cursor] === "(") depth += 1;
+        else if (source[cursor] === ")") depth -= 1;
+        cursor += 1;
+      }
+      if (depth === 0 && isParentheticalPathCitation(source.slice(index + 1, cursor - 1))) {
+        out = out.replace(/[ \t]+$/, "");
+        index = cursor;
+        while (index < source.length && source[index] === " ") index += 1;
+        if (out && index < source.length && /[A-Za-z0-9]/.test(source[index]) && !/\s$/.test(out)) {
+          out += " ";
+        }
+        continue;
+      }
+    }
+    out += char;
+    index += 1;
+  }
+  return out
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/ +\(/g, " (")
+    .replace(/\(\s+\)/g, "")
+    .replace(/ +([.,;:!?])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ");
+}
+
+/** Keep short names in the bubble; hide long `src/app/.../file.tsx` chips. */
+export function shortenInlineFilePaths(text: string): string {
+  return String(text || "")
+    .replace(/`([^`\n]+)`/g, (match, inner: string) => {
+      if (looksLikeAbsoluteFilePath(inner) || !looksLikeProjectFilePath(inner)) return match;
+      const short = basename(inner.trim());
+      return short ? `\`${short}\`` : match;
+    })
+    .replace(
+      new RegExp(`(?<!\\]\\()(?:${projectFilePathPattern().source})`, "gi"),
+      (path, offset, whole: string) => {
+        if (looksLikeAbsoluteFilePath(path)) return path;
+        const before = whole.slice(Math.max(0, offset - 32), offset);
+        if (/[\\/]$/.test(before) || /[A-Za-z]:[\\/][^\s]*$/.test(before)) return path;
+        return basename(path);
+      },
+    );
+}
+
+function softenVisibleFilePaths(text: string): string {
+  return mapOutsideFences(text, (segment) =>
+    shortenInlineFilePaths(stripParentheticalPathCitations(segment)),
+  );
+}
+
+/** Drop mid-reply "Let me verify…" progress lines so the bubble stays the answer. */
+export function compactVisibleReply(text: string): string {
+  const repaired = repairGluedProse(String(text || ""));
+  const stripped = stripProcessPreamble(repaired);
+  const afterLeak = stripLeakedPlanApplyNarration(stripped);
+  const afterPaths = softenVisibleFilePaths(afterLeak);
+  const afterOrphans = dropOrphanContinuations(
+    afterPaths,
+    afterPaths !== repaired.trimStart(),
+  );
+  const prepared = stripTrailingPendingAction(afterOrphans);
+  return prepared
+    .split(/\n{2,}/)
+    .map((block) => stripTrailingPendingAction(block.trim()))
+    .filter((block) => block && !isProgressOnlyBlock(block))
+    .join("\n\n")
+    .trim();
+}
+
+/** Drop model text that pretends Apply already happened while Plan is still waiting. */
+export function stripLeakedPlanApplyNarration(text: string): string {
+  return String(text || "")
+    .replace(/\bthe user confirmed apply\.?[^\n]*/gi, "")
+    .replace(/\bswitched to multi-agent\.?[^\n]*/gi, "")
+    .replace(/\bi(?:'|’)ll implement the plan as described:?[^\n]*/gi, "")
+    .replace(/\blet me set up tasks[^\n]*/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Accumulate provider deltas without ever replacing the lossless source with a
+ * presentation-cleaned snapshot. Streaming cleanup can temporarily hide an
+ * unfinished preamble; retaining `source` guarantees later chunks can restore
+ * the complete answer instead of continuing from a truncated rendering.
+ */
+export function appendVisibleAssistantChunk(
+  source: string,
+  chunk: string,
+): { source: string; visible: string } {
+  const nextSource = String(source || "") + String(chunk || "");
+  return {
+    source: nextSource,
+    visible: compactVisibleReply(nextSource),
+  };
+}
+
+/**
+ * Tool-call responses often contain short process narration rather than the
+ * answer. Preserve structured plans and substantive prose, but suppress the
+ * "let me inspect…" fragments that would otherwise become permanent bubbles.
+ */
+export function looksLikeProvisionalToolNarration(text: string): boolean {
+  const raw = repairGluedProse(String(text || "")).trim();
+  const visible = compactVisibleReply(raw);
+  if (!visible) return true;
+  if (
+    visible.length >= 420 ||
+    /(?:^|\n)#{1,3}\s+/.test(visible) ||
+    /(?:^|\n)\s*(?:[-*]|\d+[.)])\s+/.test(visible) ||
+    /\|[^\n]+\|/.test(visible) ||
+    /```/.test(visible)
+  ) {
+    return false;
+  }
+  if (/^[a-z]/.test(visible)) return true;
+  return /(?:^|[\s—–;:])(?:let me|i(?:'|’)ll|i will)\s+(?:verify|check|start|run|open|inspect|look|find|try|read|continue|deliver|explore|analy[sz]e|examine|review|investigate|search|scan|dig)\b/i
+    .test(raw);
+}
+
+export function looksLikeDeliveryEssay(text: string): boolean {
+  const src = String(text || "");
+  if (/(?:^|\n)#{1,3}\s*result\b/i.test(src)) return true;
+  if (/(?:^|\n)result\s*[—–-]/i.test(src)) return true;
+  const labels = src.match(/(?:^|\n)\s*(?:title|description|summary|features|tech|files)\s*:/gim);
+  return (labels?.length || 0) >= 2;
+}
+
+/** Keep one or two lead sentences when the host Completed card owns the result. */
+export function deliveryLeadFromReply(text: string): string {
+  const compact = compactVisibleReply(text)
+    .split(/\n(?=#{1,3}\s*result\b|(?:\*\*)?result\s*[—–-])/i)[0]
+    .replace(/\n#{1,3}\s*(highlights|technology|files|next steps)\b[\s\S]*$/i, "")
+    .replace(/^#{1,3}\s*result\b[^\n]*\n?/i, "")
+    .replace(/^(?:\*\*)?result\s*[—–-][^\n]*\n?/i, "")
+    .trim();
+  if (!compact || looksLikeDeliveryEssay(compact)) return "";
+  const sentences = compact.split(/(?<=[.!?…])\s+/).filter((part) => {
+    const trimmed = part.trim();
+    return trimmed && !/^[-*]\s/.test(trimmed) && !/^#{1,3}\s/.test(trimmed);
+  });
+  const lead = sentences.slice(0, 2).join(" ").trim();
+  if (!lead || looksLikeDeliveryEssay(lead)) return "";
+  if ([...lead].length <= 280) return lead;
+  return `${lead.slice(0, 277).replace(/\s+\S*$/, "")}…`;
+}
+
+/** Drop leading thought/tool narration so the bubble starts on the real answer. */
+export function stripProcessPreamble(text: string): string {
+  let remaining = String(text || "");
+  while (remaining) {
+    const match = remaining.match(/^[\s\S]*?(?:[.!?…]|\n|$)/);
+    const sentence = match?.[0] || remaining;
+    if (!sentence) break;
+    if (!sentence.trim()) {
+      remaining = remaining.slice(sentence.length);
+      continue;
+    }
+    if (!isProcessSentence(sentence)) return remaining.trimStart();
+    remaining = remaining.slice(sentence.length);
+  }
+  return remaining.trim();
 }
 
 /**
@@ -405,13 +812,141 @@ function normalizePlainAssistantMarkdown(src: string): string {
  */
 export function normalizeAssistantMarkdown(src: string): string {
   if (!src) return "";
-  const normalized = src.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+  const stripped = compactVisibleReply(src);
+  const normalized = stripped.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
   return normalized
     .split(/(```[\s\S]*?```)/g)
     .map((segment, index) => (index % 2 === 1 ? segment : normalizePlainAssistantMarkdown(segment)))
     .join("")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+
+type MarkdownListKind = "ul" | "ol";
+type MarkdownListLine = {
+  indent: number;
+  kind: MarkdownListKind;
+  number: number | null;
+  content: string;
+};
+
+function parseMarkdownListLine(line: string): MarkdownListLine | null {
+  const match = line.match(/^([ \t]*)([-*+]|\d+[.)])\s+(.+)$/);
+  if (!match) return null;
+  const ordered = /^\d/.test(match[2]);
+  return {
+    indent: match[1].replace(/\t/g, "    ").length,
+    kind: ordered ? "ol" : "ul",
+    number: ordered ? Number.parseInt(match[2], 10) : null,
+    content: match[3].trim(),
+  };
+}
+
+function openMarkdownList(item: MarkdownListLine, depth: number): string {
+  const start = item.kind === "ol" && item.number && item.number !== 1
+    ? ` start="${item.number}"`
+    : "";
+  return `<${item.kind} class="md-list md-list-depth-${Math.min(depth, 4)}"${start}>`;
+}
+
+function renderMarkdownListBlock(items: MarkdownListLine[]): string {
+  const html: string[] = [];
+  const stack: { indent: number; kind: MarkdownListKind }[] = [];
+
+  for (const item of items) {
+    while (stack.length && item.indent < stack[stack.length - 1].indent) {
+      const closing = stack.pop()!;
+      html.push(`</li></${closing.kind}>`);
+    }
+
+    const current = stack[stack.length - 1];
+    if (!current || item.indent > current.indent) {
+      html.push(openMarkdownList(item, stack.length));
+      stack.push({ indent: item.indent, kind: item.kind });
+      html.push(`<li>${item.content}`);
+      continue;
+    }
+
+    if (item.kind !== current.kind) {
+      html.push(`</li></${current.kind}>`);
+      stack.pop();
+      html.push(openMarkdownList(item, stack.length));
+      stack.push({ indent: item.indent, kind: item.kind });
+      html.push(`<li>${item.content}`);
+      continue;
+    }
+
+    html.push(`</li><li>${item.content}`);
+  }
+
+  while (stack.length) {
+    const closing = stack.pop()!;
+    html.push(`</li></${closing.kind}>`);
+  }
+  return html.join("");
+}
+
+function renderMarkdownLists(text: string): string {
+  const source = text.replace(
+    /(^[ \t]*(?:[-*+]|\d+[.)])\s+.+)\n(?:[ \t]*\n)+(?=[ \t]*(?:[-*+]|\d+[.)])\s+)/gm,
+    "$1\n",
+  );
+  const lines = source.split("\n");
+  const output: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const first = parseMarkdownListLine(lines[index]);
+    if (!first) {
+      output.push(lines[index]);
+      continue;
+    }
+
+    const items: MarkdownListLine[] = [first];
+    let cursor = index + 1;
+    while (cursor < lines.length) {
+      const next = parseMarkdownListLine(lines[cursor]);
+      if (!next) break;
+      items.push(next);
+      cursor += 1;
+    }
+
+    output.push("", renderMarkdownListBlock(items), "");
+    index = cursor - 1;
+  }
+
+  return output.join("\n");
+}
+
+function emphasizeMarkdownLeadLabels(text: string): string {
+  return text
+    .replace(
+      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)<strong>\s*([A-Z][^<\n]{1,44}:)\s*<\/strong>(?=\s+\S)/gm,
+      '$1<strong class="md-lead">$2</strong>',
+    )
+    .replace(
+      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)\*\*\s*([A-Z][^*\n]{1,44}:)\s*\*\*(?=\s+\S)/gm,
+      '$1<strong class="md-lead">$2</strong>',
+    )
+    .replace(
+      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)__\s*([A-Z][^_\n]{1,44}:)\s*__(?=\s+\S)/gm,
+      '$1<strong class="md-lead">$2</strong>',
+    )
+    .replace(
+      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)((?:[A-Z][A-Za-z0-9/&+()'’ -]{1,36}):)(?=\s+\S)/gm,
+      '$1<strong class="md-lead">$2</strong>',
+    );
+}
+
+function renderMarkdownBlockquotes(text: string): string {
+  return text.replace(/(?:^&gt;\s?.+(?:\n|$))+/gm, (block) => {
+    const content = block
+      .trim()
+      .split("\n")
+      .map((line) => line.replace(/^&gt;\s?/, "").trim())
+      .join("<br>");
+    return `<blockquote class="md-callout">${content}</blockquote>\n`;
+  });
 }
 
 /**
@@ -426,21 +961,36 @@ export function renderMarkdown(src: string): string {
   let text = src.replace(/```([\w-]*)\r?\n?([\s\S]*?)```/g, (_m, lang: string, code: string) => {
     const i = fences.length;
     const cls = lang ? ` class="lang-${escapeHtml(lang)}"` : "";
-    fences.push(`<pre class="md-code"><code${cls}>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
+    const language = lang ? ` data-language="${escapeHtml(lang)}"` : "";
+    fences.push(`<pre class="md-code"${language}><code${cls}>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
     return `\u0000FENCE${i}\u0000`;
   });
 
   // Escape remaining text
   text = escapeHtml(text);
 
-  // Inline code
-  text = text.replace(/`([^`\n]+)`/g, "<code class=\"md-inline\">$1</code>");
+  // Inline code. File paths become quiet names so they don't brick the layout.
+  text = text.replace(/`([^`\n]+)`/g, (_match, inner: string) => {
+    if (looksLikeAbsoluteFilePath(inner)) {
+      return `<code class="md-inline md-path">${inner}</code>`;
+    }
+    if (looksLikeProjectFilePath(inner)) {
+      const short = basename(inner) || inner;
+      return `<span class="md-file" title="${inner}">${short}</span>`;
+    }
+    return `<code class="md-inline">${inner}</code>`;
+  });
+
+  // Classify lead labels before the generic emphasis pass so nested
+  // "**Label:** detail" list items keep their semantic styling.
+  text = emphasizeMarkdownLeadLabels(text);
 
   // Bold / italic (order matters)
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
   text = text.replace(/__([^_]+)__/g, "<strong>$1</strong>");
   text = text.replace(/(?<!_)_([^_\n]+)_(?!_)/g, "<em>$1</em>");
+  text = emphasizeMarkdownLeadLabels(text);
 
   // Headings
   text = text.replace(/^######\s+(.+)$/gm, "<h6>$1</h6>");
@@ -450,29 +1000,14 @@ export function renderMarkdown(src: string): string {
   text = text.replace(/^##\s+(.+)$/gm, "<h2>$1</h2>");
   text = text.replace(/^#\s+(.+)$/gm, "<h1>$1</h1>");
 
-  // Unordered lists (consecutive lines)
-  text = text.replace(/(?:^[-*+] .+(?:\n|$))+/gm, (block) => {
-    const items = block
-      .trim()
-      .split("\n")
-      .map((line) => line.replace(/^[-*+] /, "").trim())
-      .filter(Boolean)
-      .map((item) => `<li>${item}</li>`)
-      .join("");
-    return `<ul class="md-list">${items}</ul>\n`;
-  });
-
-  // Ordered lists
-  text = text.replace(/(?:^\d+\. .+(?:\n|$))+/gm, (block) => {
-    const items = block
-      .trim()
-      .split("\n")
-      .map((line) => line.replace(/^\d+\. /, "").trim())
-      .filter(Boolean)
-      .map((item) => `<li>${item}</li>`)
-      .join("");
-    return `<ol class="md-list">${items}</ol>\n`;
-  });
+  // Preserve author-written separators and render nested lists as real nested
+  // HTML instead of flattening every marker into one level.
+  text = text.replace(
+    /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm,
+    '<hr class="md-divider" aria-hidden="true">',
+  );
+  text = renderMarkdownLists(text);
+  text = renderMarkdownBlockquotes(text);
 
   // Links [text](https://...)
   text = text.replace(
@@ -495,7 +1030,8 @@ export function renderMarkdown(src: string): string {
     .map((block) => {
       const t = block.trim();
       if (!t) return "";
-      if (/^<(h[1-6]|ul|ol|pre|blockquote|div|table)/.test(t)) return t;
+      if (/^\u0000FENCE\d+\u0000$/.test(t)) return t;
+      if (/^<(h[1-6]|ul|ol|pre|blockquote|div|table|hr)/.test(t)) return t;
       return `<p>${t.replace(/\n/g, "<br>")}</p>`;
     })
     .join("\n");

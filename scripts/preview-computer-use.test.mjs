@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import {
+  extractPreviewBrowserUrlFromPrompt,
   isExternalPreviewUrl,
   previewTabKindForEntry,
+  promptWantsLocalWebsite,
 } from "../src/components/preview-url-policy.ts";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -15,6 +17,7 @@ const preview = read("src/components/site-preview.ts");
 const frameController = read("src/components/preview-computer-use.ts");
 const browserController = read("src-tauri/src/preview_browser.rs");
 const agent = read("src-tauri/src/agent.rs");
+const main = read("src/main.ts");
 const cursorNodeBridge = read("scripts/cursor-bridge.mjs");
 const packagedCursorNodeBridge = read("src-tauri/runtime/scripts/cursor-bridge.mjs");
 
@@ -51,7 +54,7 @@ test("computer broker contains no native desktop input path", () => {
   assert.match(broker, /MAX_ACTIONS: usize = 48/);
   assert.match(broker, /tauri::Url::parse/);
   assert.match(broker, /credential-free http\(s\) URLs/);
-  assert.match(broker, /open_tab, navigate, and activate_tab must be the only action/);
+  assert.match(broker, /open_tab, navigate, activate_tab, set_viewport, save_spec, record, and replay must be the only action/);
 });
 
 test("model surface is reduced to observe plus bounded action batches", () => {
@@ -60,8 +63,9 @@ test("model surface is reduced to observe plus bounded action batches", () => {
   assert.match(tools, /inside Preview/);
   assert.match(tools, /"open_tab", "navigate", "activate_tab"/);
   assert.match(tools, /never launch the system browser/);
-  for (const symbol of removedDesktopSymbols.slice(5)) assert.doesNotMatch(tools, new RegExp(symbol));
-  assert.match(cursorBridge, /cursor_host_tool_schemas\(permission_mode, computer_use_active\)/);
+  assert.match(tools, /fn desktop_computer_tool_schemas/);
+  assert.match(tools, /computer_observe_window/);
+  assert.match(cursorBridge, /cursor_host_tool_schemas\(/);
   assert.match(cursorBridge, /"computerUseEnabled": false/);
 });
 
@@ -84,7 +88,37 @@ test("all model runtimes receive the same Preview-only tool contract", () => {
   assert.match(agent, /drive the live Preview first/);
   assert.match(agent, /computer_observe \/ computer_actions: Preview-only control/);
   assert.match(agent, /Never use open_url/);
+  assert.match(agent, /opens the Preview window/);
+  assert.match(agent, /Never ask the user to open Preview/);
   assert.match(agent, /Hidden-tab page content remains unreadable/);
+});
+
+test("Computer Use opens Preview and a Browser tab from a prompt", () => {
+  assert.equal(
+    extractPreviewBrowserUrlFromPrompt("can you use computer use and search for youtube.com"),
+    "https://youtube.com/",
+  );
+  assert.equal(
+    extractPreviewBrowserUrlFromPrompt("open https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  );
+  assert.equal(extractPreviewBrowserUrlFromPrompt("describe this screenshot"), null);
+  assert.equal(promptWantsLocalWebsite("open the website"), true);
+  assert.equal(promptWantsLocalWebsite("show the site"), true);
+  assert.equal(promptWantsLocalWebsite("build a marketing website"), false);
+  assert.equal(promptWantsLocalWebsite("open https://youtube.com"), false);
+  assert.match(preview, /async openForComputerUse/);
+  assert.match(preview, /ensureOpenForComputerUse/);
+  assert.match(preview, /this\.showShell\("Preview"\)/);
+  assert.match(preview, /this\.openBrowserTab\(url/);
+  assert.match(preview, /this\.openBrowserTab\(BROWSER_HOME/);
+  assert.doesNotMatch(preview, /Open the Preview window before using the AI cursor/);
+  assert.match(main, /openForComputerUse/);
+  assert.match(main, /extractPreviewBrowserUrlFromPrompt\(visiblePrompt\)/);
+  assert.match(main, /promptWantsLocalWebsite\(visiblePrompt\)/);
+  assert.match(main, /ensureProjectDevServer\(projectRoot\)/);
+  assert.match(main, /computerUseIntent === "enable" \|\| computerUseIntent === "auto" \|\| promptWantsLocalWebsite\(visiblePrompt\)/);
+  assert.match(tools, /If Preview is closed, the host opens the Preview window/);
 });
 
 test("frontend always selects the active Preview tab and stops on tab changes", () => {
@@ -103,6 +137,9 @@ test("frontend always selects the active Preview tab and stops on tab changes", 
   assert.match(preview, /activeTabUrl: active\.entryPath/);
   assert.match(preview, /needsObservation: true/);
   assert.doesNotMatch(preview, /frame\.src\s*=\s*tab\.entryPath/);
+  assert.match(preview, /overlayChromeOpen\(\)/);
+  assert.match(preview, /!this\.newTabMenu\.hidden \|\| !this\.previewActionsMenu\.hidden/);
+  assert.match(preview, /browserSurfaceAllowed\(\)/);
 });
 
 test("project and Browser tabs select and verify nested scroll targets", () => {
@@ -149,9 +186,9 @@ test("project and Browser tabs select and verify nested scroll targets", () => {
 test("project and Browser tabs render bounded cinematic cursor feedback", () => {
   for (const source of [frameController, browserController]) {
     assert.match(source, /translate3d/);
-    assert.match(source, /width:52px/);
+    assert.match(source, /(?:width:48px|AI_CURSOR_HAND_WIDTH|aiCursorHandBeforeCss)/);
     assert.match(source, /will-change:transform,opacity|willChange/);
-    assert.match(source, /contain:(?:layout style paint|strict)/);
+    assert.match(source, /contain:(?:layout style(?: paint)?|strict)/);
     assert.match(source, /pointer-events:none/);
     assert.match(source, /data-gesture|dataset\.gesture/);
     assert.match(source, /prefers-reduced-motion/);
@@ -162,13 +199,42 @@ test("project and Browser tabs render bounded cinematic cursor feedback", () => 
     assert.match(source, /scroll/);
     assert.match(source, /drag/);
     assert.doesNotMatch(source, /backdrop-filter/);
-    assert.doesNotMatch(source, /animation:[^;]*(?:infinite|linear infinite)/);
+    assert.match(source, /(?:ai-cursor-hand|AI_CURSOR_HAND|aiCursorHandBeforeCss|__HORMA_HAND_URI__)/);
+    assert.match(source, /__horma-ai-fire/);
+    const cursorFx = source
+      .replace(/@keyframes __horma-ai-frame-(?:spin|breathe|glow|shade)\{[^}]*\}/g, "")
+      .replace(/#__horma_browser_viewport(?::after)?\{[^}]*\}/g, "");
+    assert.doesNotMatch(cursorFx, /animation:[^;]*(?:infinite|linear infinite)/);
   }
   assert.match(frameController, /MAX_CURSOR_TRAIL_SPARKS = 3/);
   assert.match(frameController, /MAX_CURSOR_TRANSIENTS = 8/);
   assert.match(browserController, /transients\.length>8/);
-  assert.match(browserController, /initialization_script\(BROWSER_COMPUTER_SCRIPT\)/);
+  assert.match(browserController, /initialization_script\(browser_computer_script\(\)\)/);
   assert.match(browserController, /ensure_main_caller\(&caller\)/);
+});
+
+test("AI cursor stays visible through the preview glow until Computer Use stops", () => {
+  const overlay = read("src/computer-fx.ts");
+  const cursor = read("src/computer-cursor.ts");
+  for (const source of [frameController, browserController, overlay]) {
+    assert.match(source, /__horma-ai-fire/);
+    assert.match(source, /data-gesture="hover"|data-gesture='hover'/);
+    assert.doesNotMatch(source, /scheduleSettle|CURSOR_SETTLE_MS|IDLE_HIDE_MS/);
+    assert.doesNotMatch(source, /settleTimer=setTimeout\(\(\)=>\{settleTimer=null;hide\(\)\},\s*900\)/);
+    assert.doesNotMatch(source, /hide\(\),900\)/);
+  }
+  assert.match(frameController, /this\.cursor\.dataset\.visible = "true"/);
+  assert.match(frameController, /replayAiCursorFire\(this\.cursor, gesture\)/);
+  assert.match(frameController, /this\.destroyOverlay\(\)/);
+  assert.match(browserController, /cursor\.dataset\.visible='true'/);
+  assert.match(browserController, /gesture\('idle','WATCH'\)/);
+  assert.match(browserController, /destroyFx\(\)/);
+  assert.match(overlay, /replayAiCursorFire\(cursor, gesture\)/);
+  assert.match(overlay, /event\.kind === "clear"/);
+  assert.match(cursor, /AI_CURSOR_HAND_HOTSPOT_X = 28/);
+  assert.match(cursor, /AI_CURSOR_HAND_HOTSPOT_Y = 0/);
+  assert.match(cursor, /replayAiCursorFire/);
+  assert.doesNotMatch(cursor, /animation:[^;]*infinite/);
 });
 
 test("Preview Computer Use can fill native controls and verify evidence", () => {
@@ -181,22 +247,79 @@ test("Preview Computer Use can fill native controls and verify evidence", () => 
     assert.match(source, /(?:MouseEvent|mouseEvent)/);
     assert.match(source, /(?:visibleSemanticContent|const semantic=)/);
   }
-  assert.match(tools, /Exact standards-format value/);
-  assert.match(tools, /"set_value"[\s\S]*"check"/);
-  assert.match(broker, /accepts_native_form_values_and_evidence_checks/);
+  assert.match(tools, /wait_for/);
+  assert.match(tools, /tiny\.png/);
+  assert.match(tools, /set_viewport/);
+  assert.match(tools, /save_spec/);
+  assert.match(broker, /wait_for/);
+  assert.match(broker, /tiny\.png/);
+  assert.match(agent, /wait_for/);
+  assert.match(agent, /a11y/);
+  assert.match(preview, /Watch me/);
+  assert.match(preview, /Save as test/);
+  assert.match(preview, /data-device-frame|deviceFrame/);
+  assert.match(frameController, /wait_for/);
+  assert.match(frameController, /tiny\.png/);
+  assert.match(frameController, /scanPreviewA11y|a11y/);
+  assert.match(browserController, /wait_for/);
+  assert.match(browserController, /tiny\.png/);
+  assert.match(browserController, /a11y/);
+  assert.match(frameController, /clickActivationTarget/);
+  assert.match(frameController, /ROW_HOST_SELECTOR/);
+  assert.match(frameController, /inner link or pointer-row host/);
+  assert.match(browserController, /const activate=/);
+  assert.match(browserController, /el=activate\(t\.el,t\.point\)/);
+  assert.match(browserController, /inner link or pointer-row host/);
+  assert.match(agent, /inner link or pointer-row host/);
   assert.match(agent, /PREVIEW COMPUTER USE · MAX QA/);
   assert.match(agent, /set_value/);
   assert.match(agent, /check/);
 });
 
-test("desktop overlay assets stay deleted", () => {
+test("desktop overlay is click-through cinematic FX for Desktop mode", () => {
   for (const path of [
     "src-tauri/src/computer_fx.rs",
     "src-tauri/capabilities/computer-fx.json",
     "src/computer-fx.html",
     "src/computer-fx.ts",
-    "src/components/computer-use-hud.ts",
+    "src/computer-cursor.ts",
+    "src/assets/ai-cursor-hand.png",
   ]) {
-    assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), false, `${path} must remain removed`);
+    assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), true, `${path} must exist`);
   }
+  assert.equal(
+    existsSync(new URL("../src/components/computer-use-hud.ts", import.meta.url)),
+    false,
+    "in-app computer-use HUD must stay removed",
+  );
+  const fx = read("src-tauri/src/computer_fx.rs");
+  const overlay = read("src/computer-fx.ts");
+  const lib = read("src-tauri/src/lib.rs");
+  const desktop = read("src-tauri/src/desktop_computer_use.rs");
+  const capability = read("src-tauri/capabilities/computer-fx.json");
+  const vite = read("vite.config.ts");
+  assert.match(fx, /typing_fx_never_serializes_typed_content/);
+  assert.match(fx, /payload\.text = None/);
+  assert.match(overlay, /__horma-ai-cursor/);
+  assert.match(overlay, /aiCursorHandBeforeCss/);
+  assert.match(overlay, /__horma-ai-shockwave/);
+  assert.match(overlay, /AI cursor · Desktop/);
+  assert.match(overlay, /prefers-reduced-motion/);
+  assert.match(overlay, /overlayWindow\.hide/);
+  assert.match(overlay, /__horma-ai-frame-glow/);
+  assert.match(overlay, /linear-gradient\(to right/);
+  assert.match(overlay, /inset 0 0 0 2px #fff/);
+  assert.doesNotMatch(overlay, /backdrop-filter/);
+  assert.match(browserController, /__horma_browser_viewport/);
+  assert.match(browserController, /viewportFx\?\.remove/);
+  assert.match(lib, /set_ignore_cursor_events\(true\)/);
+  assert.match(lib, /computer_fx::install_emitter/);
+  assert.match(capability, /"computer-fx"/);
+  assert.match(capability, /allow-set-ignore-cursor-events/);
+  assert.match(vite, /computer-fx\.html/);
+  assert.match(desktop, /computer_fx::clear/);
+  assert.match(desktop, /computer_fx::click/);
+  assert.match(desktop, /computer_fx::target/);
+  assert.match(desktop, /cursor_diverged/);
+  assert.match(desktop, /crate::computer_fx::clear\(\)/);
 });

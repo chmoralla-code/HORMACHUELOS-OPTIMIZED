@@ -1,9 +1,8 @@
-//! Provider-neutral execution scaffolding for long-running build tasks.
+//! Host-owned Director: job contracts that replace the old Smart Agent pipeline.
 //!
-//! This module does not change a provider's model or credentials. It gives the
-//! existing model a clear execution contract, exposes a small task ledger to
-//! the desktop UI, and requests one bounded final verification pass when the
-//! model tries to finish without evidence of validation.
+//! The host classifies each run as Answer, Change, Ship, or Operate. Answer jobs
+//! never show a ledger, never call for a final review, and never accept `done`.
+//! Ship/Change keep a verification gate so mutating work cannot finish on talk.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -19,6 +18,179 @@ const STEP_IDS: [&str; 6] = [
     "deliver",
 ];
 const STEP_LABELS: [&str; 6] = ["Scope", "Inspect", "Build", "Check", "Debug", "Done"];
+const CHANGE_STEP_IDS: [&str; 3] = ["inspect", "implement", "validate"];
+const CHANGE_STEP_LABELS: [&str; 3] = ["Inspect", "Patch", "Check"];
+const OPERATE_STEP_IDS: [&str; 3] = ["inspect", "implement", "validate"];
+const OPERATE_STEP_LABELS: [&str; 3] = ["Observe", "Act", "Check"];
+
+const ANSWER_DIRECTOR: &str = "\nDIRECTOR JOB: ANSWER\n\
+- This is a question or a simplify/rephrase request. Write a short visible reply now.\n\
+- Do not call done. Do not open a delivery card. Do not list the whole project.\n\
+- If the user asked to simplify, rewrite the previous answer in 2-5 short everyday sentences.\n\
+- Never finish with only thinking or \"let me give a simpler version\".\n";
+
+const CHANGE_DIRECTOR: &str = "\nDIRECTOR JOB: CHANGE\n\
+- Apply the smallest coherent patch, run one relevant check, then stop.\n\
+- Do not turn this into a broad audit. Call done only after the patch exists.\n";
+
+const SHIP_DIRECTOR: &str = "\nDIRECTOR JOB: SHIP\n\
+- Treat this as one durable task: inspect, implement focused changes, validate, debug failures, then deliver.\n\
+- Take concrete tool actions instead of stopping at a plan. Before done, inspect changed files and run the most relevant check.\n\
+- The desktop host shows task progress separately. Keep user-facing updates concise and never ask the user to type \"continue\".\n";
+
+const OPERATE_DIRECTOR: &str = "\nDIRECTOR JOB: OPERATE\n\
+- Drive Preview or Desktop with observe → act → check. A failed check is not completion.\n\
+- Do not write a delivery essay. Stop when the requested UI evidence exists.\n";
+
+/// Host-owned job for this run. Answer never uses the build ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectorJob {
+    Answer,
+    Change,
+    Ship,
+    Operate,
+}
+
+impl DirectorJob {
+    pub const fn uses_ledger(self) -> bool {
+        !matches!(self, Self::Answer)
+    }
+
+    pub const fn allows_done(self) -> bool {
+        !matches!(self, Self::Answer)
+    }
+}
+
+pub fn infer_director_job(
+    prompt: &str,
+    permission_mode: &str,
+    computer_use_enabled: bool,
+    requires_project_completion: bool,
+    fast_execution: bool,
+) -> DirectorJob {
+    let text = prompt.trim().to_ascii_lowercase();
+    if matches!(permission_mode, "ask" | "research" | "plan") {
+        return DirectorJob::Answer;
+    }
+    if is_answer_prompt(&text) && !looks_like_code_change(&text) {
+        return DirectorJob::Answer;
+    }
+    if computer_use_enabled && is_operate_prompt(&text) {
+        return DirectorJob::Operate;
+    }
+    if fast_execution {
+        return DirectorJob::Change;
+    }
+    if requires_project_completion {
+        return DirectorJob::Ship;
+    }
+    if permission_mode == "multi_agent" || permission_mode == "build" {
+        return DirectorJob::Change;
+    }
+    DirectorJob::Answer
+}
+
+fn looks_like_code_change(text: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "can you change",
+        "could you change",
+        "please change",
+        "can you add",
+        "can you create",
+        "can you make",
+        "could you make",
+        "please make",
+        "make md",
+        "make a file",
+        "save this as",
+        "save it as",
+        "can you build",
+        "can you implement",
+        "can you fix",
+        "can you update",
+        "can you rename",
+        "can you edit",
+        "can you replace",
+        "can you delete",
+        "can you remove",
+        "change this",
+        "change that",
+        "change it",
+        "changing this",
+        "update this",
+        "rename this",
+        "edit this",
+        "replace this",
+        "delete this",
+        "remove this",
+        "fix this",
+        "add this",
+        "change the title",
+        "change the heading",
+        "change the header",
+        "make this say",
+        "make it say",
+        "apply this change",
+        "apply the change",
+        "make the change",
+        "make the edit",
+    ];
+    if NEEDLES.iter().any(|needle| text.contains(needle)) {
+        return true;
+    }
+    [
+        "change ",
+        "changing ",
+        "rename ",
+        "update ",
+        "edit ",
+        "replace ",
+        "modify ",
+        "delete ",
+        "remove ",
+        "add ",
+        "fix ",
+        "implement ",
+        "create ",
+        "build ",
+        "patch ",
+        "tweak ",
+        "adjust ",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix))
+}
+
+fn is_answer_prompt(text: &str) -> bool {
+    text.contains("simplif")
+        || text.contains("make it simpler")
+        || text.contains("make it shorter")
+        || text.contains("make this simpler")
+        || text.contains("in simple terms")
+        || text.contains("shorter explanation")
+        || text.starts_with("what ")
+        || text.starts_with("why ")
+        || text.starts_with("where ")
+        || text.starts_with("how ")
+        || text.starts_with("explain")
+        || text.contains("can you explain")
+        || text.contains("can you simplify")
+        || text.contains("could you simplify")
+        || text.contains("describe ")
+        || text.contains("full path")
+        || text.contains("full directory")
+        || text.contains("tell me about")
+        || text.contains("tell me where")
+}
+
+fn is_operate_prompt(text: &str) -> bool {
+    text.contains("computer use")
+        || text.contains("desktop mode")
+        || text.contains("playwright")
+        || text.contains("click the")
+        || text.contains("type in the")
+        || text.contains("open preview")
+}
 
 #[derive(Clone, Serialize)]
 struct SmartAgentEvent {
@@ -70,6 +242,8 @@ impl Phase {
 /// credentials never enter this telemetry channel.
 #[derive(Debug)]
 pub struct SmartAgentRun {
+    job: DirectorJob,
+    settings_enabled: bool,
     enabled: bool,
     fast_execution: bool,
     phase: Phase,
@@ -82,12 +256,31 @@ pub struct SmartAgentRun {
     change_tool_ids: HashSet<String>,
 }
 
+pub type DirectorRun = SmartAgentRun;
+
 impl SmartAgentRun {
     pub fn new(enabled: bool, fast_execution: bool) -> Self {
-        Self {
+        Self::for_job(
+            if fast_execution {
+                DirectorJob::Change
+            } else {
+                DirectorJob::Ship
+            },
             enabled,
             fast_execution,
-            phase: Phase::Scope,
+        )
+    }
+
+    pub fn for_job(job: DirectorJob, settings_enabled: bool, fast_execution: bool) -> Self {
+        Self {
+            job,
+            settings_enabled,
+            enabled: settings_enabled && job.uses_ledger(),
+            fast_execution,
+            phase: match job {
+                DirectorJob::Change | DirectorJob::Operate => Phase::Inspect,
+                _ => Phase::Scope,
+            },
             final_review_requested: false,
             saw_validation: false,
             saw_debug: false,
@@ -102,32 +295,89 @@ impl SmartAgentRun {
         self.enabled
     }
 
+    pub const fn job(&self) -> DirectorJob {
+        self.job
+    }
+
+    pub const fn allows_done(&self) -> bool {
+        self.job.allows_done()
+    }
+
+    /// Plan → Apply must be allowed to call `done`, otherwise the Completed
+    /// card never appears after implementation.
+    pub fn promote_to_change(&mut self, app: &AppHandle, session_id: &str) {
+        *self = Self::for_job(
+            DirectorJob::Change,
+            self.settings_enabled,
+            self.fast_execution,
+        );
+        self.emit_plan(app, session_id);
+    }
+
+    fn ledger_ids_labels(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        match self.job {
+            DirectorJob::Change => (&CHANGE_STEP_IDS, &CHANGE_STEP_LABELS),
+            DirectorJob::Operate => (&OPERATE_STEP_IDS, &OPERATE_STEP_LABELS),
+            _ => (&STEP_IDS, &STEP_LABELS),
+        }
+    }
+
+    fn ledger_step(&self) -> usize {
+        match self.job {
+            DirectorJob::Change | DirectorJob::Operate => match self.phase {
+                Phase::Scope | Phase::Inspect => 0,
+                Phase::Implement => 1,
+                Phase::Validate | Phase::Debug | Phase::Deliver => 2,
+            },
+            _ => self.phase.index(),
+        }
+    }
+
     /// Provider-facing instruction that makes the reasoning process more
     /// deliberate without asking the model to expose private chain-of-thought.
     pub fn system_instructions(enabled: bool, fast_execution: bool) -> &'static str {
         if !enabled {
             return "";
         }
-        if fast_execution {
-            return "\nFAST EXECUTION LEDGER:\n\
+        Self::job_instructions(
+            if fast_execution {
+                DirectorJob::Change
+            } else {
+                DirectorJob::Ship
+            },
+            true,
+            fast_execution,
+        )
+    }
+
+    pub fn job_instructions(
+        job: DirectorJob,
+        settings_enabled: bool,
+        fast_execution: bool,
+    ) -> &'static str {
+        match job {
+            DirectorJob::Answer => ANSWER_DIRECTOR,
+            DirectorJob::Change if settings_enabled && fast_execution => {
+                "\nFAST EXECUTION LEDGER:\n\
 - Treat this as one short, selected-target change when source hints exist; otherwise keep it equally focused. Use cached project intelligence, apply the smallest coherent patch, and run only the cheapest relevant check.\n\
 - Do not turn the task into a broad audit or a multi-stage redesign. Expand discovery once only when the focused target is wrong.\n\
-- After a successful focused check (or a targeted source re-read when no quick validator exists), call done immediately with a concise result.\n";
+- After a successful focused check (or a targeted source re-read when no quick validator exists), call done immediately with a concise result.\n"
+            }
+            DirectorJob::Change if settings_enabled => CHANGE_DIRECTOR,
+            DirectorJob::Ship if settings_enabled => SHIP_DIRECTOR,
+            DirectorJob::Operate if settings_enabled => OPERATE_DIRECTOR,
+            _ => "",
         }
-        "\nSMART AGENT EXECUTION LEDGER:\n\
-- Treat this as one durable task: understand scope, inspect the current workspace, implement focused changes, validate the result, debug any failures or runtime issues, then deliver.\n\
-- Take concrete tool actions instead of stopping at a plan or progress note. Reuse existing work and do not restart completed steps.\n\
-- Before calling done, inspect the actual changed files and run the most relevant build, test, check, or preview when practical. After validation, actively debug failures (read errors/logs, reproduce, fix, and re-check) before delivery. If validation is unavailable, perform a targeted inspection and state the limitation in the final result.\n\
-- The desktop host shows task progress separately. Keep user-facing updates concise and never ask the user to type \"continue\".\n"
     }
 
     pub fn emit_plan(&self, app: &AppHandle, session_id: &str) {
         if !self.enabled {
             return;
         }
-        let steps = STEP_IDS
+        let (ids, labels) = self.ledger_ids_labels();
+        let steps = ids
             .iter()
-            .zip(STEP_LABELS.iter())
+            .zip(labels.iter())
             .enumerate()
             .map(|(index, (id, label))| {
                 json!({
@@ -137,17 +387,22 @@ impl SmartAgentRun {
                 })
             })
             .collect::<Vec<_>>();
+        let summary = match self.job {
+            DirectorJob::Change => {
+                "Applying a focused patch and checking only the requested result."
+            }
+            DirectorJob::Operate => {
+                "Observing Preview or Desktop, acting, then checking the result."
+            }
+            _ => "Keeping this task focused, verified, and moving without manual continue prompts.",
+        };
         emit(
             app,
             session_id,
             "task_plan",
             json!({
-                "title": if self.fast_execution { "Fast Agent" } else { "Smart Agent" },
-                "summary": if self.fast_execution {
-                    "Applying a focused patch and checking only the requested result."
-                } else {
-                    "Keeping this task focused, verified, and moving without manual continue prompts."
-                },
+                "title": "Director",
+                "summary": summary,
                 "steps": steps,
                 "active_step": 0,
                 "status": "working",
@@ -160,16 +415,17 @@ impl SmartAgentRun {
             return;
         }
         self.phase = phase;
+        let step = self.ledger_step();
         emit(
             app,
             session_id,
             "task_progress",
             json!({
-                "step": phase.index(),
+                "step": step,
                 "phase": phase.id(),
                 "status": "active",
                 "detail": detail,
-                "completed_before": phase.index(),
+                "completed_before": step,
             }),
         );
     }
@@ -418,7 +674,7 @@ impl SmartAgentRun {
     }
 
     pub fn final_review_instruction() -> &'static str {
-        "[System - Smart Agent final review]\n\
+        "[System - Director verification]\n\
 Before declaring this task complete, inspect the actual workspace state and perform the most relevant validation now (build, test, check, lint, preview, or a targeted file inspection when no validator exists).\n\
 If checks fail or the runtime looks wrong, debug the failure (read errors/logs, reproduce, fix, and re-check) before delivering.\n\
 Fix any issue you find. Do not repeat completed work or ask the user to type \"continue\".\n\
@@ -435,7 +691,7 @@ When the requested work is genuinely complete, call done with a concise, evidenc
             session_id,
             "task_progress",
             json!({
-                "step": Phase::Deliver.index(),
+                "step": self.ledger_step(),
                 "phase": Phase::Deliver.id(),
                 "status": "completed",
                 "detail": "Task complete and ready to deliver.",
@@ -453,7 +709,7 @@ When the requested work is genuinely complete, call done with a concise, evidenc
             session_id,
             "task_progress",
             json!({
-                "step": self.phase.index(),
+                "step": self.ledger_step(),
                 "phase": self.phase.id(),
                 "status": "paused",
                 "detail": detail,
@@ -662,5 +918,83 @@ mod tests {
         assert!(is_command_tool("execute_command"));
         assert!(is_command_tool("start_dev_server"));
         assert!(!is_command_tool("read_file"));
+    }
+
+    #[test]
+    fn director_classifies_questions_as_answer_jobs() {
+        let simplify = infer_director_job(
+            "can you simplify your explaination regarding back to work process",
+            "multi_agent",
+            false,
+            true,
+            false,
+        );
+        assert_eq!(simplify, DirectorJob::Answer);
+        assert!(!simplify.uses_ledger());
+        assert!(!simplify.allows_done());
+
+        let answer = SmartAgentRun::for_job(DirectorJob::Answer, true, false);
+        assert!(!answer.is_enabled());
+        assert!(!answer.needs_final_review());
+        assert!(!answer.allows_done());
+        assert!(
+            SmartAgentRun::job_instructions(DirectorJob::Answer, true, false).contains("ANSWER")
+        );
+    }
+
+    #[test]
+    fn director_keeps_ship_verification_for_build_work() {
+        let ship = infer_director_job(
+            "build a payroll dashboard and keep working until it is verified",
+            "multi_agent",
+            false,
+            true,
+            false,
+        );
+        assert_eq!(ship, DirectorJob::Ship);
+        let run = SmartAgentRun::for_job(ship, true, false);
+        assert!(run.is_enabled());
+        assert!(run.needs_final_review());
+        assert!(run.allows_done());
+    }
+
+    #[test]
+    fn director_maps_fast_edits_to_change_and_computer_use_to_operate() {
+        assert_eq!(
+            infer_director_job("change the header color", "build", false, true, true),
+            DirectorJob::Change
+        );
+        assert_eq!(
+            infer_director_job(
+                "change this title to atindans",
+                "multi_agent",
+                false,
+                false,
+                false,
+            ),
+            DirectorJob::Change
+        );
+        assert_eq!(
+            infer_director_job(
+                "click the submit button in preview",
+                "multi_agent",
+                true,
+                true,
+                false,
+            ),
+            DirectorJob::Operate
+        );
+        assert_eq!(
+            infer_director_job(
+                "im planning to add sms for approvals",
+                "plan",
+                false,
+                false,
+                false,
+            ),
+            DirectorJob::Answer
+        );
+        assert!(!SmartAgentRun::for_job(DirectorJob::Answer, true, false).allows_done());
+        assert!(SmartAgentRun::for_job(DirectorJob::Change, true, false).allows_done());
     }
 }

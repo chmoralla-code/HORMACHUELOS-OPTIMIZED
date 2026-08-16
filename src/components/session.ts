@@ -1,6 +1,6 @@
 // Session storage and types — persisted to localStorage per project.
 
-import { normalizeAssistantMarkdown } from "./util";
+import { looksLikeProvisionalToolNarration, mergeReasoningStream, normalizeAssistantMarkdown } from "./util";
 
 export type SessionMessage =
   | {
@@ -14,7 +14,7 @@ export type SessionMessage =
   /** Restores the visual run mode when a transcript is opened again. */
   | {
       type: "run_start";
-      permissionMode: "plan" | "multi_agent";
+      permissionMode: "ask" | "research" | "plan" | "build" | "multi_agent";
       executionProfile?: "fast" | "balanced" | "thorough" | "safe";
       at?: number;
     }
@@ -25,7 +25,7 @@ export type SessionMessage =
   | { type: "tool_call"; id: string; name: string; arguments: any; at?: number }
   | { type: "tool_result"; id: string; name: string; ok: boolean; content: string; at?: number }
   | { type: "question"; id: string; question: string; options: string[]; allow_other: boolean; answer: string | null; at?: number }
-  | { type: "done"; summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; at?: number; workMs?: number }
+  | { type: "done"; summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; kind?: string; at?: number; workMs?: number }
   | { type: "end"; reason: string; at?: number; workMs?: number }
   | { type: "cancelled"; at?: number; workMs?: number };
 
@@ -37,54 +37,206 @@ export type SessionMultiAgentTool = {
 };
 
 /**
- * Store one streamed assistant chunk while preserving intentional transcript
- * boundaries. Provider recovery can insert thinking/status events between a
- * cut-off prefix and its resumed suffix; `resumePrevious` reconnects only that
- * explicitly marked suffix to the latest assistant message in the same run.
+ * True when the latest assistant prose is still mid-sentence / mid-list so a
+ * later chunk (after a thought or tool row) must stitch into the same bubble.
+ */
+export function assistantReplyLooksOpen(text: string): boolean {
+  const trimmed = String(text || "").replace(/\s+$/u, "");
+  if (!trimmed) return true;
+  const fenceCount = (trimmed.match(/```/g) || []).length;
+  if (fenceCount % 2 === 1) return true;
+  const lastLine = trimmed.split("\n").pop() || "";
+  if (/^\s*(?:[-*]|[\d]+[.)])\s+\S/.test(lastLine) && !/[.!?…]["'”’)\]}]*$/.test(lastLine.trim())) {
+    return true;
+  }
+  const visible = trimmed.replace(/[*_`]+$/g, "").trimEnd();
+  if (/[:：—–]$/.test(visible)) return true;
+  if (/[.!?…]["'”’)\]}]*$/.test(visible)) return false;
+  return true;
+}
+
+function latestAssistantIndexInRun(messages: SessionMessage[], fromIndex: number): number {
+  for (let index = fromIndex; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.type === "assistant") return index;
+    if (isTurnBoundaryMessage(message)) break;
+  }
+  return -1;
+}
+
+function isTurnBoundaryMessage(message: SessionMessage): boolean {
+  return (
+    message.type === "user" ||
+    message.type === "run_start" ||
+    message.type === "question" ||
+    message.type === "done" ||
+    message.type === "end" ||
+    message.type === "cancelled"
+  );
+}
+
+function latestThinkingIndexInRun(messages: SessionMessage[], fromIndex: number): number {
+  for (let index = fromIndex; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.type === "thinking") return index;
+    if (isTurnBoundaryMessage(message)) break;
+  }
+  return -1;
+}
+
+function transcriptJoinGap(left: string, right: string): string {
+  if (!left || !right) return "";
+  if (/\s$/.test(left) || /^\s/.test(right)) return "";
+  if (/[.!?…]["'”’)\]}]*$/.test(left.trimEnd()) && /^[A-Z#]/.test(right.trimStart())) return "\n\n";
+  if (/[.!?…]/.test(left.slice(-1)) && /[A-Za-z]/.test(right.charAt(0))) return " ";
+  return "";
+}
+
+/**
+ * Store one streamed assistant chunk for the current run. Thinking/tool events
+ * may land between chunks; those stay activity rows, not a second bubble.
  * Returns true when the chunk joined an existing transcript reply.
  */
 export function appendAssistantTranscriptChunk(
   messages: SessionMessage[],
   text: string,
   at?: number,
-  resumePrevious = false,
+  _resumePrevious = false,
 ): boolean {
   if (!text) return false;
+  void _resumePrevious;
 
   let assistantIndex = -1;
   const lastIndex = messages.length - 1;
   if (lastIndex >= 0 && messages[lastIndex].type === "assistant") {
     assistantIndex = lastIndex;
-  } else if (resumePrevious) {
-    for (let index = lastIndex; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.type === "assistant") {
-        assistantIndex = index;
-        break;
-      }
-      // Never let a recovery marker reach into a prior run or user turn.
-      if (
-        message.type === "user" ||
-        message.type === "run_start" ||
-        message.type === "question" ||
-        message.type === "done" ||
-        message.type === "end" ||
-        message.type === "cancelled"
-      ) {
-        break;
-      }
-    }
+  } else {
+    assistantIndex = latestAssistantIndexInRun(messages, lastIndex);
   }
 
   if (assistantIndex >= 0) {
     const message = messages[assistantIndex] as Extract<SessionMessage, { type: "assistant" }>;
-    message.text += text;
+    message.text += transcriptJoinGap(message.text, text) + text;
     message.at = at;
     return true;
   }
 
   messages.push({ type: "assistant", text, at });
   return false;
+}
+
+/** Keep one Thought row per Ask/Build turn even when the model emits many iterations. */
+export function appendThinkingTranscriptEvent(
+  messages: SessionMessage[],
+  iteration: number,
+  at?: number,
+): void {
+  if (latestThinkingIndexInRun(messages, messages.length - 1) >= 0) return;
+  messages.push({ type: "thinking", iteration, text: "", at });
+}
+
+/** Fold streamed reasoning into that turn's single Thought row. */
+export function appendThinkingReasoningChunk(
+  messages: SessionMessage[],
+  text: string,
+  iteration = 0,
+  at?: number,
+): void {
+  const safe = redactChatCredentials(String(text || ""));
+  if (!safe) return;
+  const index = latestThinkingIndexInRun(messages, messages.length - 1);
+  if (index >= 0) {
+    const message = messages[index] as Extract<SessionMessage, { type: "thinking" }>;
+    message.text = mergeReasoningStream(message.text, safe);
+    message.at = at;
+    return;
+  }
+  messages.push({ type: "thinking", iteration, text: safe, at });
+}
+
+function hasTurnTools(turn: SessionMessage[]): boolean {
+  return turn.some((message) => message.type === "tool_call" || message.type === "multi_agent_batch");
+}
+
+function mergeTurnThinking(turn: SessionMessage[]): Extract<SessionMessage, { type: "thinking" }> | null {
+  const thoughts = turn.filter((message): message is Extract<SessionMessage, { type: "thinking" }> => message.type === "thinking");
+  if (!thoughts.length) return null;
+  let text = thoughts[0].text || "";
+  for (const extra of thoughts.slice(1)) {
+    if (!extra.text) continue;
+    text = mergeReasoningStream(text, extra.text);
+  }
+  return { type: "thinking", iteration: thoughts[0].iteration, text, at: thoughts[0].at };
+}
+
+function mergeTurnAssistant(turn: SessionMessage[]): Extract<SessionMessage, { type: "assistant" }> | null {
+  const tools = hasTurnTools(turn);
+  let seenTools = false;
+  const kept: Extract<SessionMessage, { type: "assistant" }>[] = [];
+  for (const message of turn) {
+    if (message.type === "tool_call" || message.type === "multi_agent_batch") seenTools = true;
+    if (message.type !== "assistant") continue;
+    if (tools && !seenTools && looksLikeProvisionalToolNarration(message.text)) continue;
+    kept.push(message);
+  }
+  if (!kept.length) return null;
+  let text = kept[0].text;
+  for (const extra of kept.slice(1)) {
+    text += transcriptJoinGap(text, extra.text) + extra.text;
+  }
+  return { type: "assistant", text, at: kept[kept.length - 1].at };
+}
+
+function coalesceOneTurn(turn: SessionMessage[]): SessionMessage[] {
+  if (!turn.length) return [];
+  const thinking = mergeTurnThinking(turn);
+  const assistant = mergeTurnAssistant(turn);
+  const head: SessionMessage[] = [];
+  const body: SessionMessage[] = [];
+  const tail: SessionMessage[] = [];
+  for (const message of turn) {
+    if (message.type === "run_start") {
+      if (!head.length) head.push(message);
+      continue;
+    }
+    if (message.type === "thinking" || message.type === "assistant") continue;
+    if (message.type === "done" || message.type === "end" || message.type === "cancelled") {
+      tail.push(message);
+      continue;
+    }
+    body.push(message);
+  }
+  return [
+    ...head,
+    ...(thinking ? [thinking] : []),
+    ...body,
+    ...(assistant ? [assistant] : []),
+    ...tail,
+  ];
+}
+
+/**
+ * Replay/storage layout: one Thought, one tool streak, one answer per user turn.
+ * Switching sessions must not resurrect every streamed thinking/tool iteration.
+ */
+export function coalesceSessionTurnLayout(messages: SessionMessage[]): SessionMessage[] {
+  const result: SessionMessage[] = [];
+  let turn: SessionMessage[] = [];
+  const flush = () => {
+    if (!turn.length) return;
+    result.push(...coalesceOneTurn(turn));
+    turn = [];
+  };
+  for (const message of messages) {
+    if (message.type === "user") {
+      flush();
+      result.push(message);
+      continue;
+    }
+    turn.push(message);
+  }
+  flush();
+  return result;
 }
 
 /**
@@ -146,7 +298,7 @@ export interface Session {
   sessionTokens?: number;
   /** Per-session build preview, restored only while this session is selected. */
   preview?: SessionPreviewState;
-  /** Per-session Smart Agent plan and its latest progress. */
+  /** Per-session Director plan and its latest progress. */
   smartAgent?: SmartAgentTaskState;
   /**
    * Model chosen for this conversation. The composer is shared UI, but each
@@ -207,6 +359,10 @@ const SESSION_PREVIEW_MAX_HISTORY = 32;
 const SESSION_PREVIEW_PATH_MAX = 768;
 const SESSION_PREVIEW_URL_MAX = 4_096;
 const SESSION_PREVIEW_ROOT_MAX = 2_048;
+const SESSION_STORED_ACTIVITY_MAX = 160;
+const SESSION_STORED_THINKING_MAX = 6_000;
+const SESSION_STORED_TOOL_RESULT_MAX = 12_000;
+const SESSION_STORED_TOOL_ARGUMENTS_MAX = 12_000;
 
 function projectPathKey(value: unknown): string {
   let path = String(value || "").trim().replace(/\//g, "\\");
@@ -274,6 +430,7 @@ export function redactToolArguments(name: string, value: unknown): unknown {
 }
 
 const MULTI_AGENT_BATCH_MAX_TOOLS = 24;
+const MULTI_AGENT_RUN_MAX_TOOLS = 120;
 const MULTI_AGENT_TOOL_ID_MAX = 160;
 const MULTI_AGENT_TOOL_NAME_MAX = 120;
 
@@ -310,10 +467,59 @@ export function snapshotMultiAgentTools(value: unknown): SessionMultiAgentTool[]
   return tools;
 }
 
-export function normalizeSessionPermissionMode(value: unknown): "plan" | "multi_agent" {
-  return String(value || "").trim().toLowerCase() === "multi_agent"
-    ? "multi_agent"
-    : "plan";
+/**
+ * Keep one bounded Multi-Agent activity ledger per user turn. Providers can
+ * send several discovery packs; saving each pack as a separate card makes the
+ * activity dominate the answer both live and after session replay.
+ */
+export function appendMultiAgentBatchSnapshot(
+  messages: SessionMessage[],
+  value: unknown,
+  at?: number,
+): boolean {
+  const tools = snapshotMultiAgentTools(value);
+  if (!tools.length) return false;
+
+  let boundary = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].type === "user" || messages[index].type === "run_start") {
+      boundary = index;
+      break;
+    }
+  }
+
+  let existing: Extract<SessionMessage, { type: "multi_agent_batch" }> | null = null;
+  for (let index = messages.length - 1; index > boundary; index -= 1) {
+    const message = messages[index];
+    if (message.type === "multi_agent_batch") {
+      existing = message;
+      break;
+    }
+  }
+
+  if (!existing) {
+    messages.push({ type: "multi_agent_batch", tools, at });
+    return true;
+  }
+
+  const seen = new Set(existing.tools.map((tool) => tool.id));
+  for (const tool of tools) {
+    if (seen.has(tool.id) || existing.tools.length >= MULTI_AGENT_RUN_MAX_TOOLS) continue;
+    seen.add(tool.id);
+    existing.tools.push(tool);
+  }
+  return true;
+}
+
+export function normalizeSessionPermissionMode(
+  value: unknown,
+): "ask" | "research" | "plan" | "build" | "multi_agent" {
+  const mode = String(value || "").trim().toLowerCase();
+  if (mode === "research") return "research";
+  if (mode === "ask") return "ask";
+  if (mode === "build" || mode === "auto" || mode === "full") return "build";
+  if (mode === "multi_agent") return "multi_agent";
+  return "plan";
 }
 
 function redactSessionMessage(message: SessionMessage): SessionMessage {
@@ -361,6 +567,87 @@ function redactSessionMessage(message: SessionMessage): SessionMessage {
     default:
       return { ...message };
   }
+}
+
+function boundedStoredText(value: string, max: number, label: string): string {
+  const text = String(value || "");
+  if (text.length <= max) return text;
+  const marker = `\n\n[${label} compacted from ${text.length.toLocaleString()} characters]\n\n`;
+  const remaining = Math.max(0, max - marker.length);
+  const head = Math.floor(remaining * 0.7);
+  return text.slice(0, head) + marker + text.slice(-(remaining - head));
+}
+
+function boundStoredActivityMessage(message: SessionMessage): SessionMessage {
+  if (message.type === "thinking") {
+    return {
+      ...message,
+      text: boundedStoredText(message.text, SESSION_STORED_THINKING_MAX, "older thinking detail"),
+    };
+  }
+  if (message.type === "tool_result") {
+    return {
+      ...message,
+      content: boundedStoredText(message.content, SESSION_STORED_TOOL_RESULT_MAX, "older tool output"),
+    };
+  }
+  if (message.type === "tool_call") {
+    try {
+      const encoded = JSON.stringify(message.arguments);
+      if (encoded.length > SESSION_STORED_TOOL_ARGUMENTS_MAX) {
+        return {
+          ...message,
+          arguments: {
+            compacted: true,
+            summary: `Older tool arguments compacted from ${encoded.length.toLocaleString()} characters`,
+          },
+        };
+      }
+    } catch {
+      return { ...message, arguments: { compacted: true } };
+    }
+  }
+  return message;
+}
+
+function isStoredActivityMessage(message: SessionMessage): boolean {
+  return (
+    message.type === "thinking" ||
+    message.type === "tool_call" ||
+    message.type === "tool_result" ||
+    message.type === "multi_agent_batch"
+  );
+}
+
+/**
+ * Keep user prompts, assistant answers, questions, and terminal summaries in
+ * full while bounding replay-only telemetry. This prevents one long agent run
+ * from exhausting WebView localStorage and silently blocking later replies.
+ */
+export function compactSessionMessagesForStorage(messages: SessionMessage[]): SessionMessage[] {
+  const safe = coalesceSessionTurnLayout(messages).map(redactSessionMessage).map(boundStoredActivityMessage);
+  const keep = safe.map(() => true);
+  let activityCount = 0;
+  for (let index = safe.length - 1; index >= 0; index -= 1) {
+    if (!isStoredActivityMessage(safe[index])) continue;
+    activityCount += 1;
+    if (activityCount > SESSION_STORED_ACTIVITY_MAX) keep[index] = false;
+  }
+
+  // Do not retain an orphan result without its call when the activity boundary
+  // lands between a tool pair.
+  const keptResultIds = new Set(
+    safe
+      .filter((message, index) => keep[index] && message.type === "tool_result")
+      .map((message) => (message as Extract<SessionMessage, { type: "tool_result" }>).id),
+  );
+  for (let index = 0; index < safe.length; index += 1) {
+    const message = safe[index];
+    if (!keep[index] && message.type === "tool_call" && keptResultIds.has(message.id)) {
+      keep[index] = true;
+    }
+  }
+  return safe.filter((_message, index) => keep[index]);
 }
 
 /** Keep persisted preview entries relative to their project and bounded in size. */
@@ -472,7 +759,7 @@ function clipSmartAgentText(value: unknown, fallback = ""): string {
   return text.slice(0, SMART_AGENT_MAX_TEXT) || fallback;
 }
 
-/** Bound and sanitize persisted Smart Agent state before restoring it into the UI. */
+/** Bound and sanitize persisted Director state before restoring it into the UI. */
 export function sanitizeSmartAgentTaskState(value: unknown): SmartAgentTaskState | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
@@ -500,7 +787,7 @@ export function sanitizeSmartAgentTaskState(value: unknown): SmartAgentTaskState
   const requestedStep = Math.floor(Number(raw.activeStep) || 0);
   return {
     version: 1,
-    title: clipSmartAgentText(raw.title, "Smart Agent"),
+    title: clipSmartAgentText(raw.title, "Director"),
     summary: clipSmartAgentText(raw.summary),
     steps,
     activeStep: Math.max(0, Math.min(steps.length - 1, requestedStep)),
@@ -666,7 +953,7 @@ function safeSessionForStorage(session: Session): Session {
   return {
     ...session,
     title: redactChatCredentials(session.title),
-    messages: session.messages.map(redactSessionMessage),
+    messages: compactSessionMessagesForStorage(session.messages),
     preview,
     smartAgent,
     preferredProvider,
@@ -738,7 +1025,7 @@ function writeSessions(nextSessions: Iterable<Session>): boolean {
       if (idx >= 0) all[idx] = safeSession;
       else all.push(safeSession);
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(all.map(safeSessionForStorage)));
     sessionSaveFailureCount = 0;
     sessionSaveBlockedUntil = 0;
     return true;
@@ -1027,26 +1314,14 @@ export function recordAgentEvent(
       });
       break;
     case "multi_agent_batch": {
-      const tools = snapshotMultiAgentTools(e.payload?.tools);
-      if (tools.length) messages.push({ type: "multi_agent_batch", tools, at });
+      appendMultiAgentBatchSnapshot(messages, e.payload?.tools, at);
       break;
     }
     case "thinking":
-      messages.push({ type: "thinking", iteration: e.payload.iteration ?? 0, text: "", at });
+      appendThinkingTranscriptEvent(messages, e.payload.iteration ?? 0, at);
       break;
     case "reasoning": {
-      const safeText = redactChatCredentials(e.payload.text || "");
-      const last = messages[messages.length - 1];
-      if (last && last.type === "thinking") {
-        last.text = last.text ? last.text + safeText : safeText;
-      } else {
-        messages.push({
-          type: "thinking",
-          iteration: e.payload.iteration ?? 0,
-          text: safeText,
-          at,
-        });
-      }
+      appendThinkingReasoningChunk(messages, e.payload.text || "", e.payload.iteration ?? 0, at);
       break;
     }
     case "text": {
@@ -1092,6 +1367,7 @@ export function recordAgentEvent(
         files: (e.payload.files || []).map(redactChatCredentials),
         tech: (e.payload.tech || []).map(redactChatCredentials),
         features: (e.payload.features || []).map(redactChatCredentials),
+        kind: e.payload.kind,
         at,
       });
       normalizeLatestAssistantMessage(messages);

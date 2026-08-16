@@ -52,7 +52,9 @@ const tauriMock = `
     base_url: "https://api.deepseek.com",
     max_iterations: 25,
     command_timeout_secs: 120,
-    auto_approve: false,
+    permission_mode: "adaptive",
+    capability_mode: "balanced",
+    auto_approve: true,
   };
   const invoke = async (cmd) => {
     if (cmd === "list_recent_projects") return [];
@@ -62,6 +64,7 @@ const tauriMock = `
     if (cmd === "has_api_key") return false;
     if (cmd === "get_project_root") return null;
     if (cmd === "list_project_files") return { nodes: [], truncated: false };
+    if (cmd === "active_agent_sessions") return [];
     return null;
   };
   window.__TAURI_INTERNALS__ = {
@@ -120,15 +123,13 @@ async function main() {
   });
 
   await page.addInitScript(tauriMock);
-  await page.route("https://hormachuelos.vercel.app/api/update?*", (route) =>
+  await page.route("https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/latest.json?*", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        updateAvailable: false,
+        version: "0.1.5",
         forceUpdate: false,
-        currentVersion: "0.1.5",
-        latest: null,
       }),
     }),
   );
@@ -150,11 +151,52 @@ async function main() {
     const left = page.locator("#drawer-left-btn");
     const workspaceMenu = page.locator("#workspace-menu-btn");
     const header = page.locator("#header");
+    const modeChip = page.locator(".chip-btn.chip-mode");
 
     const leftCount = await left.count();
     const workspaceMenuCount = await workspaceMenu.count();
     report.checks.push({ name: "left btn in DOM", pass: leftCount === 1, detail: String(leftCount) });
     report.checks.push({ name: "workspace menu in DOM", pass: workspaceMenuCount === 1, detail: String(workspaceMenuCount) });
+
+    const modeChipCount = await modeChip.count();
+    report.checks.push({ name: "Adaptive mode chip in DOM", pass: modeChipCount === 1, detail: String(modeChipCount) });
+    if (modeChipCount) {
+      const initialMode = (await modeChip.locator(".chip-label").textContent() || "").trim();
+      report.checks.push({ name: "Adaptive is the default mode", pass: initialMode === "auto", detail: initialMode });
+      await modeChip.click();
+      const choices = await page.locator('[role="listbox"][aria-label="Permission mode"] .chip-menu-item').allTextContents();
+      const normalizedChoices = choices.map((value) => value.replace(/\s+/g, " ").trim());
+      report.checks.push({
+        name: "all six workflow modes are available",
+        pass: normalizedChoices.length === 6 &&
+          normalizedChoices.some((value) => value.includes("Adaptive Director")) &&
+          normalizedChoices.some((value) => value.startsWith("ask")) &&
+          normalizedChoices.some((value) => value.startsWith("research")) &&
+          normalizedChoices.some((value) => value.startsWith("plan")) &&
+          normalizedChoices.some((value) => value.startsWith("build")) &&
+          normalizedChoices.some((value) => value.includes("Multi-Agent")),
+        detail: JSON.stringify(normalizedChoices),
+      });
+      await page.keyboard.press("Escape");
+
+      await page.evaluate(() => {
+        window.dispatchEvent(new CustomEvent("horma:run-permission-mode", {
+          detail: {
+            mode: "research",
+            reason: "deep read-only investigation requested",
+            complexity: "high",
+            risk: "low",
+          },
+        }));
+      });
+      await page.waitForTimeout(100);
+      const routedMode = (await page.locator(".chip-btn.chip-mode .chip-label").textContent() || "").trim();
+      report.checks.push({
+        name: "Adaptive exposes its effective per-turn route",
+        pass: routedMode === "auto → research",
+        detail: routedMode,
+      });
+    }
 
     if (leftCount) {
       const b = await box(left);

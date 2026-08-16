@@ -1,9 +1,24 @@
 import {
+  assignPreviewFileInput,
+  installPreviewProbes,
+  isPreviewUploadFixture,
+  previewFixtureFile,
+  previewNetworkIdle,
+  previewProbeSnapshot,
+  scanPreviewA11y,
+} from "./preview-computer-qa";
+import {
   choosePreviewScrollCandidate,
   previewScrollMoved,
   type PreviewScrollCandidate,
   type PreviewScrollPosition,
 } from "./preview-scroll-policy";
+import {
+  aiCursorFireCss,
+  aiCursorHandBeforeCss,
+  attachAiCursorFire,
+  replayAiCursorFire,
+} from "../computer-cursor";
 
 export type PreviewComputerRequest = {
   requestId: string;
@@ -24,6 +39,12 @@ export type PreviewComputerAction = {
     | "set_value"
     | "check"
     | "wait"
+    | "wait_for"
+    | "upload"
+    | "set_viewport"
+    | "save_spec"
+    | "record"
+    | "replay"
     | "open_tab"
     | "navigate"
     | "activate_tab";
@@ -58,6 +79,14 @@ export type PreviewComputerAction = {
   url?: string;
   /** Exact Preview tab id returned by computer_observe. */
   tab_id?: string;
+  /** Preview-safe upload fixture: tiny.png, sample.csv, or note.txt. */
+  fixture?: string;
+  /** Device frame for set_viewport: mobile, tablet, or desktop. */
+  viewport?: string;
+  /** record start/stop. */
+  state?: "start" | "stop";
+  /** Optional title for save_spec. */
+  title?: string;
 };
 
 type Point = { x: number; y: number };
@@ -97,12 +126,19 @@ const MAX_VISIBLE_CONTENT = 32;
 const MAX_VISIBLE_CONTENT_CHARS = 6_000;
 const MAX_CURSOR_TRAIL_SPARKS = 3;
 const MAX_CURSOR_TRANSIENTS = 8;
-const CURSOR_SETTLE_MS = 900;
 const FEATURE_SELECTOR = [
   "button", "a[href]", "input", "textarea", "select", "summary",
   "[contenteditable='true']", "[role='button']", "[role='link']", "[role='checkbox']",
   "[role='radio']", "[role='tab']", "[role='menuitem']", "[role='option']",
+  "tr", "[role='row']", "[role='listitem']",
 ].join(",");
+const ACTIVATE_SELECTOR = [
+  "a[href]", "button", "summary",
+  "input[type='button']", "input[type='submit']", "input[type='reset']", "input[type='image']",
+  "[role='button']", "[role='link']", "[role='menuitem']", "[role='tab']", "[role='option']",
+].join(",");
+const ROW_HOST_SELECTOR = "tr, [role='row'], [role='listitem'], [role='gridcell'], li, article, [data-href]";
+const MAX_CLICKABLE_ROW_SCAN = 48;
 const SEMANTIC_SELECTOR = [
   "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "label", "legend", "th", "td",
   "[role='heading']", "[role='alert']", "[role='status']", "[role='dialog']",
@@ -289,6 +325,45 @@ function isAnchorElement(element: Element | null): element is HTMLAnchorElement 
   return element?.tagName.toLowerCase() === "a";
 }
 
+function isClickableHost(element: Element, view: Window): boolean {
+  const html = element as HTMLElement;
+  if (
+    html.getAttribute("onclick")
+    || html.getAttribute("href")
+    || html.getAttribute("data-href")
+    || html.getAttribute("data-url")
+  ) return true;
+  if (html.hasAttribute("tabindex") && html.tabIndex >= 0) return true;
+  try {
+    return view.getComputedStyle(html).cursor === "pointer";
+  } catch {
+    return false;
+  }
+}
+
+function clickActivationTarget(seed: Element, point: Point, document: Document, view: Window): HTMLElement {
+  const hit = (document.elementFromPoint(point.x, point.y) as Element | null) || seed;
+  try {
+    const direct = hit.closest(ACTIVATE_SELECTOR);
+    if (direct && isVisible(direct, view)) return direct as HTMLElement;
+  } catch { /* page selector engines can throw on exotic compounds */ }
+  let host: Element = seed;
+  try {
+    host = hit.closest(ROW_HOST_SELECTOR) || seed;
+  } catch { /* keep the resolved seed */ }
+  try {
+    for (const link of host.querySelectorAll("a[href], [role='link']")) {
+      if (isVisible(link, view)) return link as HTMLElement;
+    }
+  } catch { /* ignore an exotic page querySelectorAll */ }
+  let node: Element | null = hit;
+  for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
+    if (node === document.body || node === document.documentElement) break;
+    if (isClickableHost(node, view)) return node as HTMLElement;
+  }
+  return (isHtmlElement(hit) ? hit : seed) as HTMLElement;
+}
+
 function isEditable(element: Element | null): element is HTMLElement {
   return isHtmlElement(element)
     && (isInputElement(element) || isTextAreaElement(element) || element.isContentEditable);
@@ -326,11 +401,14 @@ class PreviewFrameComputerController {
   private targetPlate: HTMLElement | null = null;
   private status: HTMLElement | null = null;
   private cursorPoint: Point = { x: 32, y: 32 };
-  private settleTimer: number | null = null;
   private transientFx: HTMLElement[] = [];
   private humanTakeoverHandler: ((event: Event) => void) | null = null;
+  private recording: PreviewComputerAction[] | null = null;
+  private recordCleanup: (() => void) | null = null;
 
-  constructor(private readonly document: Document, private readonly view: Window) {}
+  constructor(private readonly document: Document, private readonly view: Window) {
+    installPreviewProbes(view);
+  }
 
   stop(): void {
     this.abortController?.abort();
@@ -369,6 +447,17 @@ class PreviewFrameComputerController {
       if (scanned >= MAX_INTERACTIVE_SCAN || interactive.length >= MAX_OBSERVED_ELEMENTS) break;
       scanned += 1;
       if (!isVisible(element, this.view)) continue;
+      interactive.push(element);
+      addScrollableAncestors(element);
+    }
+    let rowScan = 0;
+    for (const element of this.document.querySelectorAll(ROW_HOST_SELECTOR)) {
+      if (rowScan >= MAX_CLICKABLE_ROW_SCAN || interactive.length >= MAX_OBSERVED_ELEMENTS) break;
+      rowScan += 1;
+      if (!isVisible(element, this.view)) continue;
+      let nestedLink = false;
+      try { nestedLink = Boolean(element.querySelector("a[href], [role='link']")); } catch { nestedLink = false; }
+      if (!nestedLink && !isClickableHost(element, this.view)) continue;
       interactive.push(element);
       addScrollableAncestors(element);
     }
@@ -419,8 +508,46 @@ class PreviewFrameComputerController {
       }
       elements.push(observed);
     }
+    const a11y = scanPreviewA11y(this.document, this.view, isVisible).map((issue) => {
+      let ref = "";
+      for (const [existingRef, element] of this.refs) {
+        if (element === issue.element) {
+          ref = existingRef;
+          break;
+        }
+      }
+      if (!ref && elements.length < MAX_OBSERVED_ELEMENTS) {
+        ref = `p${elements.length + 1}`;
+        this.refs.set(ref, issue.element);
+        const rect = issue.element.getBoundingClientRect();
+        elements.push({
+          ref,
+          tag: issue.tag,
+          role: "a11y",
+          name: issue.message,
+          selector: issue.selector,
+          rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+          disabled: false,
+        });
+      }
+      return {
+        ref: ref || undefined,
+        rule: issue.rule,
+        message: issue.message,
+        selector: issue.selector,
+        tag: issue.tag,
+      };
+    });
+    const probes = previewProbeSnapshot(this.view);
     this.ensureOverlay();
-    this.setStatus(`Observed ${elements.length} target${elements.length === 1 ? "" : "s"}`, false);
+    this.setGesture("idle", "WATCH");
+    if (this.cursor) this.cursor.dataset.visible = "true";
+    this.setStatus(`Observed ${elements.length} target${elements.length === 1 ? "" : "s"}`, true);
     return {
       scope: "active-preview-tab-only",
       tabKind: "project-preview",
@@ -436,7 +563,10 @@ class PreviewFrameComputerController {
       cursor: { x: Math.round(this.cursorPoint.x), y: Math.round(this.cursorPoint.y) },
       elements,
       content: visibleSemanticContent(this.document, this.view),
-      hint: "Use element refs with computer_actions. Scrollable regions include scroll x/y/maxX/maxY; use their ref for nested panes. viewport.scrollY is page-only. Coordinates are relative to this preview viewport.",
+      a11y,
+      console: probes.console,
+      network: probes.network,
+      hint: "Use element refs with computer_actions. Clicking a table/list row activates its inner link or pointer-row host. a11y lists bounded accessibility hits with the same refs. console/network are page errors and failed fetches only. Prefer wait_for over wait. upload uses Preview fixtures tiny.png, sample.csv, or note.txt. viewport.scrollY is page-only.",
     };
   }
 
@@ -474,7 +604,6 @@ class PreviewFrameComputerController {
       throw error;
     } finally {
       if (this.abortController === abortController) this.abortController = null;
-      if (this.cursor) this.scheduleSettle();
     }
   }
 
@@ -484,18 +613,20 @@ class PreviewFrameComputerController {
     style.dataset.hormaComputerUse = "true";
     style.textContent = `
       #__horma-ai-cursor,#__horma-ai-target,#__horma-ai-status,.__horma-ai-fx{box-sizing:border-box!important;pointer-events:none!important;user-select:none!important;font-family:ui-monospace,SFMono-Regular,Consolas,monospace!important}
-      #__horma-ai-cursor{position:fixed!important;z-index:2147483646!important;left:0!important;top:0!important;width:52px!important;height:52px!important;opacity:0;transform:translate3d(32px,32px,0);will-change:transform,opacity;contain:layout style paint;isolation:isolate;transition:opacity .16s ease}
+      #__horma-ai-cursor{position:fixed!important;z-index:2147483646!important;left:0!important;top:0!important;width:0!important;height:0!important;opacity:0;transform:translate3d(32px,32px,0);transform-origin:0 0;will-change:transform,opacity;contain:layout style;overflow:visible;isolation:isolate;transition:opacity .16s ease}
       #__horma-ai-cursor[data-visible="true"]{opacity:1}
-      #__horma-ai-cursor::before{content:"";position:absolute;inset:1px 17px 15px 1px;border-radius:7px 58% 58% 58%;background:linear-gradient(145deg,#f7feff 0%,#68e7ff 42%,#7b61ff 100%);clip-path:polygon(0 0,100% 69%,57% 74%,39% 100%);box-shadow:0 0 0 2px #03101ee6,0 0 12px rgba(87,221,255,.82);transform-origin:7px 7px;transition:transform .12s cubic-bezier(.16,1,.3,1),opacity .12s ease}
-      #__horma-ai-cursor::after{content:"";position:absolute;left:-12px;top:-12px;width:48px;height:48px;border:1px solid rgba(108,234,255,.7);border-radius:50%;opacity:.2;transform:scale(.72);transition:transform .16s cubic-bezier(.16,1,.3,1),opacity .16s ease}
-      #__horma-ai-cursor[data-gesture="approach"]::after{opacity:.82;transform:scale(1)}
-      #__horma-ai-cursor[data-gesture="hover"]::before{transform:scale(1.06) rotate(-2deg)}
-      #__horma-ai-cursor[data-gesture="press"]::before{transform:scale(.86) rotate(-3deg)}
+      ${aiCursorHandBeforeCss("#__horma-ai-cursor", "::before")}
+      ${aiCursorFireCss("#__horma-ai-cursor")}
+      #__horma-ai-cursor::after{content:"";position:absolute;left:-10px;top:-10px;width:20px;height:20px;border:1px solid rgba(255,176,64,.7);border-radius:50%;opacity:.18;transform:scale(.72);transition:transform .16s cubic-bezier(.16,1,.3,1),opacity .16s ease}
+      #__horma-ai-cursor[data-gesture="approach"]::after{opacity:.8;transform:scale(1)}
+      #__horma-ai-cursor[data-gesture="hover"]::before{transform:scale(1.04)}
+      #__horma-ai-cursor[data-gesture="hover"]::after,#__horma-ai-cursor[data-gesture="press"]::after,#__horma-ai-cursor[data-gesture="click"]::after{opacity:1;transform:scale(1.22);border-color:#ff7a18;box-shadow:0 0 16px #ff8a1a}
+      #__horma-ai-cursor[data-gesture="press"]::before{transform:scale(.94)}
       #__horma-ai-cursor[data-gesture="click"]::before{animation:__horma-click-pop .22s cubic-bezier(.16,1,.3,1)}
-      #__horma-ai-cursor[data-gesture="type"]::after,#__horma-ai-cursor[data-gesture="key"]::after{border-color:#a693ff;opacity:.85;transform:scale(.92)}
-      #__horma-ai-cursor[data-gesture="scroll"]::after,#__horma-ai-cursor[data-gesture="drag"]::after{border-color:#6ceaff;opacity:.9;transform:scale(1)}
-      #__horma-ai-cursor-core{position:absolute;left:5px;top:5px;width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px rgba(83,224,255,.5),0 0 12px #fff}
-      #__horma-ai-cursor-label{position:absolute;left:28px;top:30px;white-space:nowrap;padding:4px 7px;border:1px solid rgba(123,230,255,.76);border-radius:999px;background:#07121ef2;color:#effdff;font:800 9px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:.08em;box-shadow:0 4px 12px rgba(0,0,0,.38);opacity:0;transform:translate3d(0,4px,0);transition:transform .14s cubic-bezier(.16,1,.3,1),opacity .14s ease}
+      #__horma-ai-cursor[data-gesture="type"]::after,#__horma-ai-cursor[data-gesture="key"]::after{border-color:#ffb020;opacity:.85;transform:scale(.92)}
+      #__horma-ai-cursor[data-gesture="scroll"]::after,#__horma-ai-cursor[data-gesture="drag"]::after{border-color:#ffb020;opacity:.9;transform:scale(1)}
+      #__horma-ai-cursor-core{position:absolute;left:-3px;top:-3px;width:6px;height:6px;border-radius:50%;background:#fff;box-shadow:0 0 0 1px #000,0 0 8px #ff7a18;opacity:.95}
+      #__horma-ai-cursor-label{position:absolute;left:22px;top:44px;white-space:nowrap;padding:4px 7px;border:1px solid rgba(123,230,255,.76);border-radius:999px;background:#07121ef2;color:#effdff;font:800 9px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:.08em;box-shadow:0 4px 12px rgba(0,0,0,.38);opacity:0;transform:translate3d(0,4px,0);transition:transform .14s cubic-bezier(.16,1,.3,1),opacity .14s ease}
       #__horma-ai-cursor[data-label-x="left"] #__horma-ai-cursor-label{left:auto;right:32px}
       #__horma-ai-cursor[data-label-y="up"] #__horma-ai-cursor-label{top:auto;bottom:32px}
       #__horma-ai-cursor[data-busy="true"] #__horma-ai-cursor-label{opacity:1;transform:translate3d(0,0,0)}
@@ -512,7 +643,7 @@ class PreviewFrameComputerController {
       .__horma-ai-shockwave{position:fixed!important;z-index:2147483645!important;left:0!important;top:0!important;width:20px!important;height:20px!important;margin:-10px 0 0 -10px;border:2px solid #79efff;border-radius:50%;box-shadow:0 0 0 2px rgba(126,92,255,.42),0 0 16px rgba(105,103,255,.55);will-change:transform,opacity;contain:strict}
       .__horma-ai-scroll-cue{position:fixed!important;z-index:2147483645!important;left:0!important;top:0!important;color:#effdff;background:#07121ee8;border:1px solid #6ceaff;border-radius:999px;padding:5px 8px;font:900 13px/1 ui-monospace,SFMono-Regular,Consolas,monospace!important;will-change:transform,opacity;contain:layout style paint}
       @keyframes __horma-click-pop{0%{transform:scale(.86)}55%{transform:scale(1.08)}100%{transform:scale(1)}}
-      @media(prefers-reduced-motion:reduce){#__horma-ai-cursor::before,#__horma-ai-cursor::after,#__horma-ai-target,#__horma-ai-cursor-label{animation:none!important;transition-duration:.01ms!important}.__horma-ai-trail,.__horma-ai-shockwave{display:none!important}}
+      @media(prefers-reduced-motion:reduce){#__horma-ai-cursor::before,#__horma-ai-cursor::after,#__horma-ai-target,#__horma-ai-cursor-label,.__horma-ai-fire i{animation:none!important;transition-duration:.01ms!important}.__horma-ai-trail,.__horma-ai-shockwave,.__horma-ai-fire{display:none!important}}
     `;
     this.document.head?.appendChild(style);
     this.overlayStyle = style;
@@ -525,6 +656,7 @@ class PreviewFrameComputerController {
     this.cursorLabel.id = "__horma-ai-cursor-label";
     this.cursorLabel.textContent = "AI";
     this.cursor.append(this.cursorCore, this.cursorLabel);
+    attachAiCursorFire(this.cursor, (tag) => this.document.createElement(tag));
     this.targetFrame = this.document.createElement("div");
     this.targetFrame.id = "__horma-ai-target";
     this.targetFrame.setAttribute("aria-hidden", "true");
@@ -557,8 +689,6 @@ class PreviewFrameComputerController {
   }
 
   private destroyOverlay(): void {
-    if (this.settleTimer != null) this.view.clearTimeout(this.settleTimer);
-    this.settleTimer = null;
     if (this.humanTakeoverHandler && typeof this.document.removeEventListener === "function") {
       for (const type of ["pointermove", "pointerdown", "wheel", "keydown"]) {
         this.document.removeEventListener(type, this.humanTakeoverHandler, true);
@@ -591,6 +721,7 @@ class PreviewFrameComputerController {
       this.cursor.dataset.busy = String(gesture !== "idle");
     }
     if (this.cursorLabel) this.cursorLabel.textContent = `AI · ${label}`;
+    replayAiCursorFire(this.cursor, gesture);
   }
 
   private setStatus(text: string, active: boolean): void {
@@ -599,7 +730,10 @@ class PreviewFrameComputerController {
       this.status.textContent = `AI cursor · ${text}`;
       this.status.dataset.active = String(active);
     }
-    if (this.cursor) this.cursor.dataset.busy = String(active || this.cursor.dataset.gesture !== "idle");
+    if (this.cursor) {
+      this.cursor.dataset.visible = "true";
+      this.cursor.dataset.busy = String(active || this.cursor.dataset.gesture !== "idle");
+    }
   }
 
   private hideVisuals(): void {
@@ -609,14 +743,6 @@ class PreviewFrameComputerController {
       this.cursor.dataset.gesture = "idle";
     }
     if (this.targetFrame) this.targetFrame.dataset.visible = "false";
-  }
-
-  private scheduleSettle(): void {
-    if (this.settleTimer != null) this.view.clearTimeout(this.settleTimer);
-    this.settleTimer = this.view.setTimeout(() => {
-      this.settleTimer = null;
-      this.hideVisuals();
-    }, CURSOR_SETTLE_MS);
   }
 
   private registerTransient(element: HTMLElement, ttl: number): void {
@@ -751,16 +877,18 @@ class PreviewFrameComputerController {
     this.setGesture("approach", "TARGET");
     this.emitTrail(start, target);
     if (this.cursor && actualDuration > 0 && typeof this.cursor.animate === "function") {
-      const lean = clamp((target.x - start.x) / Math.max(1, distance) * 4, -4, 4);
       const animation = this.cursor.animate([
-        { transform: `translate3d(${start.x}px,${start.y}px,0) rotate(0deg)` },
-        { transform: `translate3d(${(start.x + target.x) / 2}px,${Math.min(start.y, target.y) - Math.min(18, distance * .06)}px,0) rotate(${lean}deg)` },
-        { transform: `translate3d(${target.x}px,${target.y}px,0) rotate(0deg)` },
+        { transform: `translate3d(${start.x}px,${start.y}px,0)` },
+        { transform: `translate3d(${(start.x + target.x) / 2}px,${Math.min(start.y, target.y) - Math.min(18, distance * .06)}px,0)` },
+        { transform: `translate3d(${target.x}px,${target.y}px,0)` },
       ], { duration: actualDuration, easing: "cubic-bezier(.16,1,.3,1)", fill: "forwards" });
       const onAbort = () => animation.cancel();
       signal.addEventListener("abort", onAbort, { once: true });
       try { await animation.finished; } catch { if (signal.aborted) throw abortError(); }
-      finally { signal.removeEventListener("abort", onAbort); }
+      finally {
+        signal.removeEventListener("abort", onAbort);
+        animation.cancel();
+      }
     }
     this.placeCursor(target);
   }
@@ -847,6 +975,23 @@ class PreviewFrameComputerController {
     catch { element.dispatchEvent(new MouseEvent(type.replace("pointer", "mouse"), options)); }
   }
 
+  private mouseEvent(element: Element, type: string, point: Point, button = 0, extra: MouseEventInit = {}): void {
+    element.dispatchEvent(new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: this.view,
+      clientX: point.x,
+      clientY: point.y,
+      screenX: point.x,
+      screenY: point.y,
+      button,
+      buttons: type === "mousedown" ? 1 << button : 0,
+      detail: type === "click" || type === "dblclick" ? 1 : 0,
+      ...extra,
+    }));
+  }
+
   private hoverEvents(element: Element, point: Point, button = 0): void {
     for (const type of ["pointerover", "pointerenter", "pointermove"]) {
       this.pointerEvent(element, type, point, button);
@@ -931,7 +1076,21 @@ class PreviewFrameComputerController {
     for (const key of ["text", "value", "url", "title"] as const) {
       if (expected[key] != null && !match(actual[key], expected[key])) failures.push(key);
     }
-    return { passed: failures.length === 0, failures, expected, actual };
+    const rect = element?.getBoundingClientRect();
+    return {
+      passed: failures.length === 0,
+      failures,
+      expected,
+      actual,
+      rect: rect && rect.width > 0 && rect.height > 0
+        ? {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        }
+        : null,
+    };
   }
 
   private async settleScroll(signal: AbortSignal): Promise<void> {
@@ -959,6 +1118,41 @@ class PreviewFrameComputerController {
     if (action.type === "wait") {
       await delay(clamp(Number(action.duration_ms ?? 180), 0, 10_000), signal);
       return {};
+    }
+    if (action.type === "wait_for") {
+      const timeout = clamp(Number(action.duration_ms ?? 4_000), 50, 10_000);
+      const started = Date.now();
+      this.setGesture("hover", "WAIT");
+      let last: Record<string, unknown> = { passed: false };
+      while (Date.now() - started <= timeout) {
+        if (signal.aborted) throw abortError();
+        if (action.expect && Object.keys(action.expect).length > 0) {
+          last = this.checkExpectation(action, this.resolve(action));
+        } else {
+          last = { passed: previewNetworkIdle(this.view), expected: { network_idle: true } };
+        }
+        if (last.passed === true) {
+          return { ...last, waitedMs: Date.now() - started, timedOut: false };
+        }
+        await delay(48, signal);
+      }
+      return { ...last, waitedMs: Date.now() - started, timedOut: true, passed: false };
+    }
+    if (action.type === "upload") {
+      const fixture = String(action.fixture || "tiny.png");
+      if (!isPreviewUploadFixture(fixture)) {
+        throw new Error("Preview upload fixtures are tiny.png, sample.csv, or note.txt.");
+      }
+      const target = this.resolve(action);
+      const input = target.element as HTMLInputElement | null;
+      if (!input || input.tagName.toLowerCase() !== "input" || input.type.toLowerCase() !== "file") {
+        throw new Error("upload requires an observed <input type=file> in the active Preview tab.");
+      }
+      this.showTarget(input, "click");
+      this.setGesture("click", "UPLOAD");
+      await this.animateTo(target.point, signal, 0);
+      assignPreviewFileInput(input, previewFixtureFile(fixture));
+      return { fixture, files: input.files?.length ?? 0, name: fixture };
     }
     if (action.type === "scroll") {
       const explicitTarget = Boolean(action.ref || action.selector);
@@ -1037,32 +1231,28 @@ class PreviewFrameComputerController {
     if (action.type === "click") {
       const buttonName = action.button || "left";
       const button = buttonName === "right" ? 2 : buttonName === "middle" ? 1 : 0;
-      const html = target.element as HTMLElement;
+      const html = clickActivationTarget(target.element, target.point, this.document, this.view);
       this.setGesture("hover", "CLICK");
-      this.showTarget(target.element, "hover");
-      this.hoverEvents(target.element, target.point, button);
+      this.showTarget(html, "hover");
+      this.hoverEvents(html, target.point, button);
       await this.flashPress(signal);
-      this.showTarget(target.element, "press");
-      this.pointerEvent(target.element, "pointerdown", target.point, button);
+      this.showTarget(html, "press");
+      this.pointerEvent(html, "pointerdown", target.point, button);
+      this.mouseEvent(html, "mousedown", target.point, button);
       html.focus?.({ preventScroll: true });
-      this.pointerEvent(target.element, "pointerup", target.point, button);
+      this.pointerEvent(html, "pointerup", target.point, button);
+      this.mouseEvent(html, "mouseup", target.point, button);
       if (button === 0) {
         const clicks = action.clicks === 2 ? 2 : 1;
         for (let index = 0; index < clicks; index += 1) html.click();
-        if (clicks === 2) target.element.dispatchEvent(new MouseEvent("dblclick", {
-          bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y,
-        }));
+        if (clicks === 2) this.mouseEvent(html, "dblclick", target.point, button, { detail: 2 });
       } else if (button === 2) {
-        target.element.dispatchEvent(new MouseEvent("contextmenu", {
-          bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, button: 2,
-        }));
+        this.mouseEvent(html, "contextmenu", target.point, 2);
       } else {
-        target.element.dispatchEvent(new MouseEvent("auxclick", {
-          bubbles: true, cancelable: true, clientX: target.point.x, clientY: target.point.y, button: 1,
-        }));
+        this.mouseEvent(html, "auxclick", target.point, 1);
       }
       this.setGesture("click", "DONE");
-      this.showTarget(target.element, "click");
+      this.showTarget(html, "click");
       this.shockwave(target.point);
       if (action.clicks === 2) this.view.setTimeout(() => this.shockwave(target.point), 110);
       return {};
@@ -1185,6 +1375,57 @@ class PreviewFrameComputerController {
     }
   }
 
+  startRecording(): void {
+    this.stopRecording();
+    this.recording = [];
+    const record = (action: PreviewComputerAction) => {
+      if (this.recording && this.recording.length < 48) this.recording.push(action);
+    };
+    const click = (event: Event) => {
+      const target = event.target as Element | null;
+      if (!target || !("isTrusted" in event) || !(event as Event & { isTrusted: boolean }).isTrusted) return;
+      record({ type: "click", selector: selectorFor(target, this.document) });
+    };
+    const change = (event: Event) => {
+      const target = event.target as HTMLInputElement | null;
+      if (!target || !("isTrusted" in event) || !(event as Event & { isTrusted: boolean }).isTrusted) return;
+      if (target.type === "file") {
+        record({ type: "upload", selector: selectorFor(target, this.document), fixture: "tiny.png" });
+        return;
+      }
+      if (isEditable(target)) {
+        record({
+          type: "set_value",
+          selector: selectorFor(target, this.document),
+          value: target.type === "password" ? "" : String(target.value || "").slice(0, 512),
+        });
+      }
+    };
+    const keydown = (event: Event) => {
+      const keyEvent = event as KeyboardEvent;
+      if (!keyEvent.isTrusted) return;
+      if (!["Enter", "Tab", "Escape"].includes(keyEvent.key)) return;
+      const target = (event.target as Element) || this.document.body;
+      record({ type: "key", selector: selectorFor(target, this.document), keys: keyEvent.key });
+    };
+    this.document.addEventListener("click", click, true);
+    this.document.addEventListener("change", change, true);
+    this.document.addEventListener("keydown", keydown, true);
+    this.recordCleanup = () => {
+      this.document.removeEventListener("click", click, true);
+      this.document.removeEventListener("change", change, true);
+      this.document.removeEventListener("keydown", keydown, true);
+    };
+  }
+
+  stopRecording(): PreviewComputerAction[] {
+    this.recordCleanup?.();
+    this.recordCleanup = null;
+    const recorded = this.recording || [];
+    this.recording = null;
+    return recorded;
+  }
+
 }
 
 function controllerFor(frame: HTMLIFrameElement): PreviewFrameComputerController {
@@ -1218,6 +1459,20 @@ export async function runFrameComputerUse(
     : [];
   if (actions.length === 0) throw new Error("No Preview Computer Use actions were provided.");
   return controller.runActions(actions);
+}
+
+export function startFrameRecording(frame?: HTMLIFrameElement | null): void {
+  if (!frame) return;
+  controllerFor(frame).startRecording();
+}
+
+export function stopFrameRecording(frame?: HTMLIFrameElement | null): PreviewComputerAction[] {
+  if (!frame) return [];
+  try {
+    return controllerFor(frame).stopRecording();
+  } catch {
+    return [];
+  }
 }
 
 export function stopFrameComputerUse(frame?: HTMLIFrameElement | null): void {

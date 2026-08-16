@@ -1,6 +1,6 @@
 [package]
 name = "hormachuelos-optimized"
-version = "1.2.6-1"
+version = "1.2.15"
 description = "Independent FPS-optimized Hormachuelos desktop AI studio"
 authors = ["Hormachuelos Optimized"]
 edition = "2021"
@@ -54,6 +54,7 @@ png = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 walkdir = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+calamine = "0.26"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"

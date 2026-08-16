@@ -8,6 +8,8 @@ pub const XAI_API_BASE_URL: &str = "https://api.x.ai/v1";
 
 /// Command Code's hosted API. The chat endpoint is `/alpha/generate`.
 pub const COMMANDCODE_API_BASE_URL: &str = "https://api.commandcode.ai";
+/// OpenAI-compatible Command Code Provider API (Gemini, GPT, and other models).
+pub const COMMANDCODE_PROVIDER_API_BASE_URL: &str = "https://api.commandcode.ai/provider/v1";
 
 const BUILTIN_PROVIDER_IDS: &[&str] = &[
     "deepseek",
@@ -19,6 +21,7 @@ const BUILTIN_PROVIDER_IDS: &[&str] = &[
     "hormachuelos_free",
     "anthropic",
     "gemini",
+    "gemini_cli",
     "ollama",
     "pollinations",
     "commandcode",
@@ -52,8 +55,8 @@ pub struct Settings {
     pub max_iterations: u32,
     pub command_timeout_secs: u64,
     pub auto_approve: bool,
-    /// Permission mode: "plan" | "auto" | "ask" | "full" | "multi_agent"
-    /// Legacy "research" is accepted and normalized to "ask".
+    /// Permission mode: adaptive | ask | research | plan | build | multi_agent.
+    /// Legacy auto/full values are migrated to adaptive/build.
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
     /// Capability chip: thinking | guided | agent | balanced | investigate | brief | autonomous | max
@@ -73,13 +76,19 @@ pub struct Settings {
     /// Missing on older settings defaults to Auto so the new menu is immediately useful.
     #[serde(default = "default_computer_use_prompt_activation")]
     pub computer_use_prompt_activation: bool,
-    /// Provider-neutral task planning and final verification scaffolding.
+    /// Opt-in native Windows Desktop Computer Use. Off by default.
+    #[serde(default)]
+    pub desktop_computer_use_enabled: bool,
+    /// Optional process-name allowlist. Empty means all ordinary apps except the hard blocklist.
+    #[serde(default)]
+    pub desktop_computer_use_allowed_apps: Vec<String>,
+    /// Host-owned Director jobs (Answer / Change / Ship / Operate) plus verification.
     /// Defaults on so existing installations benefit after upgrading, while the
     /// user can turn it off from Settings for a lighter direct-response flow.
     #[serde(default = "default_smart_agent_enabled")]
     pub smart_agent_enabled: bool,
     /// Provider-neutral, local-first project and session memory.
-    /// Defaults on after upgrades and can be disabled independently of Smart Agent.
+    /// Defaults on after upgrades and can be disabled independently of Director.
     #[serde(default = "default_flavour_enabled")]
     pub flavour_enabled: bool,
 }
@@ -104,11 +113,11 @@ struct OriginalModelSelectionFile {
 }
 
 fn default_permission_mode() -> String {
-    "plan".into()
+    "adaptive".into()
 }
 
 fn default_capability_mode() -> String {
-    "thinking".into()
+    "balanced".into()
 }
 
 fn default_model_effort() -> String {
@@ -155,10 +164,31 @@ fn is_hormachuelos_model_alias(model: &str) -> bool {
 
 fn capability_for_mode(mode: &str) -> &'static str {
     match mode {
-        "auto" => "agent",
-        "ask" | "research" => "answer_max",
-        "full" | "multi_agent" => "autonomous",
+        "adaptive" | "auto" => "balanced",
+        "ask" => "answer_max",
+        "research" => "investigate",
+        "build" | "full" => "agent",
+        "multi_agent" => "autonomous",
         _ => "thinking",
+    }
+}
+
+pub(crate) fn normalize_capability_for_mode(mode: &str, capability: &str) -> String {
+    let mode = mode.trim().to_ascii_lowercase();
+    let capability = capability.trim().to_ascii_lowercase();
+    let allowed = match mode.as_str() {
+        "adaptive" | "auto" => matches!(capability.as_str(), "balanced" | "agent"),
+        "ask" => matches!(capability.as_str(), "answer_max" | "brief"),
+        "research" => matches!(capability.as_str(), "investigate" | "answer_max"),
+        "plan" => matches!(capability.as_str(), "thinking" | "guided"),
+        "build" | "full" => matches!(capability.as_str(), "agent" | "balanced"),
+        "multi_agent" => matches!(capability.as_str(), "autonomous" | "max"),
+        _ => false,
+    };
+    if allowed {
+        capability
+    } else {
+        capability_for_mode(&mode).into()
     }
 }
 
@@ -184,13 +214,15 @@ impl Default for Settings {
             base_url: Some("https://api.cursor.com/v1".into()),
             max_iterations: 0,
             command_timeout_secs: 120,
-            auto_approve: false,
+            auto_approve: true,
             permission_mode: default_permission_mode(),
             capability_mode: default_capability_mode(),
             taglish: false,
             model_effort: default_model_effort(),
             computer_use_enabled: false,
             computer_use_prompt_activation: default_computer_use_prompt_activation(),
+            desktop_computer_use_enabled: false,
+            desktop_computer_use_allowed_apps: Vec::new(),
             smart_agent_enabled: default_smart_agent_enabled(),
             flavour_enabled: default_flavour_enabled(),
         }
@@ -255,36 +287,41 @@ impl Settings {
         // Keep auto_approve in sync with mode for older code paths
         let mode = s.permission_mode.to_ascii_lowercase();
         match mode.as_str() {
-            "auto" | "full" | "multi_agent" => {
+            "adaptive" | "multi_agent" => {
                 s.permission_mode = mode;
+                s.auto_approve = true;
+            }
+            "auto" => {
+                s.permission_mode = "adaptive".into();
+                s.auto_approve = true;
+            }
+            "build" | "full" => {
+                s.permission_mode = "build".into();
                 s.auto_approve = true;
             }
             "plan" => {
                 s.permission_mode = mode;
-                // Plan keeps planning UX; tool confirms are Ship-level (see needs_tool_confirm).
+                // Plan stays locked until the user confirms Apply (see agent plan lock).
                 s.auto_approve = false;
             }
             "ask" | "research" => {
-                s.permission_mode = "ask".into();
+                s.permission_mode = mode;
                 s.auto_approve = false;
             }
             _ => {
                 // Migrate legacy unknown values from auto_approve flag
                 s.permission_mode = if s.auto_approve {
-                    "auto".into()
+                    "adaptive".into()
                 } else {
                     "plan".into()
                 };
-                s.auto_approve =
-                    matches!(s.permission_mode.as_str(), "auto" | "full" | "multi_agent");
+                s.auto_approve = matches!(
+                    s.permission_mode.as_str(),
+                    "adaptive" | "build" | "multi_agent"
+                );
             }
         }
-        let cap = s.capability_mode.trim().to_ascii_lowercase();
-        s.capability_mode = match cap.as_str() {
-            "thinking" | "guided" | "agent" | "balanced" | "answer_max" | "investigate"
-            | "brief" | "autonomous" | "max" => cap,
-            _ => capability_for_mode(&s.permission_mode).into(),
-        };
+        s.capability_mode = normalize_capability_for_mode(&s.permission_mode, &s.capability_mode);
         s.model_effort = normalize_model_effort(&s.model_effort);
         // Older builds stored a fabricated OpenAI/GPT label while sending the
         // request through Cursor/Grok. Migrate only that known alias.
@@ -409,6 +446,8 @@ impl Settings {
                 s.model = "deepseek/deepseek-v4-flash".into();
             }
         }
+        s.desktop_computer_use_allowed_apps =
+            crate::desktop_computer_use::sanitize_allowed_apps(s.desktop_computer_use_allowed_apps);
         s.validate()?;
         Ok(s)
     }
@@ -438,9 +477,16 @@ impl Settings {
         ensure!(
             matches!(
                 self.permission_mode.as_str(),
-                "plan" | "auto" | "ask" | "research" | "full" | "multi_agent"
+                "adaptive"
+                    | "ask"
+                    | "research"
+                    | "plan"
+                    | "build"
+                    | "multi_agent"
+                    | "auto"
+                    | "full"
             ),
-            "Permission mode must be plan, auto, ask, full, or multi_agent."
+            "Permission mode must be adaptive, ask, research, plan, build, or multi_agent."
         );
         ensure!(
             matches!(
@@ -499,6 +545,10 @@ impl Settings {
                 "COMMANDCODE uses the Command Code gateway or the Hormachuelos hosted proxy."
             );
         }
+        ensure!(
+            self.desktop_computer_use_allowed_apps.len() <= 32,
+            "Desktop mode can pin at most 32 allowed apps."
+        );
         Ok(())
     }
 }
@@ -697,8 +747,8 @@ pub fn clear_website_session() -> Result<()> {
 mod tests {
     use super::{
         capability_for_mode, is_custom_hosted_provider_alias, is_hormachuelos_model_alias,
-        original_model_selection_from_json, should_migrate_cursor_grok_to_xai,
-        validate_provider_id, Settings, XAI_API_BASE_URL,
+        normalize_capability_for_mode, original_model_selection_from_json,
+        should_migrate_cursor_grok_to_xai, validate_provider_id, Settings, XAI_API_BASE_URL,
     };
 
     #[test]
@@ -709,6 +759,7 @@ mod tests {
     #[test]
     fn accepts_the_dedicated_xai_provider() {
         assert!(validate_provider_id("xai").is_ok());
+        assert!(validate_provider_id("gemini_cli").is_ok());
         assert_eq!(XAI_API_BASE_URL, "https://api.x.ai/v1");
     }
 
@@ -795,6 +846,10 @@ mod tests {
     #[test]
     fn computer_use_is_opt_in() {
         assert!(!Settings::default().computer_use_enabled);
+        assert!(!Settings::default().desktop_computer_use_enabled);
+        assert!(Settings::default()
+            .desktop_computer_use_allowed_apps
+            .is_empty());
     }
 
     #[test]
@@ -813,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn ask_mode_is_valid_and_research_alias_is_accepted() {
+    fn ask_and_research_are_distinct_valid_read_only_modes() {
         let ask = Settings {
             permission_mode: "ask".into(),
             auto_approve: false,
@@ -826,8 +881,31 @@ mod tests {
             ..Settings::default()
         };
         assert!(research.validate().is_ok());
-        assert_eq!(capability_for_mode("research"), "answer_max");
+        assert_eq!(capability_for_mode("research"), "investigate");
         assert_eq!(capability_for_mode("ask"), "answer_max");
+    }
+
+    #[test]
+    fn adaptive_director_is_the_default_and_legacy_modes_migrate_capabilities() {
+        let defaults = Settings::default();
+        assert_eq!(defaults.permission_mode, "adaptive");
+        assert_eq!(defaults.capability_mode, "balanced");
+        assert!(defaults.auto_approve);
+        assert_eq!(capability_for_mode("auto"), "balanced");
+        assert_eq!(capability_for_mode("full"), "agent");
+        assert_eq!(capability_for_mode("build"), "agent");
+        assert_eq!(
+            normalize_capability_for_mode("research", "max"),
+            "investigate"
+        );
+        assert_eq!(
+            normalize_capability_for_mode("build", "balanced"),
+            "balanced"
+        );
+        assert_eq!(
+            normalize_capability_for_mode("multi_agent", "agent"),
+            "autonomous"
+        );
     }
 
     #[test]

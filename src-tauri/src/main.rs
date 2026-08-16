@@ -3,5 +3,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() {
+    if ai_forge_lib::desktop_computer_use::run_helper_if_requested() {
+        return;
+    }
     ai_forge_lib::run()
 }

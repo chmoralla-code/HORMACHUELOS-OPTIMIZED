@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
+import ts from "typescript";
 
 import {
   COMPUTER_PAUSE_SENTINEL_ENV,
@@ -18,7 +21,37 @@ import {
   sanitizeComputerToolArguments,
   summarizeTodoWrite,
 } from "./cursor-bridge.mjs";
-import { redactToolArguments } from "../src/components/session.ts";
+
+function transpile(path) {
+  return ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+    },
+  }).outputText;
+}
+
+function loadRedactToolArguments() {
+  const utilSandbox = { module: { exports: {} }, exports: null };
+  utilSandbox.exports = utilSandbox.module.exports;
+  vm.runInNewContext(transpile("../src/components/util.ts"), utilSandbox, { filename: "util.ts" });
+
+  const sessionSandbox = {
+    module: { exports: {} },
+    exports: null,
+    require: (specifier) => {
+      if (specifier === "./util") return utilSandbox.module.exports;
+      throw new Error(`Unexpected session dependency: ${specifier}`);
+    },
+  };
+  sessionSandbox.exports = sessionSandbox.module.exports;
+  vm.runInNewContext(transpile("../src/components/session.ts"), sessionSandbox, {
+    filename: "session.ts",
+  });
+  return sessionSandbox.module.exports.redactToolArguments;
+}
+
+const redactToolArguments = loadRedactToolArguments();
 
 test("model selections preserve the configured provider model id", () => {
   assert.equal(resolveModelSelection("default", "high"), undefined);
@@ -36,9 +69,9 @@ test("model selections preserve the configured provider model id", () => {
 test("execution policy maps modes to SDK permissions", () => {
   assert.deepEqual(resolveExecutionPolicy("plan"), {
     requestedMode: "plan",
-    sdkMode: "agent",
+    sdkMode: "plan",
     autoReview: false,
-    readOnly: false,
+    readOnly: true,
   });
   assert.deepEqual(resolveExecutionPolicy("ask"), {
     requestedMode: "ask",
@@ -47,13 +80,25 @@ test("execution policy maps modes to SDK permissions", () => {
     readOnly: true,
   });
   assert.deepEqual(resolveExecutionPolicy("research"), {
-    requestedMode: "ask",
+    requestedMode: "research",
     sdkMode: "plan",
     autoReview: false,
     readOnly: true,
   });
-  assert.equal(resolveExecutionPolicy("auto").autoReview, true);
-  assert.equal(resolveExecutionPolicy("full").sdkMode, "agent");
+  assert.deepEqual(resolveExecutionPolicy("adaptive"), {
+    requestedMode: "adaptive",
+    sdkMode: "plan",
+    autoReview: false,
+    readOnly: true,
+  });
+  assert.deepEqual(resolveExecutionPolicy("build"), {
+    requestedMode: "build",
+    sdkMode: "agent",
+    autoReview: true,
+    readOnly: false,
+  });
+  assert.equal(resolveExecutionPolicy("auto").requestedMode, "build");
+  assert.equal(resolveExecutionPolicy("full").requestedMode, "build");
   assert.deepEqual(resolveExecutionPolicy("multi_agent"), {
     requestedMode: "multi_agent",
     sdkMode: "agent",
@@ -67,19 +112,30 @@ test("sandbox is disabled because the bundled runtime lacks sandbox helpers", ()
   assert.deepEqual(resolveSandboxOptions(), { enabled: false });
 });
 
-test("ask/research stay read-only; plan and full allow mutating tools", () => {
+test("ask/research stay file-write locked; plan blocks Cursor builtins but keeps host tools", () => {
   const ask = resolveExecutionPolicy("ask");
   assert.equal(isToolAllowed(ask, "read"), true);
   assert.equal(isToolAllowed(ask, "grep"), true);
   assert.equal(isToolAllowed(ask, "TodoWrite"), true);
   assert.equal(isToolAllowed(ask, "todo_write"), true);
   assert.equal(isToolAllowed(ask, "update_todos"), true);
+  assert.equal(isToolAllowed(ask, "computer_actions"), true);
+  assert.equal(isToolAllowed(ask, "open_path"), true);
   assert.equal(isToolAllowed(ask, "write"), false);
+  assert.equal(isToolAllowed(ask, "write_file"), false);
+  assert.equal(isToolAllowed(ask, "run_command"), false);
   assert.equal(isToolAllowed(ask, "shell"), false);
   assert.equal(isToolAllowed(ask, "third_party_tool"), false);
   assert.equal(isToolAllowed(resolveExecutionPolicy("research"), "shell"), false);
-  assert.equal(isToolAllowed(resolveExecutionPolicy("plan"), "shell"), true);
-  assert.equal(isToolAllowed(resolveExecutionPolicy("plan"), "write"), true);
+  const plan = resolveExecutionPolicy("plan");
+  assert.equal(isToolAllowed(plan, "shell"), false);
+  assert.equal(isToolAllowed(plan, "write"), false);
+  assert.equal(isToolAllowed(plan, "apply_patch"), false);
+  assert.equal(isToolAllowed(plan, "write_file"), true);
+  assert.equal(isToolAllowed(plan, "edit_file"), true);
+  assert.equal(isToolAllowed(plan, "run_command"), true);
+  assert.equal(isToolAllowed(plan, "ask_user"), true);
+  assert.equal(isToolAllowed(plan, "read"), true);
   assert.equal(isToolAllowed(resolveExecutionPolicy("full"), "shell"), true);
 });
 
@@ -122,7 +178,7 @@ test("fresh agents receive only bounded recent transcript context", () => {
   assert.match(prompt, /Current request$/);
 });
 
-test("computer use keeps ask observational; plan/full expose action tools", () => {
+test("computer use keeps ask and plan observational; full exposes action tools", () => {
   const req = {
     computerUseEnabled: true,
     computerHelperPath: "C:\\Program Files\\AI-Forge\\ai-forge.exe",
@@ -136,8 +192,9 @@ test("computer use keeps ask observational; plan/full expose action tools", () =
   assert.equal(askTools.computer_game_sequence, undefined);
 
   const planTools = createComputerUseTools(req, resolveExecutionPolicy("plan"), protocol);
-  assert.equal(typeof planTools.computer_click.execute, "function");
-  assert.equal(typeof planTools.computer_game_sequence.execute, "function");
+  assert.equal(typeof planTools.computer_observe.execute, "function");
+  assert.equal(planTools.computer_click, undefined);
+  assert.equal(planTools.computer_game_sequence, undefined);
 
   const fullTools = createComputerUseTools(req, resolveExecutionPolicy("full"), protocol);
   assert.equal(typeof fullTools.computer_click.execute, "function");
@@ -154,6 +211,10 @@ test("computer use keeps ask observational; plan/full expose action tools", () =
   assert.equal(
     fullTools.computer_type_text.inputSchema.properties.text.maxLength,
     512,
+  );
+  assert.equal(
+    fullTools.computer_type_text.inputSchema.properties.submit.type,
+    "boolean",
   );
 });
 

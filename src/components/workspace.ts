@@ -49,6 +49,56 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
+function formatTimelineTime(value: number): string {
+  const date = new Date(Number(value) || Date.now());
+  try {
+    return date.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return date.toISOString().slice(0, 16).replace("T", " ");
+  }
+}
+
+function formatTimelineDuration(start: number, finish: number | null): string {
+  if (!finish) return "live";
+  if (finish <= start) return "<1s";
+  const seconds = Math.max(1, Math.round((finish - start) / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+}
+
+function humanToolName(value: string): string {
+  const labels: Record<string, string> = {
+    write_file: "Write file",
+    edit_file: "Edit file",
+    delete_file: "Delete file",
+    move_file: "Move file",
+    copy_file: "Copy file",
+    make_dir: "Create folder",
+    download_file: "Download file",
+    run_command: "Project command",
+  };
+  return labels[value] || value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function actionStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    pending: "capturing",
+    recorded: "protected",
+    no_change: "no change",
+    rolled_back: "restored",
+    conflict: "preserved conflict",
+    uncertain: "needs review",
+  };
+  return labels[value] || value.replaceAll("_", " ");
+}
+
 function flattenTree(nodes: ProjectNode[], output = new Map<string, string>()): Map<string, string> {
   for (const node of nodes) {
     if (!node.isDir) output.set(node.path, `${node.size}:${node.modifiedMs}`);
@@ -106,6 +156,7 @@ export class WorkspacePanel {
   private activePreview: FilePreview | null = null;
   private executionProfile: AgentExecutionProfile = loadExecutionProfile();
   private checkpoints: CheckpointSummary[] = [];
+  private expandedCheckpoints = new Set<string>();
   private activeRunSessionId: string | null = null;
 
   constructor() {
@@ -185,8 +236,19 @@ export class WorkspacePanel {
     }
     profile.append(profileHead, this.executionProfileRoot, el("p", { class: "execution-profile-description" }));
 
-    const checkpointSection = el("section", { class: "checkpoint-section", "aria-label": "Rollback checkpoint" });
-    checkpointSection.appendChild(el("div", { class: "checkpoint-section-title" }, ["Run checkpoint"]));
+    const checkpointSection = el("section", { class: "checkpoint-section", "aria-label": "Workspace Time Machine" });
+    const checkpointHead = el("div", { class: "checkpoint-section-head" });
+    checkpointHead.append(
+      el("div", {}, [
+        el("div", { class: "checkpoint-section-kicker" }, ["FLIGHT RECORDER"]),
+        el("div", { class: "checkpoint-section-title" }, ["Workspace Time Machine"]),
+      ]),
+      el("span", { class: "checkpoint-safe-label" }, ["CONFLICT-SAFE"]),
+    );
+    checkpointSection.append(
+      checkpointHead,
+      el("p", { class: "checkpoint-section-copy" }, ["Inspect protected agent actions and restore one action or an entire finished run. Newer manual edits are preserved."]),
+    );
     this.checkpointNotice = el("div", { class: "checkpoint-notice", role: "status", hidden: "" });
     this.checkpointRoot = el("div", { class: "checkpoint-root", "aria-live": "polite" });
     checkpointSection.append(this.checkpointNotice, this.checkpointRoot);
@@ -216,6 +278,12 @@ export class WorkspacePanel {
 
   getExecutionProfile(): AgentExecutionProfile {
     return this.executionProfile;
+  }
+
+  /** Bring the durable run ledger into view from Mission Control or the live Director strip. */
+  showTimeMachine(): void {
+    this.activateTab("changes");
+    void this.refreshCheckpoints();
   }
 
   private setExecutionProfile(profile: AgentExecutionProfile) {
@@ -251,6 +319,7 @@ export class WorkspacePanel {
     this.expanded.clear();
     this.changes.clear();
     this.checkpoints = [];
+    this.expandedCheckpoints.clear();
     this.activeRunSessionId = null;
     this.setCheckpointNotice();
     this.renderCheckpoint();
@@ -526,55 +595,121 @@ export class WorkspacePanel {
   private renderCheckpoint() {
     if (!this.checkpointRoot) return;
     clear(this.checkpointRoot);
-    const checkpoint = (this.activeRunSessionId
-      ? this.checkpoints.find((item) => item.sessionId === this.activeRunSessionId && (item.actionCount > 0 || item.status === "active"))
-      : undefined)
-      || this.checkpoints.find((item) => item.actionCount > 0 || item.status === "active")
-      || this.checkpoints[0];
-    if (!checkpoint) {
+    if (!this.checkpoints.length) {
       this.checkpointRoot.appendChild(el("div", { class: "inspector-state compact" }, [
-        this.projectPath ? "The next agent run will create a rollback checkpoint." : "Open a project to use rollback.",
+        this.projectPath ? "The next mutating agent run will appear here with protected actions." : "Open a project to use Time Machine.",
       ]));
       return;
     }
 
-    const card = el("div", { class: `checkpoint-card status-${checkpoint.status.replaceAll("_", "-")}` });
-    const head = el("div", { class: "checkpoint-card-head" });
-    const identity = el("div", { class: "checkpoint-card-identity" });
-    identity.append(
-      el("strong", {}, [`${checkpoint.profile.slice(0, 1).toUpperCase()}${checkpoint.profile.slice(1)} run`]),
-      el("span", {}, [checkpoint.status.replaceAll("_", " ")]),
-    );
-    const count = checkpoint.actionCount === 1 ? "1 protected action" : `${checkpoint.actionCount} protected actions`;
-    head.append(identity, el("span", { class: "checkpoint-count" }, [count]));
-    card.appendChild(head);
+    const relevant = this.checkpoints
+      .filter((item) => item.actionCount > 0 || item.status === "active" || (item.actions?.length || 0) > 0)
+      .slice(0, 8);
+    const checkpoints = relevant.length ? relevant : this.checkpoints.slice(0, 8);
+    if (!this.expandedCheckpoints.size && checkpoints[0]) this.expandedCheckpoints.add(checkpoints[0].id);
+    const timeline = el("div", { class: "checkpoint-timeline" });
 
-    const detailParts = [`${checkpoint.protectedPaths} path${checkpoint.protectedPaths === 1 ? "" : "s"}`];
-    if (checkpoint.conflictCount) detailParts.push(`${checkpoint.conflictCount} conflict${checkpoint.conflictCount === 1 ? "" : "s"}`);
-    card.appendChild(el("div", { class: "checkpoint-detail" }, [detailParts.join(" · ")]));
-    if (checkpoint.commandSideEffectsUnprotected || checkpoint.unprotectedActions > 0) {
-      const caveat = checkpoint.unprotectedActions > 0
-        ? `${checkpoint.unprotectedActions} action${checkpoint.unprotectedActions === 1 ? "" : "s"} targeted paths outside this project and cannot be restored here.`
-        : "Direct file changes are protected. Shell-command side effects need Safe profile coverage.";
-      card.appendChild(el("div", { class: "checkpoint-caveat" }, [
-        caveat,
+    checkpoints.forEach((checkpoint, index) => {
+      const expanded = this.expandedCheckpoints.has(checkpoint.id);
+      const card = el("article", {
+        class: `checkpoint-card status-${checkpoint.status.replaceAll("_", "-")}${expanded ? " expanded" : ""}`,
+        "data-checkpoint-id": checkpoint.id,
+      });
+      const head = el("button", {
+        class: "checkpoint-card-head",
+        type: "button",
+        "aria-expanded": String(expanded),
+        "aria-controls": `checkpoint-body-${checkpoint.id}`,
+      });
+      const rail = el("span", { class: "checkpoint-rail", "aria-hidden": "true" });
+      rail.appendChild(el("span", { class: "checkpoint-rail-dot" }));
+      const identity = el("span", { class: "checkpoint-card-identity" });
+      const runLabel = `${checkpoint.profile.slice(0, 1).toUpperCase()}${checkpoint.profile.slice(1)} run`;
+      identity.append(
+        el("strong", {}, [index === 0 && checkpoint.status === "active" ? `Live · ${runLabel}` : runLabel]),
+        el("span", {}, [`${formatTimelineTime(checkpoint.createdAtMs)} · ${formatTimelineDuration(checkpoint.createdAtMs, checkpoint.finishedAtMs)}`]),
+      );
+      const summary = el("span", { class: "checkpoint-head-summary" });
+      const count = checkpoint.actionCount === 1 ? "1 protected action" : `${checkpoint.actionCount} protected actions`;
+      summary.append(
+        el("span", { class: `checkpoint-status status-${checkpoint.status.replaceAll("_", "-")}` }, [checkpoint.status.replaceAll("_", " ")]),
+        el("span", { class: "checkpoint-count" }, [count]),
+        el("span", { class: "checkpoint-expand-mark", "aria-hidden": "true" }, [expanded ? "−" : "+"]),
+      );
+      head.append(rail, identity, summary);
+      head.addEventListener("click", () => {
+        if (expanded) this.expandedCheckpoints.delete(checkpoint.id);
+        else this.expandedCheckpoints.add(checkpoint.id);
+        this.renderCheckpoint();
+      });
+      card.appendChild(head);
+
+      const body = el("div", {
+        class: "checkpoint-card-body",
+        id: `checkpoint-body-${checkpoint.id}`,
+        ...(expanded ? {} : { hidden: "" }),
+      });
+      const detailParts = [`${checkpoint.protectedPaths} path${checkpoint.protectedPaths === 1 ? "" : "s"} covered`];
+      if (checkpoint.conflictCount) detailParts.push(`${checkpoint.conflictCount} conflict${checkpoint.conflictCount === 1 ? "" : "s"} preserved`);
+      body.appendChild(el("div", { class: "checkpoint-detail" }, [detailParts.join(" · ")]));
+
+      const recordedActions = Array.isArray(checkpoint.actions) ? checkpoint.actions : [];
+      const operationList = el("ol", { class: "checkpoint-operation-list", "aria-label": "Protected action history" });
+      if (!recordedActions.length) {
+        operationList.appendChild(el("li", { class: "checkpoint-operation-empty" }, ["No display-safe action details were recorded for this older run."]));
+      } else {
+        recordedActions.forEach((action) => {
+          const item = el("li", { class: `checkpoint-operation status-${action.status.replaceAll("_", "-")}` });
+          const target = action.projectWide
+            ? "Whole project snapshot"
+            : action.targets?.length
+              ? action.targets.join(", ")
+              : "Project path";
+          item.append(
+            el("span", { class: "checkpoint-operation-mark", "aria-hidden": "true" }),
+            el("span", { class: "checkpoint-operation-copy" }, [
+              el("strong", {}, [humanToolName(action.tool)]),
+              el("small", { title: target }, [target]),
+            ]),
+            el("span", { class: "checkpoint-operation-meta" }, [
+              el("span", {}, [actionStatusLabel(action.status)]),
+              el("time", { datetime: new Date(action.createdAtMs).toISOString() }, [formatTimelineTime(action.createdAtMs)]),
+            ]),
+          );
+          operationList.appendChild(item);
+        });
+      }
+      body.appendChild(operationList);
+
+      if (checkpoint.commandSideEffectsUnprotected || checkpoint.unprotectedActions > 0) {
+        const caveat = checkpoint.unprotectedActions > 0
+          ? `${checkpoint.unprotectedActions} action${checkpoint.unprotectedActions === 1 ? "" : "s"} targeted paths outside this project and cannot be restored here.`
+          : "Direct file changes are protected. Shell-command side effects need Safe profile coverage.";
+        body.appendChild(el("div", { class: "checkpoint-caveat" }, [caveat]));
+      }
+
+      const actions = el("div", { class: "checkpoint-actions" });
+      const unavailable = this.checkpointActionInFlight
+        || checkpoint.status === "active"
+        || checkpoint.actionCount === 0
+        || checkpoint.status === "rolled_back";
+      const undoLast = el("button", { class: "btn sm", type: "button" }, ["Undo last"]) as HTMLButtonElement;
+      const rollback = el("button", { class: "btn sm danger", type: "button" }, ["Roll back run"]) as HTMLButtonElement;
+      undoLast.disabled = unavailable;
+      rollback.disabled = unavailable;
+      undoLast.addEventListener("click", () => void this.requestCheckpointRollback(checkpoint, "last_action"));
+      rollback.addEventListener("click", () => void this.requestCheckpointRollback(checkpoint, "run"));
+      actions.append(undoLast, rollback);
+      body.appendChild(actions);
+      card.appendChild(body);
+      timeline.appendChild(card);
+    });
+    this.checkpointRoot.appendChild(timeline);
+    if (this.checkpoints.length > checkpoints.length) {
+      this.checkpointRoot.appendChild(el("p", { class: "checkpoint-retention" }, [
+        `Showing the newest ${checkpoints.length} of ${this.checkpoints.length} retained runs.`,
       ]));
     }
-
-    const actions = el("div", { class: "checkpoint-actions" });
-    const unavailable = this.checkpointActionInFlight
-      || checkpoint.status === "active"
-      || checkpoint.actionCount === 0
-      || checkpoint.status === "rolled_back";
-    const undoLast = el("button", { class: "btn sm", type: "button" }, ["Undo last"]) as HTMLButtonElement;
-    const rollback = el("button", { class: "btn sm danger", type: "button" }, ["Roll back run"]) as HTMLButtonElement;
-    undoLast.disabled = unavailable;
-    rollback.disabled = unavailable;
-    undoLast.addEventListener("click", () => void this.requestCheckpointRollback(checkpoint, "last_action"));
-    rollback.addEventListener("click", () => void this.requestCheckpointRollback(checkpoint, "run"));
-    actions.append(undoLast, rollback);
-    card.appendChild(actions);
-    this.checkpointRoot.appendChild(card);
   }
 
   private async requestCheckpointRollback(

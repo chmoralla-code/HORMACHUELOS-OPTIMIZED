@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en" data-appearance="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/theme/tokens.css" />
+    <link rel="stylesheet" href="/theme/globals.css" />
+    <link rel="stylesheet" href="/app.css" />
+    <title>AI reply layout harness</title>
+    <style>
+      html, body {
+        width: 100%;
+        min-width: 0 !important;
+        min-height: 100%;
+        overflow-x: hidden;
+      }
+      body {
+        display: block;
+        margin: 0;
+        background: var(--bg);
+      }
+      .reply-harness-shell {
+        width: min(100%, 1040px);
+        margin: 0 auto;
+        padding: clamp(18px, 4vw, 54px);
+      }
+      #chat.reply-harness-chat {
+        position: static;
+        display: block;
+        width: 100%;
+        height: auto;
+        min-height: 0;
+        overflow: visible;
+        padding: 0;
+      }
+      .reply-harness-chat .msg {
+        width: 100%;
+        max-width: 920px;
+        margin: 0 auto;
+      }
+    </style>
+  </head>
+  <body class="fps-optimized">
+    <main class="reply-harness-shell">
+      <section id="chat" class="reply-harness-chat" aria-label="AI reply preview">
+        <article class="msg assistant structured-reply">
+          <div id="reply-body" class="msg-body md" role="document" aria-label="AI response"></div>
+          <footer class="msg-meta">
+            <div class="msg-time-stack"><div class="msg-time">16 Aug · 08:30</div></div>
+            <button class="msg-copy" type="button" data-reply-action="copy" aria-label="Copy reply">
+              <span aria-hidden="true">▱</span><span class="msg-copy-label">Copy reply</span>
+            </button>
+          </footer>
+        </article>
+      </section>
+    </main>
+    <script type="module">
+      import { renderMarkdown } from "/components/util.ts";
+
+      const theme = new URLSearchParams(location.search).get("theme") || "dark";
+      document.documentElement.dataset.appearance = theme;
+      const sample = [
+        "I finished the review. The result now reads like a calm technical release note instead of one dense wall of text.",
+        "",
+        "## Key Improvements & Features Added",
+        "",
+        "1. **Roomier reply layout**",
+        "   - **Standard view:** compact, focused, and easy to skim.",
+        "   - **Maximized view:** wider measure with more breathing room.",
+        "2. **Clear delivery hierarchy**",
+        "   - Important labels become bold automatically.",
+        "   - Supporting details stay nested under the right point.",
+        "",
+        "### Why it feels cleaner",
+        "",
+        "Long replies now preserve visual rhythm without adding decorative noise.",
+        "",
+        "---",
+        "",
+        "## Files Updated",
+        "",
+        "- `src/components/util.ts` — semantic Markdown rendering.",
+        "- `src/app.css` — editorial typography and dividers.",
+        "- `scripts/check_reply_formatting.mjs` — regression coverage.",
+        "",
+        "> **Good to know:** raw HTML remains escaped, and the streaming paint limit stays intact.",
+        "",
+        "```ts",
+        "const replyLayout = { readable: true, safe: true };",
+        "```",
+      ].join("\n");
+
+      const body = document.getElementById("reply-body");
+      body.innerHTML = renderMarkdown(sample);
+      const button = document.querySelector("[data-reply-action='copy']");
+      button.addEventListener("click", () => {
+        button.classList.add("copied");
+        button.querySelector(".msg-copy-label").textContent = "Copied";
+        window.setTimeout(() => {
+          button.classList.remove("copied");
+          button.querySelector(".msg-copy-label").textContent = "Copy reply";
+        }, 900);
+      });
+      window.__replyLayoutHarness = { sample, theme };
+    </script>
+  </body>
+</html>

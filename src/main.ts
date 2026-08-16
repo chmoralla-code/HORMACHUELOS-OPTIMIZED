@@ -9,7 +9,7 @@ import {
 import { Sidebar } from "./components/sidebar";
 import { Chat, type ChatPromptSubmission } from "./components/chat";
 import { ConsolePanel } from "./components/console";
-import { displayModelName, displayProviderName, getProviderMeta, getSettingsSafe, isHostedCatalogRestricted, visibleProviders } from "./components/settings";
+import { displayModelName, displayProviderName, getProviderMeta, getSettingsSafe, isHostedCatalogRestricted, isLocalMachineProvider, visibleProviders } from "./components/settings";
 import { ModelBar } from "./components/modelbar";
 import { ProjectPicker } from "./components/picker";
 import { WorkspacePanel } from "./components/workspace";
@@ -17,10 +17,12 @@ import { SmartAgentPanel, applySmartAgentEvent } from "./components/smart-agent"
 import { ClientSuccessCenter, composeProjectMissionPrompt } from "./components/client-success-center";
 import {
   SitePreview,
+  extractPreviewBrowserUrlFromPrompt,
   isExternalPreviewUrl,
   isPreviewableBuild,
   mergePreviewSessionState,
   pickPreviewEntry,
+  promptWantsLocalWebsite,
 } from "./components/site-preview";
 
 import {
@@ -32,7 +34,9 @@ import {
 } from "./components/auth-gate";
 import {
   checkDesktopUpdate,
+  markUpdatePrompted,
   restoreUpdateState,
+  shouldPromptUpdate,
   showUpdateDialog,
   showUpdateGate,
 } from "./components/update-gate";
@@ -51,6 +55,7 @@ import {
   deleteSession, deleteAllSessions, newSessionId, sessionTitle,
   recordAgentEvent, buildLlmHistory, redactChatCredentials, addSessionTokens, SESSION_TOKEN_BUDGET,
   rehomeSessionsToProjectRoot,
+  coalesceSessionTurnLayout,
   type Session,
 } from "./components/session";
 import { icon } from "./components/icons";
@@ -639,7 +644,7 @@ function sessionForId(id: string | null | undefined): Session | undefined {
   return sessionRegistry.get(id) || sessions.find((session) => session.id === id);
 }
 
-/** Keep the visible Smart Agent ledger scoped to the currently selected session. */
+/** Keep the visible Director ledger scoped to the currently selected session. */
 function syncSmartAgentPanel() {
   smartAgentPanel?.setSession(activeSessionId, sessionForId(activeSessionId)?.smartAgent);
 }
@@ -703,7 +708,8 @@ function persistCurrentSession(deferred = false) {
   if (!s) return;
   syncVisiblePreviewIntoSession(s);
   sessionRegistry.set(s.id, s);
-  s.messages = chat.getMessages();
+  s.messages = coalesceSessionTurnLayout(chat.getMessages());
+  chat.messages = s.messages;
   if (deferred) scheduleSessionSave(s);
   else saveSession(s);
 }
@@ -717,7 +723,8 @@ function prepareForAppUpdate(): Record<string, string> {
     if (session) {
       syncVisiblePreviewIntoSession(session);
       sessionRegistry.set(session.id, session);
-      session.messages = chat.getMessages();
+      session.messages = coalesceSessionTurnLayout(chat.getMessages());
+      chat.messages = session.messages;
       // Keep ordinary persistence best-effort. If WebView storage is full, the
       // pending queue is included in the native snapshot returned below.
       saveSession(session);
@@ -919,7 +926,10 @@ function persistSessionById(id: string, deferred = false) {
   if (!s) return;
   if (id === activeSessionId) {
     syncVisiblePreviewIntoSession(s);
-    s.messages = chat.getMessages();
+    s.messages = coalesceSessionTurnLayout(chat.getMessages());
+    chat.messages = s.messages;
+  } else {
+    s.messages = coalesceSessionTurnLayout(s.messages);
   }
   sessionRegistry.set(s.id, s);
   if (deferred) scheduleSessionSave(s);
@@ -984,7 +994,7 @@ function switchSession(id: string) {
     chat.messages = [];
     chat.renderEmpty();
   } else {
-    chat.loadSession(s.messages);
+    chat.loadSession(s.messages, { running: runningSessions.has(id) });
   }
   chat.setRunning(runningSessions.has(id));
   // Restore this conversation's model (or lock to its in-flight run profile).
@@ -1139,7 +1149,9 @@ function loadProjectSessions() {
   if (sessions.length > 0) {
     activeSessionId = sessions[0].id;
     if (sessions[0].messages.length > 0) {
-      chat.loadSession(sessions[0].messages);
+      chat.loadSession(sessions[0].messages, {
+        running: runningSessions.has(sessions[0].id),
+      });
     } else {
       chat.messages = [];
       chat.renderEmpty();
@@ -1374,9 +1386,16 @@ function renderWorkspaceMenu() {
   );
   appendAction(
     "client-success",
-    "Open Client Success Center",
+    "Open Mission Control",
     "spark",
     () => openClientSuccessCenter(),
+    !hasProject,
+  );
+  appendAction(
+    "time-machine",
+    "Open Workspace Time Machine",
+    "panelRight",
+    () => openWorkspaceTimeMachine(),
     !hasProject,
   );
   menu.appendChild(el("div", { class: "workspace-menu-divider", role: "separator" }));
@@ -1450,6 +1469,11 @@ function bindWorkspaceMenuButton() {
 
 /** Wire permanent header controls once (they live in index.html). */
 function bindDrawerButtons() {
+  const missionButton = document.getElementById("mission-control-btn") as HTMLButtonElement | null;
+  if (missionButton && !(missionButton as any).__bound) {
+    missionButton.addEventListener("click", () => openClientSuccessCenter());
+    (missionButton as any).__bound = true;
+  }
   const leftBtn = document.getElementById("drawer-left-btn");
   if (leftBtn && !(leftBtn as any).__bound) {
     leftBtn.addEventListener("click", () => toggleLeftDrawer());
@@ -1637,7 +1661,7 @@ async function refreshProviderReadiness(
   }
 
   // Keyless local providers, or hosted-managed aliases, are ready immediately.
-  if (provider.id === "ollama" || provider.hostedManaged || provider.id === "hormachuelos_free") {
+  if (provider.id === "ollama" || provider.id === "gemini_cli" || provider.hostedManaged || provider.id === "hormachuelos_free") {
     return finish(true);
   }
 
@@ -1647,7 +1671,7 @@ async function refreshProviderReadiness(
 
   // Active Hormachuelos plans unlock cloud providers (including OpenAI branding
   // without a local Cursor key, and OpenRouter Free Models Router).
-  if (providerId !== "ollama") {
+  if (providerId !== "ollama" && providerId !== "gemini_cli") {
     const lic = await api.getLicenseStatus().catch(() => null);
     const hostedReady = Boolean(
       lic?.hosted && lic.active && String(lic.licenseKey || "").trim(),
@@ -1689,11 +1713,31 @@ async function exportClientPack() {
 
 function openClientSuccessCenter() {
   if (!currentProjectPath) {
-    reportError("Open or create a project before using Client Success Center.");
+    reportError("Open or create a project before using Mission Control.");
     openNewProjectPicker();
     return;
   }
+  // Native preview WebViews are separate child windows and can paint above an
+  // HTML modal regardless of z-index. Close Preview before presenting the
+  // mission dossier so every control remains visible and interactive.
+  if (sitePreview?.isOpen) sitePreview.close();
+  rightSideWasPreview = false;
   clientSuccessCenter?.open();
+}
+
+function openWorkspaceTimeMachine() {
+  if (!currentProjectPath) {
+    reportError("Open or create a project before using Time Machine.");
+    openNewProjectPicker();
+    return;
+  }
+  if (sitePreview?.isOpen) sitePreview.close();
+  rightSideWasPreview = false;
+  setDrawerOpen(RIGHT_DRAWER_KEY, true);
+  applyDrawers();
+  syncDrawerButtons();
+  renderWorkspaceMenu();
+  workspacePanel.showTimeMachine();
 }
 
 export type PreviewComputerUsePromptIntent = "enable" | "disable" | "auto" | null;
@@ -1725,8 +1769,10 @@ export function resolvePreviewComputerUsePromptIntent(
 
   const previewTarget =
     /\b(?:website|site|web app|webpage|page|preview|browser tab|ui|interface|form|dashboard|modal|menu|table|game)\b/;
+  const webAddress =
+    /\bhttps?:\/\/|\b(?:www\.)?[a-z0-9-]+\.(?:com|org|net|io|dev|app|ai|tv|co|gg|me|info|edu|gov|uk|us|ph)\b/;
   const browserTask =
-    /\b(?:debug|test|qa|audit|inspect|check|browse|navigate|interact|click|type|fill|select|submit|scroll|hover|open|verify|reproduce|play|try|run through|walk through|exercise)\b/;
+    /\b(?:debug|test|qa|audit|inspect|check|browse|navigate|interact|click|type|fill|select|submit|scroll|hover|open|verify|reproduce|play|try|run through|walk through|exercise|search|visit|look up|go to)\b/;
   const playwrightRequest =
     /\b(?:playwright|browser automation|automate the browser)\b/.test(prompt);
   const informationalOnly =
@@ -1736,13 +1782,234 @@ export function resolvePreviewComputerUsePromptIntent(
   if (informationalOnly) return null;
 
   const previewAction =
-    (browserTask.test(prompt) && previewTarget.test(prompt)) ||
+    (browserTask.test(prompt) && (previewTarget.test(prompt) || webAddress.test(prompt))) ||
     /\b(?:test|qa|audit|check|verify|exercise)\b.{0,48}\b(?:every|all)\b.{0,32}\b(?:feature|flow|button|control|screen)\b/
       .test(prompt) ||
     /\b(?:keyboard|mouse|cursor)\b.{0,48}\b(?:test|use|play|type|control)\b.{0,48}\b(?:preview|browser|website|site|game)\b/
       .test(prompt);
   return playwrightRequest || previewAction ? "auto" : null;
 }
+
+export type InferredPermissionMode =
+  | "ask"
+  | "research"
+  | "plan"
+  | "build"
+  | "multi_agent";
+
+export type AdaptiveRoute = {
+  mode: InferredPermissionMode;
+  reason: string;
+  complexity: "low" | "medium" | "high";
+  risk: "low" | "guarded" | "high";
+  confidence: "medium" | "high";
+};
+
+/**
+ * Host-owned Adaptive Director. It classifies intent before any model call so
+ * permissions never depend on a model correctly interpreting a prose hint.
+ * Explicit modes bypass this router; only Adaptive uses it.
+ */
+export function inferAdaptiveRoute(
+  value: string,
+  previousMode: InferredPermissionMode | null = null,
+): AdaptiveRoute | null {
+  const hadAttachment = /\[Attached (?:image|video):[^\]]*\]/i.test(String(value || ""));
+  const prompt = String(value || "")
+    .replace(/\[Attached (?:image|video):[^\]]*\]/gi, " ")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  const route = (
+    mode: InferredPermissionMode,
+    reason: string,
+    complexity: AdaptiveRoute["complexity"],
+    risk: AdaptiveRoute["risk"],
+    confidence: AdaptiveRoute["confidence"] = "high",
+  ): AdaptiveRoute => ({ mode, reason, complexity, risk, confidence });
+  if (!prompt) {
+    if (hadAttachment) return route("ask", "attached media question", "low", "low");
+    return previousMode
+      ? route(previousMode, "continuing the active workflow", "medium", "guarded", "medium")
+      : null;
+  }
+
+  const isPlan =
+    /\bkeep planning\b/.test(prompt) ||
+    /\bjust the plan\b/.test(prompt) ||
+    /\bplan only\b/.test(prompt) ||
+    /\b(make|draft|propose|write) a plan\b/.test(prompt) ||
+    /\bplanning first\b/.test(prompt) ||
+    /\bplann(?:ing|ign)\b/.test(prompt) ||
+    /\bproposal\b/.test(prompt) ||
+    /\bjust a proposal\b/.test(prompt) ||
+    (/\bplan\b/.test(prompt) && !/\b(implement|apply) (this|the) plan\b/.test(prompt));
+  if (isPlan) return route("plan", "planning requested without implementation", "medium", "low");
+
+  const isSimplify =
+    /\bsimplif/i.test(prompt) ||
+    /\bsimply (explain|put|tell|describe)\b/.test(prompt) ||
+    /\bcan you simply\b/.test(prompt) ||
+    /\bexplain\b.{0,24}\bsimply\b/.test(prompt) ||
+    /\b(in simple terms|in plain english|in plain language|eli5|make it shorter|make it simpler|make this simpler|make this shorter|shorter explanation|shorter version|less technical|explain it simply|explain simply|simpler explanation)\b/.test(
+      prompt,
+    );
+  if (isSimplify) return route("ask", "direct explanation or rewrite", "low", "low");
+
+  // How-to questions mention add/change but still want an answer, not an edit.
+  const isHowTo =
+    /^(how do i|how to|how can i|how should i|how would i)\b/.test(prompt) ||
+    /\bhow (do|can|should|would) (i|you|we)\b/.test(prompt);
+  if (isHowTo) return route("ask", "how-to question", "low", "low");
+
+  // A non-mutating constraint is an Answer/Ask contract, not a planning
+  // request. Keep this ahead of generic build verbs: phrases such as
+  // "make reasonable assumptions" must never grant write-level autonomy.
+  const isExplicitReadOnly =
+    /\bread[- ]only\b/.test(prompt) ||
+    /\b(analysis|review|audit|assessment|report)[- ]only\b/.test(prompt) ||
+    /\b(don't|don’t|dont|do not)\s+(make\s+)?(any\s+)?(changes?|edits?|modifications?)\b/.test(prompt) ||
+    /\b(don't|don’t|dont|do not)\s+(change|modify|edit|write|create|delete|touch)\s+(any\s+|the\s+)?files?\b/.test(prompt) ||
+    /\bwithout\s+(changing|modifying|editing|writing|creating)\b/.test(prompt) ||
+    /\bno\s+(file\s+)?(changes?|edits?|modifications?)\b/.test(prompt);
+  const wantsDeepEvidence =
+    /\b(deep|thorough|comprehensive|exhaustive|in-depth)\s+(research|analysis|review|audit|assessment|investigation)\b/.test(prompt) ||
+    /\b(research|investigate|benchmark|cross-check|cross check|fact-check|fact check|compare alternatives|compare options)\b/.test(prompt) ||
+    /\b(security|architecture|performance|accessibility|dependency|codebase)\s+(audit|review|assessment|analysis)\b/.test(prompt) ||
+    /\bmultiple sources\b|\bcite sources\b|\bverify (?:the )?(?:claims|facts|evidence)\b/.test(prompt) ||
+    (/\b(analyze|analyse|inspect|review|audit|assess|examine)\b/.test(prompt) &&
+      /\b(architecture|security|tests?|risks?|performance|dependencies|entire|whole|project|codebase)\b/.test(prompt));
+  if (isExplicitReadOnly) {
+    return wantsDeepEvidence
+      ? route("research", "deep read-only evidence requested", "high", "low")
+      : route("ask", "read-only answer requested", "medium", "low");
+  }
+
+  const isFileWrite =
+    /\b(make|create|write|save|export|generate|put)\b[\s\S]{0,48}\b(md|markdown|\.md|notes?|files?|document|txt)\b/.test(prompt) ||
+    /\b(md|markdown)\s+files?\b/.test(prompt) ||
+    /\bsave\s+(this|it|the(?:\s+(?:session|conversation|chat|notes?))?)\s+(as|to|into)\b/.test(prompt) ||
+    /\bwrite\s+(this|it|the(?:\s+(?:session|conversation|chat))?)\s+(to|into|as)\b/.test(prompt);
+  const isImplementPlan =
+    /\b(apply|implement|execute) (this|the) plan\b/.test(prompt) ||
+    /\bgo ahead and (implement|apply)\b/.test(prompt) ||
+    /\bstart implementing\b/.test(prompt);
+  const isApplySuggestions =
+    /\bokay,? apply\b/.test(prompt) ||
+    /\bok,? apply\b/.test(prompt) ||
+    /\bapply all\b/.test(prompt) ||
+    /\bapply (your|these|the|my) suggestions\b/.test(prompt) ||
+    /\bapply .{0,48}suggestions\b/.test(prompt);
+  const isPoliteBuild =
+    /\b(can|could) you (add|create|build|implement|fix|scaffold|generate|repair|refactor|change|changing|update|updating|rename|renaming|edit|editing|replace|replacing|rewrite|rewriting|modify|modifying|delete|remove|patch|tweak|adjust)\b/.test(prompt) ||
+    /\bplease (add|create|build|implement|fix|repair|refactor|change|update|rename|edit|replace|rewrite|modify|delete|remove|patch|tweak|adjust)\b/.test(prompt);
+  const isContextualMake =
+    /\bmake\s+(?:(?:a|an|the)\s+)?((new|responsive|polished|modern|simple|production[- ]ready)\s+){0,3}(app|application|website|site|page|component|feature|form|dashboard|game|project|file|folder|module|api|database|script|button|md|markdown|notes?|document)\b/.test(prompt) ||
+    /\bmake\s+(this|that|it)\s+(work|better|faster|responsive|accessible|production[- ]ready)\b/.test(prompt) ||
+    /\bmake\s+(this|that|it)\s+(say|read|display|titled)\b/.test(prompt) ||
+    /\bmake\s+(this|that|the|my)\s+(title|heading|header|label|text|name)\b/.test(prompt) ||
+    /\bturn\s+(this|that|it|the)\s+into\b/.test(prompt) ||
+    /\bmake\s+me\s+(a|an|the)\s+((new|responsive|polished|modern|simple)\s+){0,3}(app|application|website|site|page|component|feature|form|dashboard|game|project|file|folder|module|api|database|script|button)\b/.test(prompt);
+  const isEditAction =
+    /\b(change|changing)\s+(this|that|it)\b/.test(prompt) ||
+    /\b(change|changing)\s+(the|my)\s+(title|heading|header|label|text|name|button|color|colour|copy|placeholder|caption)\b/.test(prompt) ||
+    /^(please\s+)?(change|changing|rename|renaming|update|updating|edit|editing|replace|replacing|rewrite|rewriting|modify|modifying|delete|remove|patch|tweak|adjust)\b/.test(prompt) ||
+    /\b(rename|renaming|update|updating|edit|editing|replace|replacing|rewrite|rewriting|modify|modifying|patch|tweak|adjust)\s+(this|that|it|the|my)\b/.test(prompt) ||
+    /\b(delete|remove)\s+(this|that|it|the|my)\b/.test(prompt) ||
+    /\bset\s+(the\s+)?(title|heading|label|text|name)\b/.test(prompt);
+  const isApplyNow =
+    /^(do it|go ahead and (do|apply|implement|make)|yes,?\s+(do it|apply|make the change)|apply (it|this|the change|the edit)|make the (change|edit)|implement (it|this|that))\b/.test(prompt) ||
+    /\b(apply|make) (this|the) (change|edit|fix)\b/.test(prompt);
+  const mutatesProject =
+    isImplementPlan ||
+    isApplySuggestions ||
+    isPoliteBuild ||
+    isContextualMake ||
+    isEditAction ||
+    isApplyNow ||
+    isFileWrite;
+
+  const explicitlyParallel =
+    /\b(multi[- ]agent|parallel(?:ize|ise| work)?|concurrent(?:ly)?|in parallel|multiple agents?|agent team|split (?:this|the work|work) into|independent workstreams?)\b/.test(prompt);
+  const broadChange =
+    /\b(entire|whole|all major|every)\s+(app|application|project|codebase|system|module|mode|screen|flow)s?\b/.test(prompt) ||
+    /\b(end[- ]to[- ]end|full[- ]stack|from scratch|large[- ]scale|major)\s+(build|rewrite|refactor|overhaul|migration|upgrade)\b/.test(prompt) ||
+    /\bacross\s+(the\s+)?(frontend|backend|database|tests?|app|project|codebase)\b/.test(prompt);
+  const workAreas = [
+    /\b(frontend|ui|ux|layout|styles?|css)\b/,
+    /\b(backend|server|api|tauri|rust)\b/,
+    /\b(database|schema|migration|sql)\b/,
+    /\b(tests?|qa|playwright|verification)\b/,
+    /\b(auth|security|permissions?)\b/,
+    /\b(build|release|deploy|ci|installer)\b/,
+  ].filter((pattern) => pattern.test(prompt)).length;
+  const highRisk =
+    /\b(delete|migration|auth(?:entication|orization)?|security|payments?|production|deploy(?:ment)?)\b/.test(prompt);
+
+  if (mutatesProject) {
+    if (explicitlyParallel || broadChange || workAreas >= 3) {
+      return route(
+        "multi_agent",
+        explicitlyParallel ? "parallel work explicitly requested" : "several independent workstreams detected",
+        "high",
+        highRisk ? "high" : "guarded",
+      );
+    }
+    return route(
+      "build",
+      "focused implementation request",
+      workAreas >= 2 ? "medium" : "low",
+      highRisk ? "high" : "guarded",
+    );
+  }
+
+  const isQuestion =
+    prompt.includes("?") ||
+    /^(what|why|who|where|which|how|is|are|does|do|explain|tell me)\b/.test(prompt) ||
+    /\b(can|could) you (see|read|tell|describe|explain|look|simplif)\b/.test(prompt) ||
+    /\b(please describe|describe this|describe these|describe the image|describe what)\b/.test(prompt) ||
+    /\b(what is this|what are these|what this image|what these image|what's in this|whats in this)\b/.test(prompt) ||
+    /\b(look at this|what does this)\b/.test(prompt);
+  if (isQuestion) return route("ask", "direct question", "low", "low");
+
+  const isAnalysisRequest =
+    /^(analyze|analyse|inspect|review|audit|assess|examine|summarize|understand|report on)\b/.test(prompt) ||
+    /\b(give|provide|write)\b.{0,56}\b(report|analysis|assessment|review|summary)\b/.test(prompt);
+
+  const isBuildAction =
+    /\b(add|create|build|implement|scaffold|generate|fix|debug|repair|refactor|upgrade|rename)\b/.test(prompt);
+  // "Review and fix" is implementation; a plain architecture/security review
+  // is an answer. Evaluate the explicit mutation before the analysis fallback.
+  if (isBuildAction) {
+    return explicitlyParallel || broadChange || workAreas >= 3
+      ? route("multi_agent", "broad implementation with independent workstreams", "high", highRisk ? "high" : "guarded")
+      : route("build", "focused implementation request", "medium", highRisk ? "high" : "guarded");
+  }
+  if (isAnalysisRequest) {
+    return wantsDeepEvidence
+      ? route("research", "deep analysis needs evidence gathering", "high", "low")
+      : route("ask", "bounded analysis request", "medium", "low");
+  }
+
+  if (hadAttachment) return route("ask", "attached media question", "low", "low");
+
+  if (/^(continue|keep going|proceed|carry on|resume|do it|go ahead|apply it|implement it)\b/.test(prompt)) {
+    const continuation = previousMode && previousMode !== "ask" && previousMode !== "research"
+      ? previousMode
+      : "build";
+    return route(continuation, "continuing the previous task", "medium", "guarded", "medium");
+  }
+  if (previousMode && /^(yes|okay|ok|sure|that one|the first|the second|react \+ vite)\b/.test(prompt)) {
+    return route(previousMode, "short follow-up keeps the active workflow", "medium", "guarded", "medium");
+  }
+  return null;
+}
+
+/** Backward-compatible mode-only view used by tests and non-UI callers. */
+export function inferPermissionMode(value: string): InferredPermissionMode | null {
+  return inferAdaptiveRoute(value)?.mode ?? null;
+}
+
 async function sendPrompt(submission: ChatPromptSubmission) {
   let prompt = redactChatCredentials(submission.modelText);
   const visiblePrompt = redactChatCredentials(submission.visibleText || submission.modelText);
@@ -1767,6 +2034,21 @@ async function sendPrompt(submission: ChatPromptSubmission) {
   }
   const computerUseIntent = resolvePreviewComputerUsePromptIntent(visiblePrompt);
   let promptSettings = modelBar.settings;
+  const selectedMode = submission.requestedMode || modelBar.getMode();
+  const previousRunMode = [...chat.getMessages()]
+    .reverse()
+    .find((message) => message.type === "run_start")?.permissionMode ?? null;
+  const adaptiveRoute = taskProfile === "default" && selectedMode === "adaptive"
+    ? inferAdaptiveRoute(visiblePrompt, previousRunMode)
+      ?? {
+        mode: "ask" as const,
+        reason: "ambiguous request; safest useful route",
+        complexity: "low" as const,
+        risk: "low" as const,
+        confidence: "medium" as const,
+      }
+    : null;
+  if (adaptiveRoute) modelBar.showAdaptiveRoute(adaptiveRoute);
   if (promptSettings && (computerUseIntent === "enable" || computerUseIntent === "disable")) {
     const updatedSettings = {
       ...promptSettings,
@@ -1788,26 +2070,55 @@ async function sendPrompt(submission: ChatPromptSubmission) {
   }
   const promptActivationAllowed =
     promptSettings?.computer_use_prompt_activation !== false;
-  const computerUseForRun = computerUseIntent === "disable"
-    ? false
-    : computerUseIntent === "enable"
-      ? true
-      : computerUseIntent === "auto" && promptActivationAllowed
+  const computerUseForRun = typeof submission.computerUseOverride === "boolean"
+    ? submission.computerUseOverride
+    : computerUseIntent === "disable"
+      ? false
+      : computerUseIntent === "enable"
         ? true
-        : !!promptSettings?.computer_use_enabled;
+        : computerUseIntent === "auto" && promptActivationAllowed
+          ? true
+          : !!promptSettings?.computer_use_enabled;
+  const fixedRunMode = !adaptiveRoute && submission.requestedMode && submission.requestedMode !== "adaptive"
+    ? submission.requestedMode
+    : null;
+  const effectiveRunMode = adaptiveRoute?.mode || fixedRunMode;
   const runSettings = promptSettings ? {
     ...promptSettings,
     provider: runProfile.provider,
     model: runProfile.model,
     model_effort: runProfile.effort || promptSettings.model_effort,
     computer_use_enabled: computerUseForRun,
+    ...(effectiveRunMode
+      ? {
+          permission_mode: effectiveRunMode,
+          capability_mode:
+            effectiveRunMode === "ask"
+              ? "answer_max"
+              : effectiveRunMode === "research"
+                ? "investigate"
+                : effectiveRunMode === "plan"
+                  ? "thinking"
+                  : effectiveRunMode === "build"
+                    ? "agent"
+                    : "autonomous",
+        }
+      : {}),
   } : undefined;
   if (isHostedCatalogRestricted()) {
     const allowed = visibleProviders();
     const providerId = String(runProfile.provider).trim();
     const modelId = String(runProfile.model).trim();
     const provider = allowed.find((entry) => entry.id === providerId);
-    if (!provider || (provider.models.length > 0 && !provider.models.includes(modelId))) {
+    if (!provider) {
+      reportError("This AI provider or model is not enabled for your account.");
+      return;
+    }
+    if (
+      !isLocalMachineProvider(providerId)
+      && provider.models.length > 0
+      && !provider.models.includes(modelId)
+    ) {
       reportError("This AI provider or model is not enabled for your account.");
       return;
     }
@@ -1911,6 +2222,25 @@ async function sendPrompt(submission: ChatPromptSubmission) {
     }
     if (isUsageExhausted()) throw new Error(usageBlockMessage());
 
+    if (
+      (computerUseIntent === "enable" || computerUseIntent === "auto" || promptWantsLocalWebsite(visiblePrompt))
+      && sameProjectPath(projectRoot, currentProjectPath)
+    ) {
+      try {
+        let previewUrl = extractPreviewBrowserUrlFromPrompt(visiblePrompt);
+        if (!previewUrl && promptWantsLocalWebsite(visiblePrompt)) {
+          previewUrl = await api.ensureProjectDevServer(projectRoot);
+        }
+        await sitePreview.openForComputerUse({
+          projectRoot,
+          url: previewUrl,
+        });
+        persistPreviewForSession(sessionId, sitePreview.captureSessionState());
+      } catch (error) {
+        console.warn("Could not open Preview for Computer Use", error);
+      }
+    }
+
     // Only touch workspace/console UI while this owning session is visible.
     if (sameProjectPath(projectRoot, currentProjectPath) && activeSessionId === sessionId) {
       await workspacePanel.beginRun(sessionId);
@@ -1924,8 +2254,9 @@ async function sendPrompt(submission: ChatPromptSubmission) {
       projectRoot,
       resumeAgentId,
       taskProfile,
-      workspacePanel.getExecutionProfile(),
+      submission.executionProfile || workspacePanel.getExecutionProfile(),
       runSettings,
+      selectedMode,
     );
     if (typeof nextAgentId === "string" && nextAgentId.trim()) {
       const owning = sessionForId(sessionId);
@@ -2199,7 +2530,14 @@ async function init() {
   workspacePanel = new WorkspacePanel();
   consolePanel = new ConsolePanel();
   sitePreview = new SitePreview(document.getElementById("site-preview-slot"));
-  smartAgentPanel = new SmartAgentPanel(document.getElementById("smart-agent-status")!);
+  smartAgentPanel = new SmartAgentPanel(document.getElementById("smart-agent-status")!, {
+    onStop: () => {
+      sitePreview.stopComputerUse();
+      if (activeSessionId) api.agentStop(activeSessionId).catch((error) => reportError(String(error)));
+    },
+    onReviewChanges: openWorkspaceTimeMachine,
+    onOpenMission: openClientSuccessCenter,
+  });
   syncSmartAgentPanel();
   sitePreview.setStateChangeHandler((preview) => {
     // The preview component only emits user-driven changes, never a restore of
@@ -2224,7 +2562,14 @@ async function init() {
   });
   clientSuccessCenter = new ClientSuccessCenter(document.getElementById("modal-root")!, {
     getProjectPath: () => currentProjectPath,
-    onRunRecipe: (prompt) => chat.submitPreviewPrompt(prompt),
+    onRunRecipe: (request) => chat.submitPreviewPrompt({
+      prompt: request.prompt,
+      visibleText: request.visibleText,
+      titleHint: request.titleHint,
+      requestedMode: request.requestedMode,
+      executionProfile: request.executionProfile,
+      computerUseOverride: request.enableComputerUse,
+    }),
     onExportClientPack: async (handoffSummary) => {
       if (!currentProjectPath) return null;
       const result = await api.exportClientPack(undefined, handoffSummary);
@@ -2386,7 +2731,7 @@ async function init() {
   // New releases get a visible sidebar badge. Required releases still block
   // the app, while the background refresh keeps long-running clients informed.
   let forcedUpdateGateVisible = false;
-  const refreshUpdateNotification = async () => {
+  const refreshUpdateNotification = async ({ prompt = false }: { prompt?: boolean } = {}) => {
     try {
       const update = await checkDesktopUpdate();
       const available = update.updateAvailable || update.forceUpdate;
@@ -2398,6 +2743,19 @@ async function init() {
         }));
         return true;
       }
+      if (
+        prompt
+        && available
+        && update.latest
+        && !update.forceUpdate
+        && shouldPromptUpdate(update.latest.version)
+        && !document.querySelector(".auth-gate-overlay")
+      ) {
+        markUpdatePrompted(update.latest.version);
+        document.body.appendChild(showUpdateDialog({
+          beforeInstall: prepareForAppUpdate,
+        }));
+      }
     } catch (e) {
       // Keep an already-shown notification rather than hiding it due to a
       // transient offline error.
@@ -2407,13 +2765,13 @@ async function init() {
   };
   if (await refreshUpdateNotification()) return;
   window.setInterval(() => {
-    void refreshUpdateNotification();
+    void refreshUpdateNotification({ prompt: true });
   }, 15 * 60 * 1000);
   window.addEventListener("online", () => {
-    void refreshUpdateNotification();
+    void refreshUpdateNotification({ prompt: true });
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") void refreshUpdateNotification();
+    if (document.visibilityState === "visible") void refreshUpdateNotification({ prompt: true });
   });
 
   // Website account required — desktop signs in automatically after browser login/signup.
@@ -2441,6 +2799,7 @@ async function init() {
     applyWebsitePlanUsage(websiteUser);
   }
   await refreshWebsiteAccountStatus({ quiet: true }).catch(() => {});
+  if (await refreshUpdateNotification({ prompt: true })) return;
 
   // OpenCode-style chips inside the composer card
   modelBar = new ModelBar(() => {
@@ -2458,6 +2817,16 @@ async function init() {
     modelBar.settings.computer_use_enabled = event.detail?.enabled === true;
     modelBar.settings.computer_use_prompt_activation =
       event.detail?.promptActivation !== false;
+  }) as EventListener);
+  window.addEventListener("horma:desktop-computer-use-changed", ((event: CustomEvent<{
+    enabled?: boolean;
+    allowedApps?: string[];
+  }>) => {
+    if (!modelBar.settings) return;
+    modelBar.settings.desktop_computer_use_enabled = event.detail?.enabled === true;
+    if (Array.isArray(event.detail?.allowedApps)) {
+      modelBar.settings.desktop_computer_use_allowed_apps = event.detail.allowedApps;
+    }
   }) as EventListener);
   await refreshProviderReadiness().catch(() => false);
   // Prefer website plan usage; fall back to local license.json if website had none.
@@ -2480,6 +2849,40 @@ async function init() {
     chat.applyUltraChrome();
   });
   window.addEventListener("horma:new-session", () => void createNewSession());
+  window.addEventListener("horma:run-permission-mode", ((e: CustomEvent<{
+    mode?: string;
+    persist?: boolean;
+    reason?: string;
+    complexity?: "low" | "medium" | "high";
+    risk?: "low" | "guarded" | "high";
+  }>) => {
+    const mode = String(e.detail?.mode || "").trim().toLowerCase();
+    if (
+      e.detail?.reason &&
+      (mode === "ask" || mode === "research" || mode === "plan" || mode === "build" || mode === "multi_agent")
+    ) {
+      modelBar.showAdaptiveRoute({
+        mode,
+        reason: e.detail.reason,
+        complexity: e.detail.complexity,
+        risk: e.detail.risk,
+        confidence: "high",
+      });
+    } else {
+      modelBar.showRunRoute(mode);
+    }
+    if (
+      e.detail?.persist === true &&
+      (mode === "adaptive" ||
+        mode === "ask" ||
+        mode === "research" ||
+        mode === "plan" ||
+        mode === "build" ||
+        mode === "multi_agent")
+    ) {
+      void modelBar.applyIntentMode(mode);
+    }
+  }) as EventListener);
   window.addEventListener("horma:composer-insert", ((e: CustomEvent<{ text?: string }>) => {
     const text = e.detail?.text;
     if (typeof text === "string" && text) chat.insertComposerText(text);

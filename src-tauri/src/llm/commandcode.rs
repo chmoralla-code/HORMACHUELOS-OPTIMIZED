@@ -17,6 +17,29 @@ const MAX_OUTPUT_TOKENS: u64 = 64_000;
 /// rejects clients below its `minVersion` (0.18.x), so keep this current.
 const COMMAND_CODE_CLIENT_VERSION: &str = "1.14.1";
 
+fn event_delta_text(value: &Value) -> Option<&str> {
+    ["text", "delta", "content", "value"]
+        .iter()
+        .find_map(|key| {
+            value.get(*key).and_then(|field| {
+                field.as_str().or_else(|| {
+                    field
+                        .get("text")
+                        .or_else(|| field.get("content"))
+                        .and_then(Value::as_str)
+                })
+            })
+        })
+        .filter(|text| !text.is_empty())
+}
+
+fn openai_compat_delta(value: &Value) -> Option<&Value> {
+    value
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .and_then(|choice| choice.get("delta").or_else(|| choice.get("message")))
+}
+
 /// Build the `config` block the gateway validates. It describes the working
 /// directory to the model; values are informational context, not credentials.
 fn build_config(project_root: &str) -> Value {
@@ -341,13 +364,12 @@ impl LlmProvider for CommandCode {
                 };
                 saw_event = true;
                 match value.get("type").and_then(Value::as_str).unwrap_or("") {
-                    "text-delta" => {
-                        if let Some(delta) = value.get("text").and_then(Value::as_str) {
-                            if !delta.is_empty() {
-                                text_out.push_str(delta);
-                                if let Some(sink) = &on_content {
-                                    sink(delta);
-                                }
+                    "text-delta" | "text" | "content-delta" | "output-text-delta"
+                    | "output-text" => {
+                        if let Some(delta) = event_delta_text(&value) {
+                            text_out.push_str(delta);
+                            if let Some(sink) = &on_content {
+                                sink(delta);
                             }
                         }
                     }
@@ -356,13 +378,11 @@ impl LlmProvider for CommandCode {
                             let _ = sink;
                         }
                     }
-                    "reasoning-delta" => {
-                        if let Some(delta) = value.get("text").and_then(Value::as_str) {
-                            if !delta.is_empty() {
-                                reasoning_out.push_str(delta);
-                                if let Some(sink) = &on_reasoning {
-                                    sink(delta);
-                                }
+                    "reasoning-delta" | "reasoning" | "thinking-delta" | "thinking" => {
+                        if let Some(delta) = event_delta_text(&value) {
+                            reasoning_out.push_str(delta);
+                            if let Some(sink) = &on_reasoning {
+                                sink(delta);
                             }
                         }
                     }
@@ -433,7 +453,30 @@ impl LlmProvider for CommandCode {
                             .to_string();
                         return Err(anyhow!("commandcode_error: {message}"));
                     }
-                    _ => {}
+                    _ => {
+                        if let Some(delta) = openai_compat_delta(&value) {
+                            if let Some(chunk) = event_delta_text(delta)
+                                .or_else(|| delta.get("content").and_then(Value::as_str))
+                            {
+                                if !chunk.is_empty() {
+                                    text_out.push_str(chunk);
+                                    if let Some(sink) = &on_content {
+                                        sink(chunk);
+                                    }
+                                }
+                            }
+                            for key in ["reasoning_content", "reasoning", "thinking"] {
+                                if let Some(chunk) = delta.get(key).and_then(Value::as_str) {
+                                    if !chunk.is_empty() {
+                                        reasoning_out.push_str(chunk);
+                                        if let Some(sink) = &on_reasoning {
+                                            sink(chunk);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -548,5 +591,34 @@ mod tests {
         assert!(KNOWN_MODELS.contains(&"gpt-5.6-luna"));
         assert!(KNOWN_MODELS.contains(&"deepseek/deepseek-v4-pro"));
         assert!(KNOWN_MODELS.contains(&"xai/grok-4.5"));
+    }
+
+    #[test]
+    fn event_delta_text_reads_text_delta_or_nested_content() {
+        assert_eq!(event_delta_text(&json!({ "text": "Hi" })), Some("Hi"));
+        assert_eq!(
+            event_delta_text(&json!({ "delta": "There" })),
+            Some("There")
+        );
+        assert_eq!(
+            event_delta_text(&json!({ "delta": { "text": "Nested" } })),
+            Some("Nested")
+        );
+        assert_eq!(
+            event_delta_text(&json!({ "content": "Answer" })),
+            Some("Answer")
+        );
+        assert_eq!(
+            event_delta_text(&json!({ "value": "Via value" })),
+            Some("Via value")
+        );
+        let compat = json!({
+            "choices": [{ "delta": { "content": "Hello from OpenAI shape" } }]
+        });
+        assert_eq!(
+            openai_compat_delta(&compat)
+                .and_then(|delta| delta.get("content").and_then(Value::as_str)),
+            Some("Hello from OpenAI shape")
+        );
     }
 }

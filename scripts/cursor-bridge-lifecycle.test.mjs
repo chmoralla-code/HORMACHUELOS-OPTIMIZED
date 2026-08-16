@@ -221,6 +221,14 @@ test("Cursor custom tools delegate to the native dispatcher and preserve failure
   );
   assert.deepEqual(Object.keys(readOnlyTools), ["grep"]);
 
+  const planTools = createHostTools(
+    schemas,
+    resolveExecutionPolicy("plan"),
+    protocol,
+    new Map(),
+  );
+  assert.deepEqual(Object.keys(planTools).sort(), ["grep", "write_file"]);
+
   const result = await readOnlyTools.grep.execute(
     { pattern: "[", path: "" },
     { toolCallId: "native-call-1" },

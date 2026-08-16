@@ -57,15 +57,17 @@ Located in `src-tauri/target/release/` (exe) and `src-tauri/target/release/bundl
 - **Tools**: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `run_command`, `git_init`, `git_add_all`, `git_commit`, `git_status`, `done`.
 - **API keys**: stored in the Windows Credential Manager via the `keyring` crate — never written to disk plaintext, never logged.
 
-## Computer use (Windows)
+## Computer use
 
-With **Cursor SDK** selected, open **Settings → Agent → Computer use** and enable the opt-in toggle. The agent can list allowed windows, capture a selected window, focus it, and request clicks, typing, key presses, scrolling, or dragging.
+Preview Computer Use stays Preview-only: open the Preview sandwich (hamburger) menu and set **Computer Use** to Off / Auto / On.
 
-- Every observation is short-lived and can authorize only one subsequent action.
-- Clicks, typing, key presses, and drags always require action-time approval—even in Full mode.
-- Realtime keyboard games use one bounded native Arrow/WASD/Space sequence (up to 30 seconds) instead of waiting for a model response between moves.
-- Terminal, Run, authentication, password-manager, Windows Security/privacy, ChatGPT, Codex, and AI-Forge windows are blocked.
-- Press **Ctrl+Alt+Esc** at any time to pause computer use and stop active runs. Resume it explicitly from Settings.
+Desktop mode is a separate opt-in on that same sandwich: **Desktop mode**. When enabled, the agent can control ordinary Windows apps outside Hormachuelos — including Windows Settings (brightness, display) — with the cursor. A click-through overlay shows the same cinematic AI cursor, hover frame, click shockwaves, and scroll cues used in Preview.
+
+- Preview tools (`computer_observe`, `computer_actions`) never leave the active Preview tab.
+- Desktop tools (`computer_list_windows`, `computer_observe_window`, click/type/scroll/drag) target native windows.
+- Pin allowed apps in the sandwich menu, or leave the list empty to allow all ordinary windows except the safety blocklist.
+- Terminal, Run, authentication, password-manager, Windows Security/privacy, ChatGPT, Codex, and Hormachuelos windows are blocked.
+- Press **Ctrl+Alt+Esc** at any time to pause Preview and Desktop actions, hide the overlay, and stop active runs.
 
 ## Providers
 

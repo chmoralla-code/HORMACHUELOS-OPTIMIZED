@@ -1,15 +1,19 @@
-import { api, type AgentEvent, type AgentTaskProfile } from "../ipc";
+import { api, type AgentEvent, type AgentExecutionProfile, type AgentTaskProfile } from "../ipc";
 import { icon } from "./icons";
 import {
   appendAssistantTranscriptChunk,
+  appendMultiAgentBatchSnapshot,
+  appendThinkingReasoningChunk,
+  appendThinkingTranscriptEvent,
+  assistantReplyLooksOpen,
+  coalesceSessionTurnLayout,
   normalizeSessionPermissionMode,
   redactToolArguments,
-  snapshotMultiAgentTools,
   type SessionMessage,
   type SessionMultiAgentTool,
 } from "./session";
 import { ToolArgsStreamDecoder, type ToolArgField } from "./tool-args-stream";
-import { clear, div, el, escapeHtml, formatChatTime, normalizeAssistantMarkdown, renderMarkdown, setShimmerText } from "./util";
+import { clear, div, el, escapeHtml, formatChatTime, normalizeAssistantMarkdown, renderMarkdown, setShimmerText, visibleAnswerFromThought, compactVisibleReply, looksLikeDeliveryEssay, deliveryLeadFromReply, mergeReasoningStream, looksLikeProvisionalToolNarration, appendVisibleAssistantChunk } from "./util";
 
 type ToolCardEl = { head: HTMLElement; body: HTMLElement; card: HTMLElement };
 type PendingTool = { id: string; name: string; arguments: any };
@@ -44,6 +48,10 @@ export type ChatPromptSubmission = {
   visibleText: string;
   titleHint: string;
   taskProfile: AgentTaskProfile;
+  /** Trusted in-app workflows may choose a safer one-run mode without changing the user's saved mode. */
+  requestedMode?: "adaptive" | "ask" | "research" | "plan" | "build" | "multi_agent";
+  executionProfile?: AgentExecutionProfile;
+  computerUseOverride?: boolean;
 };
 
 export type PreviewPromptSubmission = {
@@ -53,6 +61,10 @@ export type PreviewPromptSubmission = {
   /** When omitted, the full prompt is visible as it was in earlier releases. */
   visibleText?: string;
   titleHint?: string;
+  /** One-run controls used by Mission Control and other trusted local surfaces. */
+  requestedMode?: ChatPromptSubmission["requestedMode"];
+  executionProfile?: AgentExecutionProfile;
+  computerUseOverride?: boolean;
 };
 
 export class Chat {
@@ -91,6 +103,8 @@ export class Chat {
   pendingAssistant: HTMLElement | null = null;
   /** Message shell for the current assistant bubble (for timestamps). */
   private pendingAssistantMsg: HTMLElement | null = null;
+  /** Process-only streamed prose held until a real answer arrives or tools start. */
+  private suppressedAssistantRaw = "";
   /** Assistant Markdown bodies waiting for a throttled, batched paint. */
   private assistantPaintTargets = new Set<HTMLElement>();
   private assistantPaintFrame: number | null = null;
@@ -155,7 +169,7 @@ export class Chat {
   private thinkingBodyOpen = false;
   /** Live “Running · tool…” row while tools execute (separate from Thought blocks). */
   private runningIndicator: HTMLElement | null = null;
-  /** Cursor-style batch header: “Running N commands” / “Ran N commands”. */
+  /** Compact batch header: “Running N steps” / “Ran N steps”. */
   private toolBatchEl: HTMLElement | null = null;
   private toolBatchCount = 0;
   private toolBatchFailures = 0;
@@ -477,9 +491,10 @@ export class Chat {
     const btn = el("button", {
       class: "msg-copy",
       type: "button",
-      title: "Copy",
-      "aria-label": "Copy message",
-      html: `${icon("copy", 11)}<span class="msg-copy-label sr-only">Copy</span>`,
+      title: "Copy reply",
+      "aria-label": "Copy reply",
+      "data-reply-action": "copy",
+      html: `${icon("copy", 11)}<span class="msg-copy-label">Copy reply</span>`,
     }) as HTMLButtonElement;
     btn.addEventListener("click", async (e) => {
       e.preventDefault();
@@ -508,8 +523,8 @@ export class Chat {
       if (label) label.textContent = "Copied";
       window.setTimeout(() => {
         btn.classList.remove("copied");
-        btn.title = "Copy";
-        if (label) label.textContent = "Copy";
+        btn.title = "Copy reply";
+        if (label) label.textContent = "Copy reply";
       }, 1200);
     });
     return btn;
@@ -1418,6 +1433,11 @@ export class Chat {
       visibleText,
       input.titleHint || body,
       input.taskProfile || taskProfile,
+      {
+        requestedMode: input.requestedMode,
+        executionProfile: input.executionProfile,
+        computerUseOverride: input.computerUseOverride,
+      },
     );
     if (!submission.modelText || !submission.visibleText) return "stopping";
     if (!this.projectReady) {
@@ -1442,12 +1462,14 @@ export class Chat {
     visibleText = modelText,
     titleHint = visibleText,
     taskProfile: AgentTaskProfile = "default",
+    overrides: Pick<ChatPromptSubmission, "requestedMode" | "executionProfile" | "computerUseOverride"> = {},
   ): ChatPromptSubmission {
     return {
       modelText: modelText.trim(),
       visibleText: visibleText.trim(),
       titleHint: titleHint.trim() || "Design edit",
       taskProfile,
+      ...overrides,
     };
   }
 
@@ -1631,8 +1653,13 @@ export class Chat {
       this.stopping = false;
       this.runStartTime = Date.now();
       this.startDotsPulse();
-      // Show Thinking… immediately — don't wait for the first backend event
-      this.ensureLiveActivity(this.liveThinkingLabel());
+      if (
+        !this.latestActivityAfterLastUser(".thinking-wrap") &&
+        !this.latestActivityAfterLastUser(".tool-batch-wrap") &&
+        !this.hasVisibleAssistantReplyAfterLastUser()
+      ) {
+        this.ensureLiveActivity(this.liveThinkingLabel());
+      }
     } else {
       this.stopping = false;
       this.runStartTime = null;
@@ -1747,6 +1774,8 @@ export class Chat {
         "Usage limit reached. Wait for reset or Mag-load via GCash.";
     } else if (this.stopping || (this.running && this.userCancelled)) {
       this.input.placeholder = "Stopping…";
+    } else if (this.hasOpenQuestionThisTurn()) {
+      this.input.placeholder = "Choose an option above, or queue another message…";
     } else if (this.running) {
       const n = this.pendingQueue.length;
       this.input.placeholder =
@@ -1823,6 +1852,7 @@ export class Chat {
     this.toolBatchOpen = false;
     this.setActivePermissionMode("plan");
     this.pendingAssistant = null;
+    this.suppressedAssistantRaw = "";
     this.thinking = null;
     this.thinkingBody = null;
     this.thinkingText = "";
@@ -1860,6 +1890,7 @@ export class Chat {
     this.flushAssistantPaints();
     this.pendingAssistant = null;
     this.pendingAssistantMsg = null;
+    this.suppressedAssistantRaw = "";
     const at = this.now();
     this.appendUser(prompt, at);
     if (!this.replaying) {
@@ -1872,7 +1903,7 @@ export class Chat {
     }
   }
 
-  loadSession(msgs: SessionMessage[]) {
+  loadSession(msgs: SessionMessage[], opts?: { running?: boolean }) {
     this.clearPendingQueue();
     this.cancelAssistantPaints();
     this.replaying = true;
@@ -1889,11 +1920,25 @@ export class Chat {
     this.toolBatchOpen = false;
     this.setActivePermissionMode("plan");
     this.pendingAssistant = null;
+    this.pendingAssistantMsg = null;
     this.thinking = null;
-    this.messages = [...msgs];
-    for (const msg of msgs) {
+    const replayMessages: SessionMessage[] = [];
+    for (const message of coalesceSessionTurnLayout(msgs)) {
+      if (message.type !== "assistant") {
+        replayMessages.push(message);
+        continue;
+      }
+      const text = compactVisibleReply(message.text);
+      if (text) replayMessages.push({ ...message, text });
+    }
+    this.messages = replayMessages;
+    this.suppressedAssistantRaw = "";
+    for (const msg of replayMessages) {
       switch (msg.type) {
-        case "user": this.appendUser(msg.text, msg.at); break;
+        case "user":
+          this.sealToolBatch();
+          this.appendUser(msg.text, msg.at);
+          break;
         case "run_start":
           this.runCompleted = false;
           this.setActivePermissionMode(msg.permissionMode);
@@ -1909,17 +1954,20 @@ export class Chat {
         case "assistant": {
           this.hideThinking();
           const m = div("msg assistant");
-          const body = el("div", { class: "msg-body md" });
+          const body = el("div", { class: "msg-body md", role: "document", "aria-label": "AI response" });
           (body as any).__raw = msg.text;
+          (body as any).__sourceRaw = msg.text;
           body.innerHTML = renderMarkdown(msg.text);
+          m.classList.toggle(
+            "structured-reply",
+            msg.text.length >= 420 || /(?:^|\n)#{1,3}\s+/.test(msg.text),
+          );
           m.appendChild(body);
           this.decorateAssistantMsg(m);
-          // Session history: show timestamp (final state of a completed reply)
           m.appendChild(this.messageMeta(() => (body as any).__raw || msg.text, msg.at, { showTime: true }));
           this.node.appendChild(m);
           break;
         }
-        // Queue tool calls; only render cards when the result arrives
         case "tool_call": this.queueTool(msg.id, msg.name, msg.arguments); break;
         case "tool_result": this.appendToolResult(msg.id, msg.name, msg.ok, msg.content, msg.at); break;
         case "done": this.appendDone(msg); break;
@@ -1934,11 +1982,12 @@ export class Chat {
       }
     }
     this.replaying = false;
-    // Restore work duration under the last AI date from the terminal event
+    this.coalesceAllTurnsChrome();
+    if (opts?.running) this.resumeOpenRunAfterLoad();
     const terminal = [...msgs].reverse().find(
       (m) => m.type === "done" || m.type === "end" || m.type === "cancelled",
     ) as { workMs?: number; at?: number } | undefined;
-    if (terminal?.workMs != null) {
+    if (terminal?.workMs != null && !opts?.running) {
       this.sealAiTimestamp(terminal.at, terminal.workMs);
     }
     this.scrollToBottom(true);
@@ -2216,7 +2265,16 @@ export class Chat {
 
   private setActivePermissionMode(mode: unknown) {
     const normalized = String(mode || "").trim().toLowerCase();
-    this.activePermissionMode = normalized === "multi_agent" ? "multi_agent" : "plan";
+    this.activePermissionMode =
+      normalized === "research"
+        ? "research"
+        : normalized === "ask"
+          ? "ask"
+          : normalized === "build" || normalized === "auto" || normalized === "full"
+            ? "build"
+            : normalized === "multi_agent"
+              ? "multi_agent"
+              : "plan";
     this.node.classList.toggle("chat-multi-agent", this.activePermissionMode === "multi_agent");
     if (this.activePermissionMode !== "multi_agent") this.multiAgentToolIds.clear();
   }
@@ -2318,6 +2376,31 @@ export class Chat {
     }
   }
 
+  private updateMultiAgentBatchSummary(batch: HTMLElement) {
+    const total = batch.querySelectorAll(".multi-agent-tool").length;
+    const active = batch.querySelectorAll(".multi-agent-tool.working").length;
+    const failed = batch.querySelectorAll(".multi-agent-tool.failed").length;
+    const stopped = batch.querySelectorAll(
+      ".multi-agent-tool.interrupted, .multi-agent-tool.cancelled",
+    ).length;
+    const summary = batch.querySelector<HTMLElement>(".multi-agent-copy span");
+    if (summary) {
+      summary.textContent = active > 0
+        ? `${total} workspace ${total === 1 ? "check" : "checks"} · ${active} active`
+        : failed > 0
+          ? `${total} workspace ${total === 1 ? "check" : "checks"} finished · ${failed} need attention`
+          : stopped > 0
+            ? `${total} workspace ${total === 1 ? "check" : "checks"} stopped`
+            : `${total} workspace ${total === 1 ? "check" : "checks"} finished`;
+    }
+    if (active > 0) {
+      batch.setAttribute(
+        "aria-label",
+        `${total} Multi-Agent workspace checks, ${active} still active`,
+      );
+    }
+  }
+
   private showMultiAgentBatch(tools: MultiAgentTool[]) {
     const safeTools = Array.isArray(tools)
       ? tools.filter((tool): tool is MultiAgentTool =>
@@ -2328,33 +2411,51 @@ export class Chat {
 
     this.setActivePermissionMode("multi_agent");
     this.clearIdleActivityTimer();
+    this.discardProvisionalAssistantBeforeTools();
     this.sealThoughtBeforeTools();
     // Continuing with another swarm means prior soft edit misses are historical, not sticky banners.
     this.clearRecoverableMultiAgentAttention();
     for (const tool of safeTools) this.multiAgentToolIds.add(tool.id);
 
-    const batch = div("multi-agent-batch tool-spawn");
-    batch.setAttribute("role", "status");
-    batch.setAttribute("aria-label", `${safeTools.length} Multi-Agent tools started together`);
-    const head = div("multi-agent-head");
-    head.appendChild(el("span", { class: "multi-agent-mark", "aria-hidden": "true" }, ["🌈"]));
-    const title = div("multi-agent-copy");
-    title.appendChild(el("strong", {}, ["Multi-Agent"]));
-    title.appendChild(el("span", {}, [
-      `${safeTools.length} independent workspace ${safeTools.length === 1 ? "check" : "checks"} started together`,
-    ]));
-    head.appendChild(title);
-    head.appendChild(el("span", { class: "multi-agent-live" }, ["LIVE"]));
-    batch.appendChild(head);
+    let batch = this.latestActivityAfterLastUser(".multi-agent-batch");
+    let toolsList: HTMLElement;
+    if (!batch) {
+      batch = div("multi-agent-batch tool-spawn");
+      batch.setAttribute("role", "status");
+      const head = div("multi-agent-head");
+      head.appendChild(el("span", { class: "multi-agent-mark", "aria-hidden": "true" }, ["✦"]));
+      const title = div("multi-agent-copy");
+      title.appendChild(el("strong", {}, ["Multi-Agent activity"]));
+      title.appendChild(el("span", {}, ["Starting workspace checks…"]));
+      head.appendChild(title);
+      head.appendChild(el("span", { class: "multi-agent-live" }, ["LIVE"]));
+      batch.appendChild(head);
+      toolsList = div("multi-agent-tools");
+      batch.appendChild(toolsList);
+      this.node.appendChild(batch);
+    } else {
+      batch.classList.remove("complete", "stopped", "needs-attention", "is-open");
+      batch.setAttribute("aria-expanded", "false");
+      const status = batch.querySelector(".multi-agent-live");
+      if (status) status.textContent = "LIVE";
+      toolsList = batch.querySelector<HTMLElement>(".multi-agent-tools") || div("multi-agent-tools");
+      if (!toolsList.isConnected) batch.appendChild(toolsList);
+    }
 
-    const toolsList = div("multi-agent-tools");
-    safeTools.forEach((tool, index) => {
+    const existingIds = new Set(
+      Array.from(batch.querySelectorAll<HTMLElement>(".multi-agent-tool"))
+        .map((agent) => agent.dataset.multiAgentToolId || "")
+        .filter(Boolean),
+    );
+    const newTools = safeTools.filter((tool) => !existingIds.has(tool.id));
+    const startIndex = existingIds.size;
+    newTools.forEach((tool, index) => {
       const activity = this.multiAgentActivity(tool.name, tool.arguments);
       const agent = div("multi-agent-tool working");
       agent.dataset.multiAgentToolId = tool.id;
       const toolPath = this.toolArgPath(tool.arguments);
       if (toolPath) agent.dataset.toolPath = toolPath;
-      agent.style.setProperty("--agent-index", String(index));
+      agent.style.setProperty("--agent-index", String((startIndex + index) % 8));
       agent.title = activity.detail;
       agent.appendChild(el("span", { class: "multi-agent-tool-emoji", "aria-hidden": "true" }, [activity.emoji]));
       const copy = div("multi-agent-tool-copy");
@@ -2364,8 +2465,7 @@ export class Chat {
       agent.appendChild(el("span", { class: "multi-agent-tool-pulse", "aria-hidden": "true" }));
       toolsList.appendChild(agent);
     });
-    batch.appendChild(toolsList);
-    this.node.appendChild(batch);
+    this.updateMultiAgentBatchSummary(batch);
     this.scrollToBottom();
   }
 
@@ -2398,7 +2498,9 @@ export class Chat {
   }
 
   private refreshMultiAgentBatchStatus(batch: HTMLElement | null) {
-    if (!batch || batch.querySelector(".multi-agent-tool.working")) return;
+    if (!batch) return;
+    this.updateMultiAgentBatchSummary(batch);
+    if (batch.querySelector(".multi-agent-tool.working")) return;
     batch.classList.add("complete");
     const failures = batch.querySelectorAll(".multi-agent-tool.failed").length;
     const interrupted = batch.querySelectorAll(
@@ -2416,6 +2518,27 @@ export class Chat {
             : "STOPPED"
           : "DONE";
     }
+    if (!batch.dataset.collapseBound) {
+      batch.dataset.collapseBound = "1";
+      const toggleOpen = () => {
+        batch.classList.toggle("is-open");
+        batch.setAttribute("aria-expanded", String(batch.classList.contains("is-open")));
+      };
+      batch.addEventListener("click", (event) => {
+        if (!(event.target instanceof Element)) return;
+        if (event.target.closest("button, a, input")) return;
+        toggleOpen();
+      });
+      batch.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggleOpen();
+      });
+      batch.setAttribute("role", "button");
+      batch.setAttribute("tabindex", "0");
+      batch.setAttribute("aria-expanded", "false");
+      batch.title = "Show or hide Multi-Agent checks";
+    }
     batch.setAttribute(
       "aria-label",
       failures > 0
@@ -2424,6 +2547,7 @@ export class Chat {
           ? "Multi-Agent checks stopped"
           : "Multi-Agent checks finished",
     );
+    this.updateMultiAgentBatchSummary(batch);
   }
 
   /**
@@ -2468,6 +2592,23 @@ export class Chat {
       text.includes("old_string not found") ||
       text.includes("old_string edit failed") ||
       text.includes("need a unique match")
+    );
+  }
+
+  private isRecoverableInspectionFailure(name: string, content: string): boolean {
+    const compact = String(name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    if (!["grep", "listdir", "glob", "fileinfo", "readfile"].includes(compact)) return false;
+    const text = String(content || "").toLowerCase();
+    return (
+      text.includes("directory name is invalid") ||
+      text.includes("not found") ||
+      text.includes("project item not found") ||
+      text.includes("invalid segment") ||
+      text.includes("no such file") ||
+      text.includes("search path not found")
     );
   }
 
@@ -2538,7 +2679,7 @@ export class Chat {
     if (this.isMultiAgentRun()) {
       const activity = this.multiAgentActivity(name, args);
       if (!ok) {
-        if (this.isRecoverableEditFailure(name, content)) {
+        if (this.isRecoverableEditFailure(name, content) || this.isRecoverableInspectionFailure(name, content)) {
           return `⚠️ ${activity.label} missed`;
         }
         return `⚠️ ${activity.label} needs attention`;
@@ -2577,13 +2718,9 @@ export class Chat {
     if (!this.toolBatchEl) return;
     const n = this.toolBatchCount;
     const premium = this.isPremiumReply();
-    const unit = premium
-      ? n === 1
-        ? "step"
-        : "steps"
-      : n === 1
-        ? "command"
-        : "commands";
+    // A batch can mix reads, searches, browser observations, and commands.
+    // Calling every tool a command is misleading, especially in Research mode.
+    const unit = n === 1 ? "step" : "steps";
     const label = this.toolBatchEl.querySelector(".tool-batch-label") as HTMLElement | null;
     if (!label) return;
     const multiAgent = this.isMultiAgentRun();
@@ -2612,11 +2749,26 @@ export class Chat {
     }
   }
 
-  /** Ensure a Cursor-style “Running N commands” header sits above the current tool streak. */
+  /** Ensure a compact “Running N steps” header sits above the current tool streak. */
   private ensureToolBatch() {
     if (this.toolBatchEl && this.toolBatchEl.isConnected && this.toolBatchOpen) {
       this.toolBatchCount += 1;
+      this.toolBatchEl.dataset.batchCount = String(this.toolBatchCount);
       this.paintToolBatchLabel();
+      this.placeTurnChromeInOrder();
+      return;
+    }
+    const existing = this.latestActivityAfterLastUser(".tool-batch-wrap");
+    if (existing) {
+      this.toolBatchEl = existing;
+      this.toolBatchOpen = true;
+      const prior = Math.max(1, Number(existing.dataset.batchCount) || 1);
+      this.toolBatchCount = prior + 1;
+      existing.dataset.batchCount = String(this.toolBatchCount);
+      existing.classList.remove("is-done");
+      existing.classList.add("is-running");
+      this.paintToolBatchLabel();
+      this.placeTurnChromeInOrder();
       return;
     }
     this.sealToolBatch();
@@ -2658,9 +2810,342 @@ export class Chat {
         sib = sib.nextElementSibling;
       }
     });
-    this.node.appendChild(wrap);
+    if (this.pendingAssistantMsg?.isConnected) {
+      this.node.insertBefore(wrap, this.pendingAssistantMsg);
+    } else {
+      this.node.appendChild(wrap);
+    }
     this.toolBatchEl = wrap;
+    wrap.dataset.batchCount = "1";
     this.paintToolBatchLabel();
+    this.placeTurnChromeInOrder();
+  }
+
+  /** One turn: Thought → Ran N → answer. After a Plan chooser, chrome sits under the options. */
+  private placeTurnChromeInOrder() {
+    if (this.replaying) return;
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    const thought = this.latestActivityAfterLastUser(".thinking-wrap");
+    const batch = this.toolBatchEl?.isConnected
+      ? this.toolBatchEl
+      : this.latestActivityAfterLastUser(".tool-batch-wrap");
+    const running = this.runningIndicator?.isConnected
+      ? this.runningIndicator
+      : this.latestActivityAfterLastUser(".thinking-running");
+    const question = this.latestActivityAfterLastUser(".question-card");
+    const answer = this.pendingAssistantMsg?.isConnected
+      ? this.pendingAssistantMsg
+      : this.latestAssistantMsgAfterLastUser();
+
+    const batchGroup: HTMLElement[] = [];
+    if (batch?.isConnected) {
+      batchGroup.push(batch);
+      let sib = batch.nextElementSibling;
+      while (sib instanceof HTMLElement && sib.classList.contains("tool-card-wrap")) {
+        batchGroup.push(sib);
+        sib = sib.nextElementSibling;
+      }
+    }
+
+    const chrome = [
+      ...(thought?.isConnected ? [thought] : []),
+      ...batchGroup,
+      ...(running?.isConnected ? [running] : []),
+    ];
+
+    if (question?.isConnected) {
+      let ref: HTMLElement = question;
+      for (const node of chrome) {
+        if (node === ref) continue;
+        if (node.previousElementSibling !== ref) ref.after(node);
+        ref = node;
+      }
+      return;
+    }
+
+    const sequence = [
+      ...chrome,
+      ...(answer?.isConnected ? [answer] : []),
+    ];
+    if (!sequence.length) return;
+
+    let ref: HTMLElement | null = lastUser;
+    for (const node of sequence) {
+      if (ref) {
+        if (node.previousElementSibling !== ref) ref.after(node);
+      } else if (this.node.firstElementChild !== node) {
+        this.node.insertBefore(node, this.node.firstElementChild);
+      }
+      ref = node;
+    }
+  }
+
+  /** One Ask/Build turn keeps a single answer bubble even if tools arrived mid-prose. */
+  private mergeCurrentTurnAssistantBubbles() {
+    if (this.replaying) return;
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    const answers: HTMLElement[] = [];
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    while (node) {
+      if (node instanceof HTMLElement && node.classList.contains("msg") && node.classList.contains("assistant")) {
+        answers.push(node);
+      }
+      node = node.nextElementSibling;
+    }
+    if (answers.length < 2) return;
+    const primary = answers[0];
+    const primaryBody = primary.querySelector(".msg-body.md") as HTMLElement | null;
+    if (!primaryBody) return;
+    let source = String((primaryBody as { __sourceRaw?: string }).__sourceRaw || (primaryBody as { __raw?: string }).__raw || "");
+    for (const extra of answers.slice(1)) {
+      const body = extra.querySelector(".msg-body.md") as HTMLElement | null;
+      const extraSource = String(
+        (body as { __sourceRaw?: string } | null)?.__sourceRaw ||
+          (body as { __raw?: string } | null)?.__raw ||
+          "",
+      ).trim();
+      if (extraSource && !source.includes(extraSource.slice(0, Math.min(80, extraSource.length)))) {
+        const snapshot = appendVisibleAssistantChunk(source, extraSource);
+        source = snapshot.source;
+      }
+      extra.remove();
+    }
+    const cleaned = compactVisibleReply(source);
+    (primaryBody as { __sourceRaw?: string }).__sourceRaw = source;
+    (primaryBody as { __raw?: string }).__raw = cleaned;
+    this.pendingAssistant = primaryBody;
+    this.pendingAssistantMsg = primary;
+    if (cleaned) this.scheduleAssistantPaint(primaryBody);
+    else {
+      primary.remove();
+      this.pendingAssistant = null;
+      this.pendingAssistantMsg = null;
+    }
+  }
+
+  /** After session restore, collapse split Thought / Ran N / answer rows in every turn. */
+  private coalesceAllTurnsChrome() {
+    const users = [...this.node.querySelectorAll<HTMLElement>(".msg.user")];
+    if (!users.length) {
+      this.coalesceTurnDomRange(null, this.node.firstElementChild, null);
+      return;
+    }
+    for (let index = 0; index < users.length; index += 1) {
+      this.coalesceTurnDomRange(
+        users[index],
+        users[index].nextElementSibling,
+        users[index + 1] || null,
+      );
+    }
+  }
+
+  private coalesceTurnDomRange(anchor: HTMLElement | null, start: Element | null, end: Element | null) {
+    const thoughts: HTMLElement[] = [];
+    const batches: HTMLElement[] = [];
+    const answers: HTMLElement[] = [];
+    let node: Element | null = start;
+    while (node && node !== end) {
+      const current = node as HTMLElement;
+      const next = node.nextElementSibling;
+      if (current.classList.contains("thinking-wrap")) thoughts.push(current);
+      else if (current.classList.contains("tool-batch-wrap")) batches.push(current);
+      else if (current.classList.contains("msg") && current.classList.contains("assistant")) answers.push(current);
+      node = next;
+    }
+
+    const primaryThought = thoughts[0] || null;
+    for (const extra of thoughts.slice(1)) {
+      const extraText = (
+        extra.getAttribute("data-thought") ||
+        extra.querySelector(".thinking-stream")?.textContent ||
+        ""
+      ).trim();
+      if (primaryThought && extraText) {
+        const prior = (primaryThought.getAttribute("data-thought") || "").trim();
+        const merged = mergeReasoningStream(prior, extraText);
+        primaryThought.setAttribute("data-thought", merged);
+        const stream = primaryThought.querySelector(".thinking-stream") as HTMLElement | null;
+        if (stream) stream.textContent = merged;
+      }
+      extra.remove();
+    }
+
+    const primaryBatch = batches[0] || null;
+    if (primaryBatch) {
+      let insertAfter: Element = primaryBatch;
+      let sib = primaryBatch.nextElementSibling;
+      while (sib instanceof HTMLElement && sib.classList.contains("tool-card-wrap")) {
+        insertAfter = sib;
+        sib = sib.nextElementSibling;
+      }
+      for (const extra of batches.slice(1)) {
+        let card = extra.nextElementSibling;
+        extra.remove();
+        while (card instanceof HTMLElement && card.classList.contains("tool-card-wrap")) {
+          const nextCard = card.nextElementSibling;
+          insertAfter.after(card);
+          insertAfter = card;
+          card = nextCard;
+        }
+      }
+      let count = 0;
+      sib = primaryBatch.nextElementSibling;
+      while (sib instanceof HTMLElement && sib.classList.contains("tool-card-wrap")) {
+        count += 1;
+        sib = sib.nextElementSibling;
+      }
+      if (count > 0) {
+        primaryBatch.dataset.batchCount = String(count);
+        this.toolBatchEl = primaryBatch;
+        this.toolBatchCount = count;
+        this.paintToolBatchLabel();
+      }
+    }
+
+    if (answers.length >= 2) {
+      const primary = answers[0];
+      const primaryBody = primary.querySelector(".msg-body.md") as HTMLElement | null;
+      if (primaryBody) {
+        let source = String(
+          (primaryBody as { __sourceRaw?: string }).__sourceRaw ||
+            (primaryBody as { __raw?: string }).__raw ||
+            "",
+        );
+        for (const extra of answers.slice(1)) {
+          const body = extra.querySelector(".msg-body.md") as HTMLElement | null;
+          const extraSource = String(
+            (body as { __sourceRaw?: string } | null)?.__sourceRaw ||
+              (body as { __raw?: string } | null)?.__raw ||
+              "",
+          ).trim();
+          if (extraSource && !source.includes(extraSource.slice(0, Math.min(80, extraSource.length)))) {
+            const snapshot = appendVisibleAssistantChunk(source, extraSource);
+            source = snapshot.source;
+          }
+          extra.remove();
+        }
+        const cleaned = compactVisibleReply(source);
+        (primaryBody as { __sourceRaw?: string }).__sourceRaw = source;
+        (primaryBody as { __raw?: string }).__raw = cleaned;
+        if (cleaned) primaryBody.innerHTML = renderMarkdown(cleaned);
+        else primary.remove();
+      }
+    }
+
+    const batchGroup: HTMLElement[] = [];
+    if (primaryBatch?.isConnected) {
+      batchGroup.push(primaryBatch);
+      let card = primaryBatch.nextElementSibling;
+      while (card instanceof HTMLElement && card.classList.contains("tool-card-wrap")) {
+        batchGroup.push(card);
+        card = card.nextElementSibling;
+      }
+    }
+    const primaryAnswer = answers[0]?.isConnected
+      ? answers[0]
+      : this.latestAssistantInRange(start, end);
+    const sequence = [
+      ...(primaryThought?.isConnected ? [primaryThought] : []),
+      ...batchGroup,
+      ...(primaryAnswer?.isConnected ? [primaryAnswer] : []),
+    ];
+    let ref: HTMLElement | null = anchor;
+    for (const item of sequence) {
+      if (ref) {
+        if (item.previousElementSibling !== ref) ref.after(item);
+      }
+      ref = item;
+    }
+  }
+
+  private latestAssistantInRange(start: Element | null, end: Element | null): HTMLElement | null {
+    let found: HTMLElement | null = null;
+    let node: Element | null = start;
+    while (node && node !== end) {
+      if (node instanceof HTMLElement && node.classList.contains("msg") && node.classList.contains("assistant")) {
+        found = node;
+      }
+      node = node.nextElementSibling;
+    }
+    return found;
+  }
+
+  /** Reattach live pointers after switching back to a run that is still working. */
+  private resumeOpenRunAfterLoad() {
+    this.resumeLatestAssistantReply();
+    if (this.pendingAssistantMsg) {
+      const timeEl = this.pendingAssistantMsg.querySelector(".msg-time") as HTMLElement | null;
+      if (timeEl) {
+        timeEl.hidden = true;
+        timeEl.classList.add("msg-time-pending");
+        timeEl.classList.remove("msg-time-final");
+      }
+    }
+    const batch = this.latestActivityAfterLastUser(".tool-batch-wrap");
+    if (batch) {
+      this.toolBatchEl = batch;
+      this.toolBatchCount = Math.max(1, Number(batch.dataset.batchCount) || 1);
+      this.toolBatchOpen = this.pendingTools.size > 0 || batch.classList.contains("is-running");
+      if (this.toolBatchOpen) {
+        batch.classList.add("is-running");
+        batch.classList.remove("is-done");
+        this.paintToolBatchLabel();
+      }
+    }
+    if (
+      this.latestActivityAfterLastUser(".tool-batch-wrap") ||
+      this.latestActivityAfterLastUser(".tool-card-wrap") ||
+      this.hasVisibleAssistantReplyAfterLastUser()
+    ) {
+      return;
+    }
+    const wrap = this.latestActivityAfterLastUser(".thinking-wrap");
+    if (!wrap) return;
+    wrap.classList.remove("thinking-done", "dots-frozen", "collapsed");
+    wrap.classList.add("expanded", "thinking-wave-live");
+    this.thinking = wrap;
+    this.thinkingBody = wrap.querySelector(".thinking-body") as HTMLElement | null;
+    this.thinkingText = (wrap.getAttribute("data-thought") || "").trim();
+    this.thinkingTarget = this.thinkingText;
+    this.thinkingRevealed = this.thinkingText.length;
+    this.thinkingHasReasoning = this.thinkingText.length > 0;
+    const toggle = wrap.querySelector(".thinking-toggle-row") as HTMLElement | null;
+    toggle?.setAttribute("aria-expanded", "true");
+    this.setThinkingBodyOpen(true, wrap);
+    this.setThinkingLabel(this.liveThinkingLabel());
+    this.startThinkingTimer(toggle?.querySelector(".thinking-simple-label") as HTMLElement, true);
+  }
+
+  /** Keep every tool card directly under the one Ran-N header, even after prose. */
+  private insertToolCardInBatch(wrap: HTMLElement) {
+    const batch = this.toolBatchEl;
+    if (batch?.isConnected) {
+      let last: Element = batch;
+      let sib = batch.nextElementSibling;
+      while (sib && (sib as HTMLElement).classList.contains("tool-card-wrap")) {
+        last = sib;
+        sib = sib.nextElementSibling;
+      }
+      last.after(wrap);
+    } else {
+      this.node.appendChild(wrap);
+    }
+    wrap.hidden = this.isToolBatchCollapsed();
+    this.placeTurnChromeInOrder();
+  }
+
+  private insertionPointAfterCurrentTools(): Element | null {
+    const batch = this.toolBatchEl;
+    if (!batch?.isConnected) return null;
+    let last: Element = batch;
+    let sib = batch.nextElementSibling;
+    while (sib instanceof HTMLElement && sib.classList.contains("tool-card-wrap")) {
+      last = sib;
+      sib = sib.nextElementSibling;
+    }
+    return last;
   }
 
   private isToolBatchCollapsed(): boolean {
@@ -2684,6 +3169,7 @@ export class Chat {
     if (!this.toolBatchEl) return;
     this.toolBatchOpen = false;
     this.paintToolBatchLabel();
+    if (this.toolBatchEl) this.toolBatchEl.dataset.batchCount = String(this.toolBatchCount);
     this.toolBatchEl = null;
     this.toolBatchCount = 0;
     this.toolBatchFailures = 0;
@@ -2776,10 +3262,14 @@ export class Chat {
     setShimmerText(labelEl, p, isLive);
   }
 
-  private startThinkingTimer(labelEl: HTMLElement | null) {
-    this.stopThinkingTimer();
-    this.thinkingStartTime = Date.now();
-    this.thinkingLastElapsed = 0;
+  private startThinkingTimer(labelEl: HTMLElement | null, resume = false) {
+    const prior = resume ? this.thinkingLastElapsed : 0;
+    if (this.thinkingTimerId) {
+      clearInterval(this.thinkingTimerId);
+      this.thinkingTimerId = null;
+    }
+    this.thinkingStartTime = Date.now() - prior;
+    this.thinkingLastElapsed = prior;
     if (!labelEl) return;
     // Immediate paint; live label does not tick a duration (Cursor-style)
     this.paintThinkingLabel(labelEl);
@@ -2832,11 +3322,25 @@ export class Chat {
   private ensureLiveActivity(label?: string) {
     const activity = label ?? this.liveThinkingLabel();
     if (!this.running || this.stopping || this.userCancelled || this.replaying) return;
-    // Pending / streaming tools already show what is happening
-    if (this.pendingTools.size > 0) return;
     if (this.node.querySelector(".tool-card.pending, .integration-auth-wrap:not(.integration-auth-done)")) {
       return;
     }
+    if (this.hasOpenQuestionThisTurn()) {
+      this.showPostChooserActivity("Waiting for your choice");
+      return;
+    }
+    if (this.hasAnsweredQuestionThisTurn()) {
+      if (this.pendingTools.size > 0) {
+        this.placeTurnChromeInOrder();
+        return;
+      }
+      this.showPostChooserActivity(activity);
+      return;
+    }
+    // Pending / streaming tools already show what is happening
+    if (this.pendingTools.size > 0) return;
+    if (this.hasUsedTools) return;
+    if (this.hasVisibleAssistantReplyAfterLastUser()) return;
     if (this.thinking && !this.thinking.classList.contains("thinking-done") && this.thinking.isConnected) {
       this.setThinkingLabel(activity);
       this.scrollToBottom();
@@ -2844,6 +3348,51 @@ export class Chat {
     }
     this.showThinking(0);
     this.setThinkingLabel(activity);
+  }
+
+  private hasOpenQuestionThisTurn(): boolean {
+    return !!this.latestActivityAfterLastUser(".question-card.is-open");
+  }
+
+  private hasAnsweredQuestionThisTurn(): boolean {
+    return !!this.latestActivityAfterLastUser(".question-card.is-answered");
+  }
+
+  private hasQuestionCardThisTurn(): boolean {
+    return !!this.latestActivityAfterLastUser(".question-card");
+  }
+
+  /** Live row under the Plan chooser so the turn never looks frozen after options. */
+  private showPostChooserActivity(label: string) {
+    if (this.replaying) return;
+    if (this.runningIndicator?.isConnected) {
+      const lab = this.runningIndicator.querySelector(".thinking-simple-label") as HTMLElement | null;
+      if (lab) setShimmerText(lab, label, true);
+      this.kickThinkingDots(this.runningIndicator);
+      this.startDotsPulse();
+      this.placeTurnChromeInOrder();
+      this.scrollToBottom();
+      return;
+    }
+    if (this.thinking && !this.thinking.classList.contains("thinking-done") && this.thinking.isConnected) {
+      this.setThinkingLabel(label);
+      this.placeTurnChromeInOrder();
+      this.scrollToBottom();
+      return;
+    }
+    this.clearRunningIndicator();
+    const row = div("thinking-running post-plan-activity");
+    row.innerHTML =
+      `<span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>` +
+      `<span class="thinking-simple-label"></span>`;
+    const lab = row.querySelector(".thinking-simple-label") as HTMLElement;
+    setShimmerText(lab, label, true);
+    this.node.appendChild(row);
+    this.runningIndicator = row;
+    this.kickThinkingDots(row);
+    this.startDotsPulse();
+    this.placeTurnChromeInOrder();
+    this.scrollToBottom();
   }
 
   private clearRunningIndicator() {
@@ -2860,6 +3409,42 @@ export class Chat {
       this.thinkingText = this.thinkingTarget.trim();
     }
     this.markThinkingDone();
+  }
+
+  /** Text emitted in a response that proceeds to tools is progress narration. */
+  private discardProvisionalAssistantBeforeTools() {
+    const hadProvisional = Boolean(
+      this.pendingAssistant || this.pendingAssistantMsg || this.suppressedAssistantRaw.trim(),
+    );
+    const raw = String(
+      (this.pendingAssistant as { __sourceRaw?: string; __raw?: string } | null)?.__sourceRaw ||
+        (this.pendingAssistant as { __raw?: string } | null)?.__raw ||
+        this.suppressedAssistantRaw,
+    );
+    const shouldDiscard = looksLikeProvisionalToolNarration(raw);
+    this.suppressedAssistantRaw = "";
+    if (!shouldDiscard) return;
+    if (this.pendingAssistant) this.assistantPaintTargets.delete(this.pendingAssistant);
+    if (this.pendingAssistantMsg?.isConnected) this.pendingAssistantMsg.remove();
+    this.pendingAssistant = null;
+    this.pendingAssistantMsg = null;
+    if (this.replaying || !hadProvisional) return;
+
+    let boundary = -1;
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      if (this.messages[index].type === "user" || this.messages[index].type === "run_start") {
+        boundary = index;
+        break;
+      }
+    }
+    for (let index = this.messages.length - 1; index > boundary; index -= 1) {
+      const message = this.messages[index];
+      if (message.type === "done" || message.type === "end" || message.type === "cancelled") break;
+      if (message.type === "assistant") {
+        this.messages.splice(index, 1);
+        break;
+      }
+    }
   }
 
   /** Status / placeholder lines — never typewritten (not real model thinking). */
@@ -3133,8 +3718,14 @@ export class Chat {
 
     this.thinkingTarget = detail;
     this.thinking?.classList.toggle("has-detail", !!detail && this.thinkingHasReasoning);
-    // Live model thoughts stay uncollapsed so the stream is readable in real time.
-    if (!this.replaying && isReasoning && this.thinking && !this.thinking.classList.contains("thinking-done")) {
+    // Live model thoughts stay open until tools start; then Cursor-style collapsed.
+    if (
+      !this.replaying &&
+      isReasoning &&
+      this.thinking &&
+      !this.thinking.classList.contains("thinking-done") &&
+      !this.hasUsedTools
+    ) {
       this.setThinkingBodyOpen(true);
     }
 
@@ -3169,19 +3760,40 @@ export class Chat {
   /** Append model reasoning — paints live as tokens arrive. */
   appendThinkingText(text: string) {
     if (!text) return;
+    const chunk = text.replace(/\r\n/g, "\n");
+    if (this.hasUsedTools && !this.replaying) {
+      const wrap =
+        (this.thinking?.classList.contains("thinking-wrap") ? this.thinking : null) ||
+        this.latestActivityAfterLastUser(".thinking-wrap");
+      if (wrap) {
+        const prior = (wrap.getAttribute("data-thought") || this.thinkingText || "").trim();
+        const merged = mergeReasoningStream(prior, chunk);
+        wrap.setAttribute("data-thought", merged);
+        this.thinkingText = merged;
+        this.thinkingTarget = merged;
+        this.thinkingRevealed = merged.length;
+        this.thinkingHasReasoning = true;
+        const stream = wrap.querySelector(".thinking-stream") as HTMLElement | null;
+        if (stream) stream.textContent = merged;
+        wrap.classList.add("thinking-done", "has-detail", "dots-frozen");
+        wrap.classList.remove("thinking-wave-live", "is-typing");
+        this.thinking = wrap;
+        this.thinkingBody = wrap.querySelector(".thinking-body") as HTMLElement | null;
+        this.setThinkingBodyOpen(false, wrap);
+        return;
+      }
+    }
     if (!this.thinking) this.showThinking(0);
     // Keep the live thought body open for every model while tokens stream in.
-    if (!this.replaying && this.thinking && !this.thinking.classList.contains("thinking-done")) {
+    if (!this.replaying && this.thinking && !this.thinking.classList.contains("thinking-done") && !this.hasUsedTools) {
       this.setThinkingBodyOpen(true);
     }
-    const chunk = text.replace(/\r\n/g, "\n");
-    // Drop any prior placeholder; start clean reasoning stream
     if (!this.thinkingHasReasoning) {
-      this.thinkingText = chunk.replace(/^\n+/, "");
+      this.thinkingText = mergeReasoningStream("", chunk.replace(/^\n+/, ""));
       this.thinkingTarget = "";
       this.thinkingRevealed = 0;
     } else {
-      this.thinkingText = this.thinkingText ? this.thinkingText + chunk : chunk.replace(/^\n+/, "");
+      this.thinkingText = mergeReasoningStream(this.thinkingText, chunk);
     }
     this.setThinkingDetail(this.thinkingText, this.replaying, true);
     if (this.thinkingLabelPrefix === "Thinking…" || this.thinkingLabelPrefix === "Reasoning…" || this.thinkingLabelPrefix.startsWith("Thinking") || this.thinkingLabelPrefix.startsWith("Reasoning")) {
@@ -3226,6 +3838,7 @@ export class Chat {
     }
 
     wrap.setAttribute("data-thought", sealedText);
+    wrap.setAttribute("data-elapsed-ms", String(Math.max(0, Math.round(elapsed))));
     wrap.classList.add("thinking-done", "has-detail");
     wrap.classList.remove("thinking-enter", "is-typing", "thinking-wave-live");
     wrap.classList.add("dots-frozen");
@@ -3425,6 +4038,7 @@ export class Chat {
       if (lab) setShimmerText(lab, `${prefix} · ${label}${suffix}`, true);
       this.kickThinkingDots(this.runningIndicator);
       this.startDotsPulse();
+      this.placeTurnChromeInOrder();
       this.scrollToBottom();
       return;
     }
@@ -3441,6 +4055,8 @@ export class Chat {
     this.runningIndicator = row;
     this.kickThinkingDots(row);
     this.startDotsPulse();
+    this.placeTurnChromeInOrder();
+    this.scrollToBottom();
     this.scrollToBottom();
   }
 
@@ -3557,7 +4173,10 @@ export class Chat {
     this.clearRunningIndicator();
     // Reuse live panel when possible so detail doesn't flash away
     if (this.thinking && !this.thinking.classList.contains("thinking-done") && !this.replaying) {
-      // Keep existing reasoning visible while the model is still thinking.
+      if (this.hasUsedTools) {
+        this.sealThoughtBeforeTools();
+        return;
+      }
       if (this.thinkingHasReasoning && this.thinkingText) {
         this.setThinkingDetail(this.thinkingText, true, true);
       } else {
@@ -3569,9 +4188,49 @@ export class Chat {
       return;
     }
 
+    const reusable = this.latestActivityAfterLastUser(".thinking-wrap");
+    if (reusable) {
+      this.thinking = reusable;
+      this.thinkingBody = reusable.querySelector(".thinking-body") as HTMLElement | null;
+      const prior = (reusable.getAttribute("data-thought") || "").trim();
+      if (prior) {
+        this.thinkingText = prior;
+        this.thinkingTarget = prior;
+        this.thinkingRevealed = prior.length;
+        this.thinkingHasReasoning = true;
+      }
+      const keepCollapsed =
+        reusable.classList.contains("thinking-done") &&
+        (this.hasUsedTools || this.hasVisibleAssistantReplyAfterLastUser());
+      if (keepCollapsed) {
+        this.setThinkingBodyOpen(false, reusable);
+        this.placeTurnChromeInOrder();
+        return;
+      }
+      if (reusable.classList.contains("thinking-done")) {
+        reusable.classList.remove("thinking-done", "dots-frozen", "collapsed", "is-typing");
+        reusable.classList.add("expanded", "thinking-wave-live");
+        const toggle = reusable.querySelector(".thinking-toggle-row") as HTMLElement | null;
+        toggle?.setAttribute("aria-expanded", "true");
+        const priorMs = Number(reusable.getAttribute("data-elapsed-ms") || 0);
+        this.thinkingLastElapsed = Number.isFinite(priorMs) ? priorMs : 0;
+        this.setThinkingBodyOpen(true, reusable);
+        this.setThinkingLabel(this.liveThinkingLabel());
+        this.startThinkingTimer(toggle?.querySelector(".thinking-simple-label") as HTMLElement, true);
+        this.paintThinkingBody();
+        this.placeTurnChromeInOrder();
+        this.scrollToBottom();
+        void iteration;
+        return;
+      }
+      this.setThinkingBodyOpen(!this.hasUsedTools, reusable);
+      this.setThinkingLabel(this.liveThinkingLabel());
+      this.placeTurnChromeInOrder();
+      this.scrollToBottom();
+      return;
+    }
+
     this.finalizeThinking();
-    this.pendingAssistant = null;
-    this.pendingAssistantMsg = null;
     this.thinkingText = "";
     this.thinkingTarget = "";
     this.thinkingRevealed = 0;
@@ -3603,7 +4262,15 @@ export class Chat {
     wrap.appendChild(toggle);
     wrap.appendChild(panel);
     this.decorateThinkingWrap(wrap);
-    this.node.appendChild(wrap);
+    const before =
+      this.latestActivityAfterLastUser(".tool-batch-wrap") ||
+      this.pendingAssistantMsg ||
+      this.latestAssistantMsgAfterLastUser();
+    if (before?.isConnected) {
+      this.node.insertBefore(wrap, before);
+    } else {
+      this.node.appendChild(wrap);
+    }
     this.bindThinkingToggle(wrap);
     this.setThinkingBodyOpen(liveOpen, wrap);
     wrap.classList.add("thinking-enter");
@@ -3612,6 +4279,7 @@ export class Chat {
     this.thinkingBody = body;
     this.startThinkingTimer(toggle.querySelector(".thinking-simple-label") as HTMLElement);
     this.paintThinkingBody();
+    this.placeTurnChromeInOrder();
     this.scrollToBottom();
     void iteration;
   }
@@ -3662,6 +4330,128 @@ export class Chat {
 
     this.markThinkingDone(elapsed);
     this.flushDeferredAssistant();
+    this.revealThoughtWhenReplyMissing();
+  }
+
+  /**
+   * Reasoning models sometimes finish with only a collapsed "Thought for …"
+   * row. If no assistant bubble followed the last user message, surface the
+   * sealed thought as the visible reply.
+   */
+  private revealThoughtWhenReplyMissing() {
+    if (this.replaying) return;
+    const pending = String((this.pendingAssistant as { __raw?: string } | null)?.__raw || "").trim();
+    if (pending) return;
+    if (this.hasVisibleAssistantReplyAfterLastUser()) return;
+    const thought = this.latestSealedThoughtAfterLastUser();
+    const visible = visibleAnswerFromThought(thought);
+    if (visible.length < 12) return;
+    this.appendAssistantText(visible);
+  }
+
+  private latestSealedThoughtAfterLastUser(): string {
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    let thought = "";
+    while (node) {
+      if (
+        node instanceof HTMLElement &&
+        node.classList.contains("thinking-wrap") &&
+        node.classList.contains("thinking-done")
+      ) {
+        const next = (node.getAttribute("data-thought") || "").trim();
+        if (next.length >= 12) thought = next;
+      }
+      node = node.nextElementSibling;
+    }
+    return thought;
+  }
+
+  private latestActivityAfterLastUser(selector: string): HTMLElement | null {
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    let found: HTMLElement | null = null;
+    while (node) {
+      if (node instanceof HTMLElement && node.matches(selector)) found = node;
+      node = node.nextElementSibling;
+    }
+    return found;
+  }
+
+  private latestAssistantMsgAfterLastUser(): HTMLElement | null {
+    return this.latestActivityAfterLastUser(".msg.assistant");
+  }
+
+  private hostLineFromLatestTools(): string {
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    const names: string[] = [];
+    while (node) {
+      if (node instanceof HTMLElement && node.classList.contains("tool-card-wrap")) {
+        const nameEl = node.querySelector(".tool-name");
+        names.push(
+          (
+            nameEl?.getAttribute("data-tool") ||
+            nameEl?.textContent ||
+            ""
+          ).toLowerCase(),
+        );
+      }
+      node = node.nextElementSibling;
+    }
+    const joined = names.join(" ");
+    if (/\bopen_path\b/.test(joined) || joined.includes("open path")) {
+      return "Opened it in Preview.";
+    }
+    if (joined.includes("start_dev_server") || joined.includes("dev server")) {
+      return "Started the local server.";
+    }
+    return "";
+  }
+
+  private hasVisibleAssistantReplyAfterLastUser(): boolean {
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    while (node) {
+      if (node instanceof HTMLElement && node.classList.contains("question-card")) {
+        return true;
+      }
+      if (node instanceof HTMLElement && node.classList.contains("msg") && node.classList.contains("assistant")) {
+        const raw = String((node.querySelector(".msg-body.md") as { __raw?: string } | null)?.__raw || "").trim();
+        if (raw) return true;
+        const clone = node.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll(".thinking-wrap, .msg-time, .msg-copy, .msg-meta").forEach((el) => el.remove());
+        const text = (clone.textContent || "").replace(/Thought for[^\n]*/g, "").trim();
+        if (text) return true;
+      }
+      node = node.nextElementSibling;
+    }
+    return false;
+  }
+
+  /** After a run ends, never leave the user on thinking/status with no bubble. */
+  private ensureVisibleReplyAfterEnd(reason: string) {
+    if (this.replaying || this.userCancelled) return;
+    const normalized = String(reason || "").trim().toLowerCase();
+    if (normalized === "cancelled" || normalized === "canceled" || normalized === "error") return;
+    this.flushDeferredAssistant();
+    this.revealThoughtWhenReplyMissing();
+    this.compactLatestAssistantTranscript();
+    if (this.hasVisibleAssistantReplyAfterLastUser()) return;
+    const pending = String((this.pendingAssistant as { __raw?: string } | null)?.__raw || "").trim();
+    if (pending) return;
+    const hostLine = this.hostLineFromLatestTools();
+    const text =
+      hostLine || "I couldn't produce a visible answer for that request. Please try sending it again, or switch model.";
+    this.appendAssistantText(text);
+    const lastAssistant = this.latestAssistantInCurrentRun();
+    if (!lastAssistant || lastAssistant.text !== text) {
+      this.messages.push({ type: "assistant", text, at: this.now() });
+    }
   }
 
   hideThinking() {
@@ -3674,25 +4464,33 @@ export class Chat {
   }
 
   /**
-   * Reacquire the latest rendered assistant body after a provider recovery.
-   * Thinking/status rows may have cleared the live pointer even though the
-   * backend explicitly says the next text is a suffix of that cut-off reply.
+   * Reacquire the latest rendered assistant body in this turn after tools or
+   * a provider recovery. One Ask/Build turn keeps one answer bubble.
    */
   private resumeLatestAssistantReply() {
     if (this.pendingAssistant?.isConnected && this.pendingAssistantMsg?.isConnected) return;
-    const replies = this.node.querySelectorAll<HTMLElement>(".msg.assistant");
-    for (let index = replies.length - 1; index >= 0; index -= 1) {
-      const message = replies[index];
-      const body = message.querySelector<HTMLElement>(".msg-body.md");
-      if (!body || typeof (body as any).__raw !== "string") continue;
-      this.pendingAssistant = body;
-      this.pendingAssistantMsg = message;
-      return;
-    }
+    const message = this.latestAssistantMsgAfterLastUser();
+    const body = message?.querySelector<HTMLElement>(".msg-body.md");
+    if (!body || typeof (body as any).__raw !== "string") return;
+    this.pendingAssistant = body;
+    this.pendingAssistantMsg = message;
+  }
+
+  /** Stitch later chunks into the open turn instead of opening a second bubble. */
+  private shouldResumeOpenAssistant(): boolean {
+    if (this.pendingAssistant?.isConnected && this.pendingAssistantMsg?.isConnected) return false;
+    const message = this.latestAssistantMsgAfterLastUser();
+    const body = message?.querySelector<HTMLElement>(".msg-body.md");
+    if (!body || typeof (body as any).__raw !== "string") return false;
+    if (this.running) return true;
+    return assistantReplyLooksOpen(String((body as any).__raw || ""));
   }
 
   appendAssistantText(text: string, resumePrevious = false) {
-    if (resumePrevious) this.resumeLatestAssistantReply();
+    if (resumePrevious || this.shouldResumeOpenAssistant()) {
+      this.resumeLatestAssistantReply();
+    }
+    this.mergeCurrentTurnAssistantBubbles();
     // Cursor/Grok often dumps the full thought right before the reply — let it type out first
     if (this.shouldDeferAssistantForThought()) {
       this.deferredAssistantChunks.push(text);
@@ -3700,10 +4498,24 @@ export class Chat {
       if (this.typewriterId == null) this.startTypewriter();
       return;
     }
+    const renderedRaw = String((this.pendingAssistant as { __raw?: string } | null)?.__raw || "");
+    const sourceRaw = String(
+      (this.pendingAssistant as { __sourceRaw?: string } | null)?.__sourceRaw ||
+        renderedRaw ||
+        this.suppressedAssistantRaw,
+    );
+    const snapshot = appendVisibleAssistantChunk(sourceRaw, text);
+    const incoming = snapshot.source;
+    const cleaned = snapshot.visible;
+    if (!cleaned) {
+      if (!this.pendingAssistant) this.suppressedAssistantRaw = incoming.slice(-16_000);
+      return;
+    }
+    this.suppressedAssistantRaw = "";
     // Keep the thought block in history if we had reasoning; otherwise fade out
     this.finalizeThinking();
     // Don't seal an active tool batch mid-run — tools still need the "Running N" header
-    if (this.pendingTools.size === 0) {
+    if (this.pendingTools.size === 0 && (!this.running || this.stopping || this.userCancelled)) {
       this.sealToolBatch();
     }
     // Provider prose can arrive immediately before a long tool call. Keep the
@@ -3714,23 +4526,37 @@ export class Chat {
     this.clearRunningIndicator();
     if (!this.pendingAssistant) {
       const msg = div("msg assistant msg-enter");
-      const body = el("div", { class: "msg-body md" });
+      const body = el("div", { class: "msg-body md", role: "document", "aria-label": "AI response" });
       msg.appendChild(body);
       this.decorateAssistantMsg(msg);
       // Hide date/time until the agent finishes this reply
       const meta = this.messageMeta(() => (body as any).__raw || "", this.now(), { showTime: false });
       msg.appendChild(meta);
-      this.node.appendChild(msg);
+      const afterTools = this.insertionPointAfterCurrentTools();
+      if (afterTools) afterTools.after(msg);
+      else this.node.appendChild(msg);
       this.pendingAssistant = body;
       this.pendingAssistantMsg = msg;
       (body as any).__raw = "";
+      (body as any).__sourceRaw = "";
       (msg as any).__timeEl = meta.querySelector(".msg-time");
     }
-    const raw = ((this.pendingAssistant as any).__raw || "") + text;
-    (this.pendingAssistant as any).__raw = raw;
+    this.placeTurnChromeInOrder();
+    (this.pendingAssistant as { __sourceRaw?: string }).__sourceRaw = incoming;
+    (this.pendingAssistant as { __raw?: string }).__raw = cleaned;
+    this.pendingAssistantMsg?.classList.toggle(
+      "structured-reply",
+      cleaned.length >= 420 || /(?:^|\n)#{1,3}\s+/.test(cleaned),
+    );
     this.scheduleAssistantPaint(this.pendingAssistant);
     // After prose, the model may pause before tools / next thought — don't leave a blank gap
-    if (this.running && !this.stopping && !this.userCancelled) {
+    if (
+      this.running &&
+      !this.stopping &&
+      !this.userCancelled &&
+      !this.hasUsedTools &&
+      !this.hasVisibleAssistantReplyAfterLastUser()
+    ) {
       this.scheduleIdleActivity();
     }
   }
@@ -3807,6 +4633,8 @@ export class Chat {
         (child): child is HTMLElement =>
           child instanceof HTMLElement &&
           child.classList.contains("msg") &&
+          child !== this.pendingAssistantMsg &&
+          !child.classList.contains("msg-enter") &&
           !child.classList.contains("history-virtualized"),
       );
       const heights = messages.map((message) =>
@@ -3957,8 +4785,7 @@ export class Chat {
     if (!resolvedName) return;
 
     this.hasUsedTools = true;
-    this.pendingAssistant = null;
-    this.pendingAssistantMsg = null;
+    this.discardProvisionalAssistantBeforeTools();
     this.sealThoughtBeforeTools();
     // Status lives on the tool card — no floating "Running · …" row
     this.clearRunningIndicator();
@@ -4004,8 +4831,7 @@ export class Chat {
   queueTool(id: string, name: string, args: any, previewId?: string) {
     this.clearIdleActivityTimer();
     this.hasUsedTools = true;
-    this.pendingAssistant = null;
-    this.pendingAssistantMsg = null;
+    this.discardProvisionalAssistantBeforeTools();
     // Thought process first — seal it before tools spawn
     this.sealThoughtBeforeTools();
     this.promoteToolPreview(previewId, id, name, args);
@@ -4073,7 +4899,7 @@ export class Chat {
     card.appendChild(head);
     card.appendChild(body);
     wrap.appendChild(card);
-    this.node.appendChild(wrap);
+    this.insertToolCardInBatch(wrap);
     this.toolCards.set(id, { head, body, card });
     this.scrollToBottom();
   }
@@ -4114,7 +4940,7 @@ export class Chat {
     card.appendChild(body);
     wrap.appendChild(card);
     void at;
-    this.node.appendChild(wrap);
+    this.insertToolCardInBatch(wrap);
     this.toolCards.set(id, { head, body, card });
     this.scrollToBottom();
   }
@@ -4145,15 +4971,8 @@ export class Chat {
     if (completedBatch) {
       this.clearRunningIndicator();
       this.toolBatchOpen = false;
-      if (this.running && !this.stopping && !this.userCancelled && !this.sealingTools) {
+      if (this.running && !this.stopping && !this.userCancelled && !this.sealingTools && !this.hasUsedTools) {
         this.scheduleIdleActivity();
-      } else if (this.thinking) {
-        this.setThinkingLabel(this.liveThinkingLabel());
-        if (this.thinkingHasReasoning && this.thinkingText) {
-          this.setThinkingDetail(this.thinkingText, true, true);
-        } else {
-          this.paintThinkingBody();
-        }
       }
     }
 
@@ -4180,12 +4999,18 @@ export class Chat {
     }
     if (!this.toolBatchResultIds.has(id)) {
       this.toolBatchResultIds.add(id);
-      const recoverable = !ok && this.isRecoverableEditFailure(toolName, content);
+      const recoverable = !ok && (
+        this.isRecoverableEditFailure(toolName, content)
+        || this.isRecoverableInspectionFailure(toolName, content)
+      );
       if (!ok && !recoverable) this.toolBatchFailures += 1;
     }
     if (completedBatch) this.paintToolBatchLabel();
     const path = this.toolArgPath(toolArgs);
-    const recoverable = !ok && this.isRecoverableEditFailure(toolName, content);
+    const recoverable = !ok && (
+      this.isRecoverableEditFailure(toolName, content)
+      || this.isRecoverableInspectionFailure(toolName, content)
+    );
     if (ok && path && this.isPathMutatingTool(toolName)) {
       this.recoverMultiAgentPathAttention(path);
     }
@@ -4426,17 +5251,68 @@ export class Chat {
    * agent reaches a terminal event.
    */
   private normalizeLatestAssistantReply() {
-    const lastAssistant = [...this.messages]
-      .reverse()
-      .find((message): message is Extract<SessionMessage, { type: "assistant" }> => message.type === "assistant");
+    const lastAssistant = this.latestAssistantInCurrentRun();
     if (!lastAssistant) return;
     const normalized = normalizeAssistantMarkdown(lastAssistant.text);
     if (!normalized || normalized === lastAssistant.text) return;
     lastAssistant.text = normalized;
-    if (this.pendingAssistant) {
-      (this.pendingAssistant as any).__raw = normalized;
-      this.scheduleAssistantPaint(this.pendingAssistant);
+    const body =
+      this.pendingAssistant ||
+      (this.latestAssistantMsgAfterLastUser()?.querySelector(".msg-body.md") as HTMLElement | null);
+    if (body) {
+      (body as any).__sourceRaw = normalized;
+      (body as any).__raw = normalized;
+      this.scheduleAssistantPaint(body);
     }
+  }
+
+  private latestAssistantInCurrentRun(): Extract<SessionMessage, { type: "assistant" }> | null {
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index];
+      if (message.type === "user" || message.type === "run_start") return null;
+      if (message.type === "assistant") return message;
+    }
+    return null;
+  }
+
+  /** Keep the persisted transcript on the same short-lead layout as the live bubble. */
+  private compactLatestAssistantTranscript() {
+    const lastAssistant = this.latestAssistantInCurrentRun();
+    if (!lastAssistant) return;
+    const cleaned = compactVisibleReply(lastAssistant.text);
+    if (!cleaned) {
+      const index = this.messages.lastIndexOf(lastAssistant);
+      if (index >= 0) this.messages.splice(index, 1);
+      return;
+    }
+    lastAssistant.text = cleaned;
+  }
+
+  /**
+   * The Completed card is the delivery layout. Collapse Result essays in the
+   * bubble to a one- or two-sentence lead so the same facts are not shown twice.
+   */
+  private collapseDeliveryEssayInLatestReply() {
+    const msg = this.latestAssistantMsgAfterLastUser();
+    const body = msg?.querySelector(".msg-body.md") as HTMLElement | null;
+    if (!msg || !body) return;
+    const raw = String((body as { __raw?: string }).__raw || body.textContent || "").trim();
+    if (!raw) return;
+    if (!looksLikeDeliveryEssay(raw)) return;
+    const lead = deliveryLeadFromReply(raw);
+    const lastAssistant = this.latestAssistantInCurrentRun();
+    if (!lead) {
+      msg.remove();
+      if (lastAssistant) {
+        const index = this.messages.lastIndexOf(lastAssistant);
+        if (index >= 0) this.messages.splice(index, 1);
+      }
+      return;
+    }
+    (body as { __sourceRaw?: string }).__sourceRaw = lead;
+    (body as { __raw?: string }).__raw = lead;
+    body.innerHTML = renderMarkdown(lead);
+    if (lastAssistant) lastAssistant.text = lead;
   }
 
   appendDone(data: {
@@ -4446,12 +5322,18 @@ export class Chat {
     files: string[];
     tech: string[];
     features: string[];
+    kind?: string;
     at?: number;
     workMs?: number;
   }) {
-    this.runCompleted = true;
+    const planReady = String(data.kind || "").toLowerCase() === "plan"
+      || /^plan ready$/i.test(String(data.title || "").trim());
+    if (planReady && this.hasPlanReadyCardThisTurn()) return;
+    if (!planReady) this.runCompleted = true;
     this.normalizeLatestAssistantReply();
     this.flushAssistantPaints();
+    if (!planReady) this.collapseDeliveryEssayInLatestReply();
+    this.compactLatestAssistantTranscript();
     this.finalizeThinking();
     this.sealPendingTools("done");
     this.clearRecoverableMultiAgentAttention();
@@ -4459,24 +5341,30 @@ export class Chat {
     this.pendingAssistantMsg = null;
     const at = data.at ?? this.now();
 
-    const card = div("done-card summary-card");
+    const card = div("done-card summary-card" + (planReady ? " plan-ready-card" : ""));
 
-    const title = this.cleanSentence(data.title) || "Done";
+    const title = this.cleanSentence(data.title) || (planReady ? "Plan ready" : "Done");
     const completion = this.buildCompletionSummary(data);
     let primaryText = completion.primary;
     // Don't echo the assistant reply again under Done (Cursor / chat turns)
-    const lastAssistant = [...this.messages].reverse().find((m) => m.type === "assistant") as
-      | { text?: string }
-      | undefined;
+    const lastAssistant = this.latestAssistantInCurrentRun();
     if (primaryText && lastAssistant?.text) {
       const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
       if (norm(primaryText) === norm(lastAssistant.text) || norm(lastAssistant.text).includes(norm(primaryText))) {
         primaryText = "";
       }
     }
+    if (planReady && !primaryText) {
+      primaryText = this.cleanSentence(data.summary)
+        || "Choose Apply to implement, or keep planning without changing files.";
+    }
 
     const header = el("div", { class: "summary-header" });
-    header.appendChild(el("span", { class: "summary-status", "aria-label": "Task completed" }, ["Completed"]));
+    header.appendChild(el(
+      "span",
+      { class: "summary-status" + (planReady ? " is-plan" : ""), "aria-label": planReady ? "Plan ready" : "Task completed" },
+      [planReady ? "Plan ready" : "Completed"],
+    ));
     header.appendChild(el("h3", { class: "summary-title" }, [title]));
     card.appendChild(header);
 
@@ -4502,11 +5390,12 @@ export class Chat {
       card.appendChild(meta);
     }
 
-    const packBtn = el("button", {
-      class: "btn sm summary-export-btn",
-      type: "button",
-      title: "Zip project for client handoff",
-    }, ["Export Client Pack"]) as HTMLButtonElement;
+    if (!planReady) {
+      const packBtn = el("button", {
+        class: "btn sm summary-export-btn",
+        type: "button",
+        title: "Zip project for client handoff",
+      }, ["Export Client Pack"]) as HTMLButtonElement;
     packBtn.addEventListener("click", async () => {
       packBtn.disabled = true;
       packBtn.textContent = "Packing…";
@@ -4533,6 +5422,7 @@ export class Chat {
       }
     });
     card.appendChild(packBtn);
+    }
 
     card.style.opacity = "0";
     this.node.appendChild(card);
@@ -4678,14 +5568,54 @@ export class Chat {
     this.normalizeLatestAssistantReply();
     this.flushAssistantPaints();
     this.finalizeThinking();
+    this.ensureVisibleReplyAfterEnd(reason);
+    this.mergeCurrentTurnAssistantBubbles();
+    this.placeTurnChromeInOrder();
     this.sealPendingTools(completed ? "done" : "interrupted");
     if (completed) this.clearRecoverableMultiAgentAttention();
+    if (
+      this.activePermissionMode === "plan"
+      && this.hasQuestionCardThisTurn()
+      && !this.hasPlanReadyCardThisTurn()
+      && !this.hasCompletedCardThisTurn()
+    ) {
+      this.appendDone({
+        kind: "plan",
+        title: "Plan ready",
+        summary: "The plan is ready. Choose an option to apply it or keep planning.",
+        description: "No files will change until you confirm Apply.",
+        files: [],
+        tech: [],
+        features: [],
+        at,
+        workMs,
+      });
+    }
     // Stamp the last AI chat once the agent is done replying
     this.sealAiTimestamp(at, workMs ?? this.currentWorkMs(at) ?? undefined);
     this.pendingAssistant = null;
     this.pendingAssistantMsg = null;
     this.scrollToBottom();
     this.scheduleStableMessageVirtualization();
+  }
+
+  private hasPlanReadyCardThisTurn(): boolean {
+    return this.hasCardAfterLastUser(".plan-ready-card");
+  }
+
+  private hasCompletedCardThisTurn(): boolean {
+    return this.hasCardAfterLastUser(".done-card:not(.plan-ready-card)");
+  }
+
+  private hasCardAfterLastUser(selector: string): boolean {
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    while (node) {
+      if (node instanceof HTMLElement && node.matches(selector)) return true;
+      node = node.nextElementSibling;
+    }
+    return false;
   }
 
   showQuestion(id: string, question: string, options: string[], allowOther: boolean, savedAnswer: string | null = null, at?: number) {
@@ -4698,7 +5628,7 @@ export class Chat {
       if ((n as HTMLElement).getAttribute("data-qid") === id) n.remove();
     });
 
-    const card = div("question-card");
+    const card = div("question-card is-open");
     card.setAttribute("data-qid", id);
     card.setAttribute("role", "group");
     card.setAttribute("aria-label", "Choose an option");
@@ -4722,13 +5652,45 @@ export class Chat {
     }
     if (opts.length === 0) {
       opts = [
-        "Continue with your recommended plan",
+        "Apply this plan and implement the changes",
         "Simpler / minimal version",
         "More complete / polished version",
+        "Revise the plan — don't change files yet",
       ];
     }
     // Always offer freeform so Plan mode never dead-ends
     const showOther = allowOther || opts.length < 2;
+    const answerAppliesPlan = (answer: string) => {
+      const lower = answer.trim().toLowerCase();
+      if (/\b(apply|implement|execute) (this|the) plan\b/.test(lower) || /\bgo ahead and (implement|apply)\b/.test(lower)) {
+        return true;
+      }
+      const q = (question || "").toLowerCase();
+      return (
+        ["yes", "apply", "implement", "go ahead", "do it", "build it"].includes(lower) &&
+        (q.includes("apply") || q.includes("implement") || q.includes("this plan"))
+      );
+    };
+    const markQuestionAnswered = (answer: string) => {
+      card.classList.remove("is-open");
+      card.classList.add("is-answered");
+      this.showPostChooserActivity("Working on your choice…");
+      this.refreshPlaceholder();
+      void answer;
+    };
+    const submitAnswer = async (answer: string) => {
+      if (answerAppliesPlan(answer)) {
+        window.dispatchEvent(
+          new CustomEvent("horma:run-permission-mode", {
+            detail: { mode: "build", persist: true },
+          }),
+        );
+      }
+      markQuestionAnswered(answer);
+      const sid = this.getSessionId();
+      if (!sid) throw new Error("No active session");
+      await api.respondToQuestion(answer, sid);
+    };
 
     const choices = el("div", { class: "question-choices" });
     for (const opt of opts) {
@@ -4743,9 +5705,7 @@ export class Chat {
         btn.classList.add("selected");
         if (this.replaying) return;
         try {
-          const sid = this.getSessionId();
-          if (!sid) throw new Error("No active session");
-          await api.respondToQuestion(opt, sid);
+          await submitAnswer(opt);
         } catch (e) {
           console.error("Failed to send answer:", e);
         }
@@ -4774,9 +5734,7 @@ export class Chat {
         submitBtn.setAttribute("disabled", "disabled");
         if (this.replaying) return;
         try {
-          const sid = this.getSessionId();
-          if (!sid) throw new Error("No active session");
-          await api.respondToQuestion(val, sid);
+          await submitAnswer(val);
         } catch (e) {
           console.error("Failed to send answer:", e);
         }
@@ -4793,12 +5751,19 @@ export class Chat {
     card.appendChild(choices);
 
     if (savedAnswer !== null) {
+      card.classList.remove("is-open");
+      card.classList.add("is-answered");
       const answerNote = el("div", { class: "question-answer" }, ["You chose: " + savedAnswer]);
       card.appendChild(answerNote);
     }
 
     void at;
     this.node.appendChild(card);
+    this.placeTurnChromeInOrder();
+    if (!this.replaying && this.running && savedAnswer === null) {
+      this.showPostChooserActivity("Waiting for your choice");
+      this.refreshPlaceholder();
+    }
     // Keep the chooser in view under the assistant message
     requestAnimationFrame(() => {
       card.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -4835,20 +5800,13 @@ export class Chat {
         });
         break;
       case "multi_agent_batch": {
-        const tools = snapshotMultiAgentTools(e.payload?.tools);
-        if (tools.length) this.messages.push({ type: "multi_agent_batch", tools, at });
+        appendMultiAgentBatchSnapshot(this.messages, e.payload?.tools, at);
         break;
       }
-      case "thinking": this.messages.push({ type: "thinking", iteration: e.payload.iteration, text: "", at }); break;
-      case "reasoning": {
-        const last = this.messages[this.messages.length - 1];
-        if (last && last.type === "thinking") {
-          last.text = last.text ? last.text + e.payload.text : e.payload.text;
-        } else {
-          this.messages.push({ type: "thinking", iteration: e.payload.iteration ?? 0, text: e.payload.text, at });
-        }
+      case "thinking": appendThinkingTranscriptEvent(this.messages, e.payload.iteration, at); break;
+      case "reasoning":
+        appendThinkingReasoningChunk(this.messages, e.payload.text, e.payload.iteration ?? 0, at);
         break;
-      }
       case "text":
         return appendAssistantTranscriptChunk(
           this.messages,
@@ -4874,6 +5832,7 @@ export class Chat {
           files: e.payload.files,
           tech: e.payload.tech,
           features: e.payload.features,
+          kind: e.payload.kind,
           at,
           workMs: this.currentWorkMs(at) ?? undefined,
         });
@@ -4903,10 +5862,25 @@ export class Chat {
       case "start":
         this.runCompleted = false;
         this.setActivePermissionMode(e.payload.permission_mode);
+        window.dispatchEvent(
+          new CustomEvent("horma:run-permission-mode", {
+            detail: {
+              mode: e.payload.permission_mode,
+              reason: e.payload.adaptive_reason,
+              complexity: e.payload.adaptive_complexity,
+              risk: e.payload.adaptive_risk,
+            },
+          }),
+        );
         break;
       case "thinking": this.showThinking(e.payload.iteration); break;
       case "status": {
         const message = (e.payload.message || "Reconnecting…").trim() || "Reconnecting…";
+        if (
+          /workspace items in parallel|independent workspace checks|Flavour ·/i.test(message)
+        ) {
+          break;
+        }
         this.clearIdleActivityTimer();
         // Force the live label even if a tool preview is visible — reconnect
         // must stay obvious while the run waits for network.

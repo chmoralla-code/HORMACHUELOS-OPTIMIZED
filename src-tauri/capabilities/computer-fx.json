@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "computer-fx",
+  "description": "Transparent desktop overlay for Desktop Computer Use visual FX",
+  "windows": ["computer-fx"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-ignore-cursor-events"
+  ]
+}

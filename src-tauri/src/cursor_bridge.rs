@@ -3,7 +3,7 @@
 
 use crate::agent::HistoryTurn;
 use crate::flavour::FlavourRun;
-use crate::smart_agent::SmartAgentRun;
+use crate::smart_agent::{infer_director_job, DirectorJob, SmartAgentRun};
 use crate::state::SessionRun;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -128,25 +128,41 @@ impl CursorPassActivity {
 
 fn cursor_host_tool_is_available(name: &str, permission_mode: &str) -> bool {
     let name = crate::tools::normalize_tool_name(name);
+    let mode = permission_mode.trim().to_ascii_lowercase();
     if matches!(name.as_str(), "done" | "todo_write") {
         return false;
     }
     if crate::tools::is_computer_tool(&name) {
+        if matches!(mode.as_str(), "research" | "adaptive") {
+            return crate::tools::is_computer_readonly_tool(&name);
+        }
         return true;
     }
     if !crate::tools::is_supported_tool_name(&name) {
         return false;
     }
-    let mode = permission_mode.trim().to_ascii_lowercase();
-    !matches!(mode.as_str(), "ask" | "research") || crate::tools::is_readonly_tool(&name)
+    if mode == "research" {
+        return crate::tools::is_research_tool(&name);
+    }
+    if mode == "ask" {
+        return !crate::tools::is_file_mutating_tool(&name);
+    }
+    if mode == "adaptive" {
+        return crate::tools::is_research_tool(&name);
+    }
+    true
 }
 
 /// Convert the desktop's canonical OpenAI function schemas to Cursor custom
 /// tool schemas. Cursor's built-in tool set changes between SDK releases; the
 /// host bridge keeps every advertised AI-Forge tool backed by the same native
 /// dispatcher and permission checks used by non-Cursor providers.
-fn cursor_host_tool_schemas(permission_mode: &str, computer_use_enabled: bool) -> Vec<Value> {
-    crate::tools::schemas(computer_use_enabled)
+fn cursor_host_tool_schemas(
+    permission_mode: &str,
+    computer_use_enabled: bool,
+    desktop_computer_use_enabled: bool,
+) -> Vec<Value> {
+    crate::tools::schemas_with(computer_use_enabled, desktop_computer_use_enabled)
         .into_iter()
         .filter_map(|schema| {
             let function = schema.get("function")?;
@@ -250,6 +266,7 @@ async fn await_cursor_question(
     run: &SessionRun,
     request_id: &str,
     arguments: &Value,
+    permission_mode: &str,
 ) -> (bool, String) {
     let question = arguments
         .get("question")
@@ -264,13 +281,17 @@ async fn await_cursor_question(
         .unwrap_or(true);
     if options.is_empty() {
         options = vec![
-            "Continue with your recommended plan".into(),
+            crate::agent::PLAN_APPLY_OPTION.into(),
             "Simpler / minimal version".into(),
             "More complete / polished version".into(),
         ];
         allow_other = true;
     } else if options.len() == 1 {
         allow_other = true;
+    }
+    if permission_mode.eq_ignore_ascii_case("plan") && !run.plan_implementation_unlocked() {
+        options = crate::agent::ensure_plan_apply_options(options);
+        crate::agent::emit_plan_ready_card(app, session_id, 0, "");
     }
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
@@ -287,7 +308,7 @@ async fn await_cursor_question(
         }),
     );
 
-    let response = tokio::select! {
+    let mut response = tokio::select! {
         biased;
         _ = wait_until_cursor_cancelled(run.cancel.clone()) => {
             (false, "User cancelled the question.".to_string())
@@ -301,6 +322,18 @@ async fn await_cursor_question(
         }
     };
     *run.question_tx.lock().unwrap() = None;
+    if response.0 && permission_mode.eq_ignore_ascii_case("plan") {
+        if crate::agent::ask_user_confirms_plan_implementation(&response.1, &question) {
+            run.set_plan_implementation_unlocked(true);
+            response.1.push_str(
+                "\n\n[System] The user confirmed Apply. Switched to implementing. You may now write, edit, and run commands to implement the agreed plan.",
+            );
+        } else if !run.plan_implementation_unlocked() {
+            response.1.push_str(
+                "\n\n[System] The user has not confirmed Apply. Keep planning. Do not write, edit, or modify files.",
+            );
+        }
+    }
     response
 }
 
@@ -335,6 +368,12 @@ async fn execute_cursor_host_tool(
     };
     crate::tools::normalize_tool_arguments(&name, &mut arguments);
 
+    if crate::tools::file_writes_blocked(permission_mode, run.plan_implementation_unlocked())
+        && crate::tools::is_file_mutating_tool(&name)
+    {
+        return (false, crate::tools::PLAN_LOCK_MESSAGE.to_string());
+    }
+
     // A model can confuse an account-status question with an authentication
     // request. Preserve the native agent's safety behavior and never pop open
     // a Connect flow just to answer "am I connected?".
@@ -353,7 +392,15 @@ async fn execute_cursor_host_tool(
     }
 
     if name == "ask_user" {
-        return await_cursor_question(app, session_id, run, request_id, &arguments).await;
+        return await_cursor_question(
+            app,
+            session_id,
+            run,
+            request_id,
+            &arguments,
+            permission_mode,
+        )
+        .await;
     }
 
     if name == "connect_account" {
@@ -737,8 +784,9 @@ fn bounded_cursor_history(history: &[HistoryTurn]) -> Vec<BridgeHistoryTurn> {
 
 fn cursor_permission_enforcement(mode: &str) -> &'static str {
     match mode {
-        "full" | "multi_agent" | "plan" => "cursor_sdk_agent",
-        "auto" => "cursor_sdk_auto_review",
+        "multi_agent" => "cursor_sdk_agent",
+        "build" | "auto" | "full" => "cursor_sdk_auto_review",
+        "plan" => "cursor_sdk_plan_read_only",
         "ask" | "research" => "cursor_sdk_plan_read_only",
         _ => "cursor_sdk_plan_read_only",
     }
@@ -894,6 +942,7 @@ pub async fn run_cursor_turn(
     effort: &str,
     permission_mode: &str,
     computer_use_enabled: bool,
+    desktop_computer_use_enabled: bool,
     command_timeout_secs: u64,
     session_id: &str,
     run: Arc<SessionRun>,
@@ -903,16 +952,27 @@ pub async fn run_cursor_turn(
     smart_agent_enabled: bool,
     task_profile: &str,
     execution_profile: &str,
+    requested_permission_mode: &str,
+    adaptive_reason: Option<&str>,
+    adaptive_complexity: Option<&str>,
+    adaptive_risk: Option<&str>,
     flavour: &mut FlavourRun,
 ) -> Result<Option<String>> {
     let mut continuation_pass: u32 = 0;
     let mut consecutive_stalled_recoveries: u8 = 0;
     let mut current_prompt = prompt.to_string();
     let mut current_agent_id = resume_agent_id;
-    let smart_agent_active = smart_agent_enabled && requires_project_completion;
     let fast_execution = task_profile.eq_ignore_ascii_case("design_edit_fast")
         || execution_profile.eq_ignore_ascii_case("fast");
-    let mut smart_agent = SmartAgentRun::new(smart_agent_active, fast_execution);
+    let director_job = infer_director_job(
+        user_request,
+        permission_mode,
+        computer_use_enabled || desktop_computer_use_enabled,
+        requires_project_completion,
+        fast_execution,
+    );
+    let mut smart_agent = SmartAgentRun::for_job(director_job, smart_agent_enabled, fast_execution);
+    let smart_agent_active = smart_agent.is_enabled();
     let computer_use_active = computer_use_enabled && !crate::computer_use::is_paused();
     emit(
         &app,
@@ -923,6 +983,10 @@ pub async fn run_cursor_turn(
             "provider": "OpenAI",
             "model": model,
             "permission_mode": permission_mode,
+            "requested_permission_mode": requested_permission_mode,
+            "adaptive_reason": adaptive_reason,
+            "adaptive_complexity": adaptive_complexity,
+            "adaptive_risk": adaptive_risk,
             "permission_enforcement": cursor_permission_enforcement(permission_mode),
             "host_approval_callbacks": false,
             "computer_use": computer_use_active,
@@ -954,6 +1018,7 @@ pub async fn run_cursor_turn(
             effort,
             permission_mode,
             computer_use_enabled,
+            desktop_computer_use_enabled,
             command_timeout_secs,
             session_id,
             run.clone(),
@@ -1130,6 +1195,7 @@ async fn run_cursor_attempt(
     effort: &str,
     permission_mode: &str,
     computer_use_enabled: bool,
+    desktop_computer_use_enabled: bool,
     command_timeout_secs: u64,
     session_id: &str,
     run: Arc<SessionRun>,
@@ -1149,7 +1215,13 @@ async fn run_cursor_attempt(
     let bridge_arg = bridge.to_string_lossy().to_string();
     let cancel = run.cancel.clone();
     let computer_use_active = computer_use_enabled && !crate::computer_use::is_paused();
-    let host_tool_schemas = cursor_host_tool_schemas(permission_mode, computer_use_active);
+    let desktop_computer_use_active =
+        desktop_computer_use_enabled && !crate::desktop_computer_use::is_paused();
+    let host_tool_schemas = cursor_host_tool_schemas(
+        permission_mode,
+        computer_use_active,
+        desktop_computer_use_active,
+    );
 
     emit(&app, session_id, "thinking", json!({ "iteration": 0 }));
 
@@ -1350,6 +1422,12 @@ async fn run_cursor_attempt(
                             &known_integration_secrets,
                         )
                         .await;
+                        if run.plan_implementation_unlocked()
+                            && smart_agent.job() == DirectorJob::Answer
+                            && permission_mode.eq_ignore_ascii_case("plan")
+                        {
+                            smart_agent.promote_to_change(&app, session_id);
+                        }
                         flavour.record_tool_result(
                             &request_id,
                             &raw_name,
@@ -1589,7 +1667,10 @@ mod tests {
 
     #[test]
     fn restricted_modes_report_read_only_sdk_enforcement() {
-        assert_eq!(cursor_permission_enforcement("plan"), "cursor_sdk_agent");
+        assert_eq!(
+            cursor_permission_enforcement("plan"),
+            "cursor_sdk_plan_read_only"
+        );
         assert_eq!(
             cursor_permission_enforcement("ask"),
             "cursor_sdk_plan_read_only"
@@ -1599,8 +1680,12 @@ mod tests {
             "cursor_sdk_plan_read_only"
         );
         assert_eq!(
-            cursor_permission_enforcement("auto"),
+            cursor_permission_enforcement("build"),
             "cursor_sdk_auto_review"
+        );
+        assert_eq!(
+            cursor_permission_enforcement("adaptive"),
+            "cursor_sdk_plan_read_only"
         );
     }
 
@@ -1651,8 +1736,8 @@ mod tests {
 
     #[test]
     fn cursor_registers_every_eligible_native_tool_with_permission_filtering() {
-        let full = cursor_host_tool_schemas("full", true);
-        let actual = full
+        let build = cursor_host_tool_schemas("build", true, false);
+        let actual = build
             .iter()
             .map(|schema| schema["name"].as_str().expect("host tool name").to_string())
             .collect::<BTreeSet<_>>();
@@ -1670,20 +1755,44 @@ mod tests {
         assert!(actual.contains("open_path"));
         assert!(!actual.contains("done"));
         assert!(!actual.contains("todo_write"));
-        assert!(full.iter().all(|schema| {
+        assert!(!actual.contains("computer_list_windows"));
+        assert!(build.iter().all(|schema| {
             schema["description"].is_string() && schema["inputSchema"]["type"] == "object"
         }));
 
-        let ask = cursor_host_tool_schemas("ask", true);
+        let desktop = cursor_host_tool_schemas("build", true, true);
+        assert!(desktop
+            .iter()
+            .any(|schema| schema["name"] == "computer_list_windows"));
+        assert!(desktop
+            .iter()
+            .any(|schema| schema["name"] == "computer_observe_window"));
+
+        let ask = cursor_host_tool_schemas("ask", true, true);
         assert!(ask.iter().all(|schema| {
             let name = schema["name"].as_str().expect("ask tool name");
-            crate::tools::is_readonly_tool(name) || crate::tools::is_computer_tool(name)
+            !crate::tools::is_file_mutating_tool(name)
         }));
         assert!(ask.iter().any(|schema| schema["name"] == "grep"));
+        assert!(ask.iter().any(|schema| schema["name"] == "open_path"));
         assert!(ask
             .iter()
             .any(|schema| schema["name"] == "computer_actions"));
         assert!(!ask.iter().any(|schema| schema["name"] == "write_file"));
+        assert!(!ask.iter().any(|schema| schema["name"] == "run_command"));
+
+        let research = cursor_host_tool_schemas("research", true, true);
+        assert!(research.iter().any(|schema| schema["name"] == "grep"));
+        assert!(research
+            .iter()
+            .any(|schema| schema["name"] == "computer_observe"));
+        assert!(!research
+            .iter()
+            .any(|schema| schema["name"] == "computer_actions"));
+        assert!(!research.iter().any(|schema| schema["name"] == "open_path"));
+        assert!(!research
+            .iter()
+            .any(|schema| schema["name"] == "connect_account"));
     }
 
     #[test]

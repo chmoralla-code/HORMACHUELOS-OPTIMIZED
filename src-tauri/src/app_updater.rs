@@ -130,32 +130,59 @@ pub fn clear_update_backup() -> Result<(), String> {
         .map_err(|error| format!("Could not clear the restored update backup: {error}"))
 }
 
-fn parse_version(version: &str) -> Result<[u64; 3], String> {
-    let version = version.trim().trim_start_matches('v');
-    let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() != 3
+fn parse_version(version: &str) -> Result<Vec<u64>, String> {
+    let version = version.trim().trim_start_matches(['v', 'V']);
+    if version.is_empty()
+        || version.contains("..")
+        || version.starts_with(['.', '-', '+'])
+        || version.ends_with(['.', '-', '+'])
+    {
+        return Err("The update version is invalid.".into());
+    }
+    let parts: Vec<&str> = version.split(['.', '-', '+']).collect();
+    if parts.len() < 3
         || parts
             .iter()
             .any(|part| part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()))
     {
         return Err("The update version is invalid.".into());
     }
-    Ok([
-        parts[0]
-            .parse()
-            .map_err(|_| "The update version is invalid.")?,
-        parts[1]
-            .parse()
-            .map_err(|_| "The update version is invalid.")?,
-        parts[2]
-            .parse()
-            .map_err(|_| "The update version is invalid.")?,
-    ])
+    parts
+        .into_iter()
+        .map(|part| {
+            part.parse()
+                .map_err(|_| "The update version is invalid.".to_string())
+        })
+        .collect()
+}
+
+fn cmp_version(left: &[u64], right: &[u64]) -> std::cmp::Ordering {
+    let length = left.len().max(right.len());
+    for index in 0..length {
+        let delta = left
+            .get(index)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&right.get(index).copied().unwrap_or(0));
+        if delta != std::cmp::Ordering::Equal {
+            return delta;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+fn is_version_newer(candidate: &str, current: &str) -> Result<bool, String> {
+    let next = parse_version(candidate)?;
+    let installed = match parse_version(current) {
+        Ok(value) => value,
+        Err(_) => return Ok(true),
+    };
+    Ok(cmp_version(&next, &installed) == std::cmp::Ordering::Greater)
 }
 
 fn validate_version(version: &str) -> Result<String, String> {
     parse_version(version)?;
-    Ok(version.trim().trim_start_matches('v').to_string())
+    Ok(version.trim().trim_start_matches(['v', 'V']).to_string())
 }
 
 fn validate_sha256(expected_sha256: &str) -> Result<String, String> {
@@ -1103,7 +1130,7 @@ async fn install_app_update_inner(
     let version = validate_version(&version)?;
     let sha256 = validate_sha256(&sha256)?;
     let current_version = app.package_info().version.to_string();
-    if parse_version(&version)? <= parse_version(&current_version)? {
+    if !is_version_newer(&version, &current_version)? {
         return Err(format!(
             "Hormachuelos v{version} is not newer than the installed v{current_version}."
         ));
@@ -1170,10 +1197,17 @@ mod tests {
     use super::{validate_download_url, validate_sha256, validate_version};
 
     #[test]
-    fn accepts_only_plain_semver_versions() {
+    fn accepts_plain_semver_and_numeric_revision_builds() {
         assert_eq!(validate_version("v0.1.9").unwrap(), "0.1.9");
+        assert_eq!(validate_version("v1.2.11-1").unwrap(), "1.2.11-1");
         assert!(validate_version("0.1").is_err());
         assert!(validate_version("0.1.9;calc").is_err());
+        assert!(validate_version("1.2.11-beta").is_err());
+        assert!(super::is_version_newer("1.2.11-1", "1.2.11").unwrap());
+        assert!(super::is_version_newer("1.2.11", "1.0.2").unwrap());
+        assert!(!super::is_version_newer("1.2.11", "1.2.11-1").unwrap());
+        assert!(!super::is_version_newer("1.2.11-1", "1.2.11-1").unwrap());
+        assert!(super::is_version_newer("1.2.12", "1.2.11-beta").unwrap());
     }
 
     #[test]
@@ -1193,6 +1227,11 @@ mod tests {
         assert!(validate_download_url(
             "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v0.1.9/Hormachuelos_Optimized_0.1.9_x64.msi",
             "0.1.9"
+        )
+        .is_ok());
+        assert!(validate_download_url(
+            "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.11-1/Hormachuelos_Optimized_1.2.11-1_x64-setup.exe",
+            "1.2.11-1"
         )
         .is_ok());
         assert!(validate_download_url(

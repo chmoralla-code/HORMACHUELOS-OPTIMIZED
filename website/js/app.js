@@ -39,6 +39,25 @@ const DESKTOP_DOWNLOADS = {
   },
 };
 
+/** Independent FPS-focused edition with Adaptive Director and maximized modes. */
+const OPTIMIZED_DOWNLOAD_BASE =
+  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.15";
+
+const OPTIMIZED_DOWNLOADS = {
+  version: "1.2.15",
+  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.2.15",
+  windows: {
+    msi: {
+      label: "Optimized installer (MSI)",
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.15_x64.msi`,
+    },
+    setup: {
+      label: "Optimized setup (EXE)",
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.15_x64-setup.exe`,
+    },
+  },
+};
+
 function primaryDownloadHref() {
   return DESKTOP_DOWNLOADS.windows.msi.href;
 }
@@ -597,6 +616,7 @@ function renderHome() {
       <div class="hero-cta ix-reveal" data-delay="2">
         <a class="btn btn-primary btn-lg" href="#/pricing">View pricing</a>
         ${renderDownloadButton("btn-lg")}
+        <a class="btn btn-lg" href="#/download">Optimized v${OPTIMIZED_DOWNLOADS.version}</a>
       </div>
       <div class="trust-row ix-reveal" data-delay="3">
         <button type="button" class="trust-chip" data-tip="Pay the exact amount then upload one clear receipt">GCash QR + proof review</button>
@@ -2744,12 +2764,30 @@ function renderSuccess() {
 
 function renderDownload() {
   const { version, windows } = DESKTOP_DOWNLOADS;
+  const optimized = OPTIMIZED_DOWNLOADS;
   const wrap = page(`
     <div class="prose container">
       <h1>Download Hormachuelos</h1>
-      <p id="dl-lead">Install the desktop AI agent on Windows. Loading latest build…</p>
+      <p>Choose the standard release or the independent FPS-focused Optimized edition.</p>
+      <div class="card" id="optimized-download" style="margin:20px 0;border-color:var(--primary)">
+        <div class="eyebrow" style="margin-bottom:10px"><span class="dot"></span> New optimized release</div>
+        <h3 style="margin-top:0">Hormachuelos Optimized v${optimized.version}</h3>
+        <p class="muted small">The mission-driven release for longer, safer autonomous work, now with a calmer and more readable AI response layout. Installs independently from the standard edition.</p>
+        <ul class="small" style="margin:14px 0 0;padding-left:20px">
+          <li><strong>Clearline AI replies</strong> — quiet section dividers, stronger bold hierarchy, true nested lists, refined code and file chips, and visible reply actions.</li>
+          <li><strong>Mission Control</strong> — durable goals, boundaries, approval policy, execution depth, and measurable finish lines.</li>
+          <li><strong>Workspace Time Machine</strong> — protected run history, action evidence, Undo Last, and conflict-aware rollback.</li>
+          <li><strong>Test &amp; Fix Everything</strong> — a closed inspect, test, repair, and retest loop with honest proof states.</li>
+        </ul>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
+          <a class="btn btn-primary" id="optimized-exe" href="${optimized.windows.setup.href}">${escapeHtml(optimized.windows.setup.label)}</a>
+          <a class="btn" id="optimized-msi" href="${optimized.windows.msi.href}">${escapeHtml(optimized.windows.msi.label)}</a>
+          <a class="btn btn-ghost" href="${optimized.releaseNotes}" target="_blank" rel="noopener noreferrer">Release notes</a>
+        </div>
+      </div>
       <div class="card" style="margin:20px 0">
-        <h3 style="margin-top:0">Windows</h3>
+        <h3 style="margin-top:0">Standard edition</h3>
+        <p id="dl-lead" class="muted small">Loading the latest standard build…</p>
         <p class="muted small">After install, open Hormachuelos — it opens this website so you can <strong>log in or sign up</strong>, then the app signs in automatically.</p>
         <div id="dl-actions" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
           <a class="btn btn-primary" id="dl-msi" href="${windows.msi.href}">${escapeHtml(windows.msi.label)}</a>

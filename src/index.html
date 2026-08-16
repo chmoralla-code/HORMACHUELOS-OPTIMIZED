@@ -52,6 +52,16 @@
           <div class="workspace-menu-anchor" id="workspace-menu-anchor">
             <button
               type="button"
+              class="mission-control-btn"
+              id="mission-control-btn"
+              title="Open Mission Control"
+              aria-label="Open Mission Control"
+            >
+              <span class="mission-control-pulse" aria-hidden="true"></span>
+              <span>Mission Control</span>
+            </button>
+            <button
+              type="button"
               class="drawer-btn drawer-btn-right"
               id="drawer-right-btn"
               aria-pressed="true"
@@ -77,7 +87,7 @@
         </header>
         <div class="workspace workbench">
           <section class="stage" aria-label="Build ledger">
-            <section class="smart-agent-status" id="smart-agent-status" aria-label="Smart Agent task progress" hidden></section>
+            <section class="smart-agent-status" id="smart-agent-status" aria-label="Director task progress" hidden></section>
             <main class="chat" id="chat" tabindex="-1" role="log" aria-live="polite"></main>
             <section class="file-viewer" id="file-viewer" aria-label="File preview" hidden></section>
             <section class="forge-dock" id="forge-dock" aria-label="Composer"></section>
@@ -85,7 +95,7 @@
           <aside class="inspector" id="inspector" aria-label="Project inspector">
             <div class="inspector-tabs" role="tablist" aria-label="Inspector views">
               <button id="files-tab" class="inspector-tab active" role="tab" data-inspector-tab="files" aria-controls="files-panel" aria-selected="true" tabindex="0">Files</button>
-              <button id="changes-tab" class="inspector-tab" role="tab" data-inspector-tab="changes" aria-controls="changes-panel" aria-selected="false" tabindex="-1">Changes</button>
+              <button id="changes-tab" class="inspector-tab" role="tab" data-inspector-tab="changes" aria-controls="changes-panel" aria-selected="false" tabindex="-1">Time Machine</button>
               <button id="console-tab" class="inspector-tab" role="tab" data-inspector-tab="console" aria-controls="console-panel" aria-selected="false" tabindex="-1">Console</button>
             </div>
             <section class="inspector-panel" id="files-panel" role="tabpanel" aria-labelledby="files-tab"></section>

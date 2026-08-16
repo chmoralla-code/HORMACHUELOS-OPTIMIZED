@@ -80,3 +80,45 @@ jobs:
 
       - name: Compile native library
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml --lib
+
+
+  reply-layout-browser:
+    name: AI reply Playwright layout
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production reply harness
+        run: npm run build
+
+      - name: Install Playwright test runner
+        run: npm install --no-save --package-lock=false @playwright/test@1.55.0
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test AI reply at desktop, narrow, and mobile widths
+        run: npx playwright test --config=playwright.reply.config.mjs
+
+      - name: Test the Optimized website release card
+        run: npx playwright test --config=playwright.optimized-website.config.mjs
+
+      - name: Upload layout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reply-layout-evidence
+          path: test-results
+          if-no-files-found: ignore
+          retention-days: 14

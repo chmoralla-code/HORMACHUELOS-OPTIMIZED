@@ -95,15 +95,24 @@ fn build_request_body(
         || provider_kind.eq_ignore_ascii_case("hormachuelos_free")
         || provider_kind.eq_ignore_ascii_case("openai")
         || provider_kind.eq_ignore_ascii_case("cursor");
+    let is_gemini =
+        provider_kind.eq_ignore_ascii_case("gemini") || normalized_model.contains("gemini");
     let is_reasoning_model = normalized_model.starts_with("gpt-5")
         || normalized_model.starts_with("o1")
         || normalized_model.starts_with("o3")
         || normalized_model.starts_with("o4")
         || is_xai_grok
         || normalized_model.starts_with("deepseek-v4")
-        || normalized_model.starts_with("glm-5");
+        || normalized_model.starts_with("glm-5")
+        || is_gemini;
     if !is_reasoning_model {
         body["temperature"] = json!(0.2);
+    }
+    // Command Code / OpenRouter Gemini thinking passes need a real output
+    // budget. The agent system prompt plus tools otherwise fills a tiny
+    // default cap with reasoning and the visible answer stays empty.
+    if is_gemini {
+        body["max_tokens"] = json!(16384);
     }
     if supports_reasoning_effort {
         body["reasoning_effort"] =
@@ -261,6 +270,81 @@ fn is_cut_off_stream_body(body: &str) -> bool {
     true
 }
 
+/// Read a string from a delta/message field. Accepts a bare string, an
+/// object with `content` / `text` (Grok, DeepSeek, and some hosted proxies),
+/// or an OpenAI content-part array (`[{ "type": "text", "text": "…" }]`).
+fn join_text_parts(parts: &[Value]) -> String {
+    let mut out = String::new();
+    for part in parts {
+        if let Some(text) = part.as_str() {
+            out.push_str(text);
+            continue;
+        }
+        let kind = part.get("type").and_then(Value::as_str).unwrap_or("");
+        if matches!(
+            kind,
+            "reasoning" | "thinking" | "tool_use" | "tool_call" | "function_call" | "tool-call"
+        ) {
+            continue;
+        }
+        if let Some(text) = part
+            .get("text")
+            .or_else(|| part.get("content"))
+            .and_then(Value::as_str)
+        {
+            out.push_str(text);
+        }
+    }
+    out
+}
+
+fn join_reasoning_parts(parts: &[Value]) -> String {
+    let mut out = String::new();
+    for part in parts {
+        let kind = part.get("type").and_then(Value::as_str).unwrap_or("");
+        if !matches!(kind, "reasoning" | "thinking") {
+            continue;
+        }
+        if let Some(text) = part
+            .get("text")
+            .or_else(|| part.get("content"))
+            .and_then(Value::as_str)
+        {
+            out.push_str(text);
+        }
+    }
+    out
+}
+
+fn value_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str().filter(|text| !text.is_empty()) {
+        return Some(text.to_string());
+    }
+    if let Some(joined) = value.as_array().map(|parts| join_text_parts(parts)) {
+        if !joined.is_empty() {
+            return Some(joined);
+        }
+    }
+    for key in ["content", "text"] {
+        if let Some(field) = value.get(key) {
+            if let Some(text) = field.as_str().filter(|text| !text.is_empty()) {
+                return Some(text.to_string());
+            }
+            if let Some(joined) = field.as_array().map(|parts| join_text_parts(parts)) {
+                if !joined.is_empty() {
+                    return Some(joined);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn delta_string(delta: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| delta.get(*key).and_then(value_text))
+}
+
 fn parse_response(text: &str) -> Result<LlmResponse> {
     let value: Value = serde_json::from_str(text)
         .map_err(|_| anyhow!("invalid_response: The provider returned malformed JSON."))?;
@@ -269,10 +353,7 @@ fn parse_response(text: &str) -> Result<LlmResponse> {
         .and_then(|choices| choices.get(0))
         .ok_or_else(|| anyhow!("invalid_response: The provider returned no choices."))?;
     let message = choice.get("message").cloned().unwrap_or(Value::Null);
-    let mut content = message
-        .get("content")
-        .and_then(|content| content.as_str())
-        .map(str::to_string);
+    let mut content = message.get("content").and_then(value_text);
 
     // Providers disagree on the field name for chain-of-thought.
     let mut reasoning_content = [
@@ -285,10 +366,18 @@ fn parse_response(text: &str) -> Result<LlmResponse> {
     .find_map(|key| {
         message
             .get(*key)
-            .and_then(|value| value.as_str())
+            .and_then(value_text)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     });
+    if reasoning_content.is_none() {
+        if let Some(parts) = message.get("content").and_then(Value::as_array) {
+            let nested = join_reasoning_parts(parts);
+            if !nested.trim().is_empty() {
+                reasoning_content = Some(nested);
+            }
+        }
+    }
 
     // Some free/open models embed thoughts as <think>…</think> inside content.
     if reasoning_content.is_none() {
@@ -519,27 +608,38 @@ impl StreamAccumulator {
             .or_else(|| choice.get("message"))
             .unwrap_or(&Value::Null);
 
-        if let Some(content) = delta.get("content").and_then(Value::as_str) {
+        if let Some(content) = delta_string(delta, &["content", "text"]) {
             if !content.is_empty() {
-                self.text.push_str(content);
+                self.text.push_str(&content);
                 if let Some(sink) = on_content {
-                    sink(content);
+                    sink(&content);
+                }
+            }
+        }
+        if let Some(parts) = delta.get("content").and_then(Value::as_array) {
+            let nested_reasoning = join_reasoning_parts(parts);
+            if !nested_reasoning.is_empty() {
+                self.reasoning.push_str(&nested_reasoning);
+                if let Some(sink) = on_reasoning {
+                    sink(&nested_reasoning);
                 }
             }
         }
 
-        let reasoning_chunk = [
-            "reasoning_content",
-            "reasoning",
-            "thinking",
-            "reasoning_text",
-        ]
-        .iter()
-        .find_map(|key| delta.get(*key).and_then(Value::as_str));
-        if let Some(chunk) = reasoning_chunk.filter(|chunk| !chunk.is_empty()) {
-            self.reasoning.push_str(chunk);
-            if let Some(sink) = on_reasoning {
-                sink(chunk);
+        if let Some(chunk) = delta_string(
+            delta,
+            &[
+                "reasoning_content",
+                "reasoning",
+                "thinking",
+                "reasoning_text",
+            ],
+        ) {
+            if !chunk.is_empty() {
+                self.reasoning.push_str(&chunk);
+                if let Some(sink) = on_reasoning {
+                    sink(&chunk);
+                }
             }
         }
 
@@ -1201,6 +1301,12 @@ mod tests {
             reasoning_content: Some("I should inspect the file first.".into()),
         }];
 
+        let gemini_body =
+            build_request_body("google/gemini-3.7-flash", &[], &[], "gemini", Some("high"));
+        assert_eq!(gemini_body["max_tokens"], 16384);
+        assert_eq!(gemini_body["temperature"], Value::Null);
+        assert_eq!(gemini_body["reasoning_effort"], Value::Null);
+
         let body = build_request_body("deepseek-v4-pro", &messages, &[], "deepseek", None);
         let assistant = &body["messages"][0];
 
@@ -1370,6 +1476,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_openai_content_part_arrays_as_visible_text() {
+        let response = parse_response(
+            r#"{
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": [
+                        {"type": "thinking", "text": "Let me look."},
+                        {"type": "text", "text": "The form collects employee name and email."}
+                    ]
+                }
+            }]
+        }"#,
+        )
+        .expect("array content should parse");
+
+        assert_eq!(
+            response.text.as_deref(),
+            Some("The form collects employee name and email.")
+        );
+        assert_eq!(response.reasoning_content.as_deref(), Some("Let me look."));
+    }
+
+    #[test]
     fn interrupted_stream_never_executes_a_partial_tool_call() {
         let mut accumulator = StreamAccumulator::default();
         accumulator.apply(
@@ -1400,6 +1530,31 @@ mod tests {
             response.text.as_deref(),
             Some("I am applying the change...")
         );
+    }
+
+    #[test]
+    fn reads_object_shaped_reasoning_deltas() {
+        let mut accumulator = StreamAccumulator::default();
+        accumulator.apply(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "reasoning": { "content": "The page lists three incident reports." },
+                        "content": "Three reports are visible."
+                    },
+                    "finish_reason": "stop"
+                }]
+            }),
+            None,
+            None,
+            None,
+        );
+        let response = accumulator.into_response().expect("parsed");
+        assert_eq!(
+            response.reasoning_content.as_deref(),
+            Some("The page lists three incident reports.")
+        );
+        assert_eq!(response.text.as_deref(), Some("Three reports are visible."));
     }
 
     #[test]

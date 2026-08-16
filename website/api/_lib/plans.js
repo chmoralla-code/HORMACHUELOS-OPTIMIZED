@@ -46,6 +46,7 @@ export const MODEL_BLEND_USD_PER_1M = {
   "deepseek-v4-flash": 0.168,
   "deepseek-v4-pro": 0.522,
   "claude-opus": 9.0,
+  "gemini-3.7-flash": 1.5,
   "gemini-3.1-pro": 4.0,
   "glm-5.2": 2.0,
   free: 0.05,

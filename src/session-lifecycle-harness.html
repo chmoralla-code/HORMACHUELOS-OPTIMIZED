@@ -11,6 +11,7 @@
     <style>
       #app {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
         grid-template-rows: minmax(0, 1fr) auto;
         height: 100vh;
       }
@@ -51,6 +52,8 @@
         return {
           busy: root.getAttribute("aria-busy"),
           liveBadges: Array.from(root.querySelectorAll(".multi-agent-live")).map((node) => node.textContent),
+          multiAgentBatches: root.querySelectorAll(".multi-agent-batch").length,
+          multiAgentRows: root.querySelectorAll(".multi-agent-tool").length,
           workingRows: root.querySelectorAll(".multi-agent-tool.working").length,
           runningBatches: root.querySelectorAll(".tool-batch-wrap.is-running").length,
           workingLabels: (text.match(/\bagents? working\b/gi) || []).length,
@@ -98,6 +101,51 @@
         ]);
         chat.setRunning(true, { processQueue: false });
         return stats();
+      };
+
+      const loadReplyLayout = () => {
+        chat.loadSession([
+          { type: "user", text: "Analyze this project in read-only mode and give a report." },
+          { type: "run_start", permissionMode: "ask" },
+          { type: "assistant", text: "Let me inspect the project structure first." },
+          { type: "tool_call", id: "layout-read", name: "read_file", arguments: { path: "package.json" } },
+          { type: "tool_result", id: "layout-read", name: "read_file", ok: true, content: "{}" },
+          {
+            type: "assistant",
+            text: [
+              "## Executive summary",
+              "The project has a clear application shell and a focused frontend architecture. The main opportunities are stronger boundary tests and tighter error handling.",
+              "",
+              "### Priority findings",
+              "1. Add integration coverage around session recovery and reply streaming.",
+              "2. Keep read-only analysis isolated from implementation permissions.",
+              "",
+              "### Evidence",
+              "- `package.json` defines the frontend build and test entry points.",
+              "- `src/components/chat.ts` owns transcript rendering and activity layout.",
+            ].join("\n"),
+          },
+          { type: "end", reason: "no_tool_calls", workMs: 2400 },
+        ]);
+        chat.setRunning(false, { processQueue: false });
+        const root = document.getElementById("chat");
+        const messages = Array.from(root.querySelectorAll(".msg.assistant"));
+        const body = root.querySelector(".msg.assistant .msg-body.md");
+        const heading = root.querySelector(".msg.assistant h3");
+        const bodyStyle = body ? getComputedStyle(body) : null;
+        const headingStyle = heading ? getComputedStyle(heading) : null;
+        return {
+          assistantCount: messages.length,
+          emptyAssistantCount: messages.filter((message) => !(message.textContent || "").trim()).length,
+          assistantText: body?.textContent || "",
+          structured: messages[0]?.classList.contains("structured-reply") || false,
+          fontSize: bodyStyle ? parseFloat(bodyStyle.fontSize) : 0,
+          lineHeight: bodyStyle ? parseFloat(bodyStyle.lineHeight) : 0,
+          bodyWidth: body?.getBoundingClientRect().width || 0,
+          headingTransform: headingStyle?.textTransform || "",
+          headingFontSize: headingStyle ? parseFloat(headingStyle.fontSize) : 0,
+          multiAgentMode: root.classList.contains("chat-multi-agent"),
+        };
       };
 
       const sampleFrames = (frames = 90) => new Promise((resolve) => {
@@ -168,6 +216,7 @@
         loadCompleted,
         loadInterrupted,
         loadActive,
+        loadReplyLayout,
         stats,
         sampleFrames,
         compareAnimationModels,

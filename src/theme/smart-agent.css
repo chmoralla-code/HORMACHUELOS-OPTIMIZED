@@ -166,3 +166,157 @@
 @media (prefers-reduced-motion: reduce) {
   .smart-agent-step.active .smart-agent-step-mark { box-shadow: none; }
 }
+
+/* Mission flight recorder — two compact rows with controls and proof-oriented progress. */
+.smart-agent-status {
+  top: 9px;
+  width: min(780px, calc(100% - 28px));
+}
+.stage:has(.smart-agent-status:not([hidden])) .chat {
+  padding-top: 92px;
+  scroll-padding-top: 92px;
+}
+.smart-agent-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 12px;
+  overflow: hidden;
+  padding: 8px 10px 7px;
+  border-color: rgba(93, 180, 242, 0.26);
+  border-radius: 9px;
+  background:
+    linear-gradient(110deg, rgba(43, 139, 206, 0.12), transparent 42%),
+    rgba(12, 18, 25, 0.9);
+  box-shadow: 0 9px 28px rgba(0, 0, 0, 0.22), inset 2px 0 #5bb9f2;
+  pointer-events: auto;
+}
+.smart-agent-card.smart-agent-completed { box-shadow: 0 9px 28px rgba(0, 0, 0, 0.18), inset 2px 0 #67d29a; }
+.smart-agent-card.smart-agent-paused { box-shadow: 0 9px 28px rgba(0, 0, 0, 0.18), inset 2px 0 #e3ae59; }
+.smart-agent-head { min-width: 134px; }
+.smart-agent-signal {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #65c5ff;
+  box-shadow: 0 0 0 3px rgba(89, 187, 245, 0.1), 0 0 12px rgba(89, 187, 245, 0.56);
+}
+.smart-agent-completed .smart-agent-signal { background: #73d6a3; box-shadow: 0 0 10px rgba(102, 210, 151, 0.45); }
+.smart-agent-paused .smart-agent-signal { background: #e7b35f; box-shadow: 0 0 10px rgba(226, 167, 74, 0.4); }
+.smart-agent-percent {
+  color: var(--text-faint);
+  font: 700 8px/1 var(--font-mono);
+}
+.smart-agent-steps {
+  justify-content: flex-end;
+  overflow: visible;
+}
+.smart-agent-step {
+  position: relative;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.smart-agent-step + .smart-agent-step::before {
+  width: 5px;
+  height: 1px;
+  margin-right: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  content: "";
+}
+.smart-agent-lower {
+  display: flex;
+  grid-column: 1 / -1;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.smart-agent-detail {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 7px;
+}
+.smart-agent-detail-label {
+  flex: 0 0 auto;
+  color: #79c9fa;
+  font: 750 8px/1 var(--font-mono);
+  letter-spacing: 0.1em;
+}
+.smart-agent-detail-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.smart-agent-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+.smart-agent-actions button {
+  display: inline-grid;
+  width: 25px;
+  height: 23px;
+  place-items: center;
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+}
+.smart-agent-actions button:hover,
+.smart-agent-actions button:focus-visible { color: #d9f1ff; border-color: rgba(99, 188, 245, 0.45); background: rgba(68, 155, 211, 0.14); outline: none; }
+.smart-agent-actions button.danger:hover,
+.smart-agent-actions button.danger:focus-visible { color: #ffd4d4; border-color: rgba(239, 104, 104, 0.48); background: rgba(194, 53, 53, 0.14); }
+.smart-agent-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.035);
+}
+.smart-agent-progress span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #398fc8, #74ccff);
+  transition: width 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.smart-agent-completed .smart-agent-progress span { background: linear-gradient(90deg, #3d9f6b, #75d7a4); }
+.smart-agent-paused .smart-agent-progress span { background: linear-gradient(90deg, #a36f2d, #e4b45f); }
+
+@media (max-width: 640px) {
+  .stage:has(.smart-agent-status:not([hidden])) .chat { padding-top: 88px; scroll-padding-top: 88px; }
+  .smart-agent-card { gap: 5px; padding: 7px 8px; }
+  .smart-agent-head { min-width: auto; }
+  .smart-agent-title, .smart-agent-percent, .smart-agent-step-label { display: none; }
+  .smart-agent-steps { justify-content: flex-start; }
+  .smart-agent-step { padding: 1px; }
+  .smart-agent-step + .smart-agent-step::before { width: 3px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .smart-agent-progress span { transition: none; }
+}
+
+/* Preview can reduce the chat stage to ~240px even on a wide desktop window. */
+.workbench.preview-open .smart-agent-card {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 7px 8px 6px;
+}
+.workbench.preview-open .smart-agent-head { display: none; }
+.workbench.preview-open .smart-agent-steps { justify-content: center; }
+.workbench.preview-open .smart-agent-step { padding: 1px; }
+.workbench.preview-open .smart-agent-step-label,
+.workbench.preview-open .smart-agent-detail-label { display: none; }
+.workbench.preview-open .smart-agent-step + .smart-agent-step::before { width: 3px; }
+.workbench.preview-open .smart-agent-lower { grid-column: 1; gap: 5px; padding-top: 4px; }
+.workbench.preview-open .smart-agent-detail-text { font-size: 8.5px; }

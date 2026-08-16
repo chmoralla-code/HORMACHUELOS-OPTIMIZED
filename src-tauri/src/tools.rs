@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_FILE_READ_BYTES: usize = 200_000;
@@ -110,6 +111,13 @@ pub fn normalize_tool_arguments(name: &str, arguments: &mut Value) {
         "grep" => {
             promote_alias(args, "pattern", &["query", "regex", "search"]);
             promote_alias(args, "path", &["directory", "dir", "root"]);
+            if args
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(grep_path_looks_unusable)
+            {
+                args.insert("path".into(), Value::String(".".into()));
+            }
         }
         "glob" => promote_alias(args, "pattern", &["glob", "query"]),
         "run_command" | "start_dev_server" => {
@@ -152,6 +160,51 @@ pub fn normalize_tool_arguments(name: &str, arguments: &mut Value) {
             args.insert("path".into(), Value::String(".".into()));
         }
     }
+}
+
+fn grep_path_looks_unusable(path: &str) -> bool {
+    path.trim()
+        .chars()
+        .any(|c| matches!(c, '|' | '*' | '?' | '"' | '<' | '>' | '\0'))
+        || path.contains("::")
+}
+
+fn grep_file_hits(
+    path: &Path,
+    display_root: &Path,
+    re: &regex::Regex,
+    limit: usize,
+    hits: &mut Vec<Value>,
+) -> Result<()> {
+    if hits.len() >= limit {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(path)?;
+    let rel = path
+        .strip_prefix(display_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let label = if rel.is_empty() {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string())
+    } else {
+        rel
+    };
+    for (i, line) in text.lines().enumerate() {
+        if re.is_match(line) {
+            hits.push(json!({
+                "path": label,
+                "line": i + 1,
+                "text": line.chars().take(500).collect::<String>(),
+            }));
+            if hits.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// True when `name` is a registered dispatcher name or an explicitly safe
@@ -209,6 +262,15 @@ fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "done" => Some("done"),
         "computerobserve" => Some("computer_observe"),
         "computeractions" | "computeractionbatch" => Some("computer_actions"),
+        "computerlistwindows" => Some("computer_list_windows"),
+        "computerobservewindow" => Some("computer_observe_window"),
+        "computerfocuswindow" => Some("computer_focus_window"),
+        "computerclick" => Some("computer_click"),
+        "computertypetext" => Some("computer_type_text"),
+        "computerpresskey" => Some("computer_press_key"),
+        "computerscroll" => Some("computer_scroll"),
+        "computerdrag" => Some("computer_drag"),
+        "computergamesequence" => Some("computer_game_sequence"),
 
         // Safe inspection aliases emitted by some OpenAI-compatible models.
         "readfilecontents" | "readtextfile" | "fileread" => Some("read_file"),
@@ -219,7 +281,7 @@ fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "getenvvars" | "environmentvariables" => Some("env_vars"),
         "getfileinfo" => Some("file_info"),
 
-        // These shell aliases are already recognized by the Smart Agent
+        // These shell aliases are already recognized by the Director
         // ledger. Normalize them before permission checks so they receive the
         // same approval policy as run_command.
         "runterminal" | "runterminalcmd" | "executecommand" | "shell" => Some("run_command"),
@@ -290,7 +352,127 @@ pub fn is_readonly_tool(name: &str) -> bool {
             | "web_search"
             | "browse_page"
             | "computer_observe"
+            | "computer_list_windows"
+            | "computer_observe_window"
     )
+}
+
+/// Evidence-gathering tools allowed in Research mode. This is narrower than
+/// the historical read-only bucket: authentication, completion, process
+/// mutation, Preview actions, and external side effects are intentionally out.
+pub fn is_research_tool(name: &str) -> bool {
+    let name = canonical_tool_name(name).unwrap_or(name);
+    matches!(
+        name,
+        "read_file"
+            | "list_dir"
+            | "glob"
+            | "grep"
+            | "git_status"
+            | "list_drives"
+            | "sys_info"
+            | "env_vars"
+            | "list_processes"
+            | "file_info"
+            | "view_image"
+            | "view_video"
+            | "ask_user"
+            | "todo_write"
+            | "integration_status"
+            | "web_search"
+            | "browse_page"
+            | "computer_observe"
+            | "computer_list_windows"
+            | "computer_observe_window"
+    )
+}
+
+/// Tools that create, overwrite, move, or delete files (including shell).
+pub fn is_file_mutating_tool(name: &str) -> bool {
+    let name = canonical_tool_name(name).unwrap_or(name);
+    matches!(
+        name,
+        "write_file"
+            | "edit_file"
+            | "delete_file"
+            | "make_dir"
+            | "copy_file"
+            | "move_file"
+            | "git_init"
+            | "git_add_all"
+            | "git_commit"
+            | "download_file"
+            | "run_command"
+            | "export_client_pack"
+    )
+}
+
+/// Adaptive must be resolved before tool selection; if it leaks through, lock
+/// it fail-safe alongside Plan / Ask / Research.
+pub fn file_writes_locked_mode(mode: &str) -> bool {
+    matches!(
+        mode.trim().to_ascii_lowercase().as_str(),
+        "adaptive" | "plan" | "ask" | "research"
+    )
+}
+
+pub fn file_writes_blocked(mode: &str, unlocked: bool) -> bool {
+    file_writes_locked_mode(mode) && !unlocked
+}
+
+/// Authoritative execution-time guard. Schema filtering guides the model, but
+/// an unadvertised or malformed provider tool call must still be denied here.
+pub fn tool_allowed_for_permission_phase(name: &str, mode: &str, unlocked: bool) -> bool {
+    let mode = mode.trim().to_ascii_lowercase();
+    if matches!(mode.as_str(), "research" | "adaptive") {
+        return is_research_tool(name);
+    }
+    !(file_writes_blocked(&mode, unlocked) && is_file_mutating_tool(name))
+}
+
+/// File-write tools that Plan / Ask / Research must not run.
+pub fn is_plan_locked_tool(name: &str) -> bool {
+    is_file_mutating_tool(name)
+}
+
+pub const PLAN_LOCK_MESSAGE: &str = "This mode cannot create, edit, or write files. Use read, search, browser, computer, and question tools. To implement, confirm Apply on a plan or choose Build; reserve Parallel for independent workstreams.";
+
+/// Hide file-write tools in Plan / Ask / Research. Plan Apply and design-edit
+/// pass `plan_unlocked` so the next turn can implement.
+pub fn schemas_for_permission_phase(
+    all: Vec<Value>,
+    mode: &str,
+    plan_unlocked: bool,
+) -> Vec<Value> {
+    if matches!(
+        mode.trim().to_ascii_lowercase().as_str(),
+        "research" | "adaptive"
+    ) {
+        return all
+            .into_iter()
+            .filter(|schema| {
+                let name = schema
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                tool_allowed_for_permission_phase(name, mode, plan_unlocked)
+            })
+            .collect();
+    }
+    if !file_writes_blocked(mode, plan_unlocked) {
+        return all;
+    }
+    all.into_iter()
+        .filter(|schema| {
+            let name = schema
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            !is_file_mutating_tool(name)
+        })
+        .collect()
 }
 
 /// Local, side-effect-free tools that may run together when a model emits a
@@ -317,14 +499,28 @@ pub fn is_parallel_safe_readonly_tool(name: &str) -> bool {
 
 pub fn is_computer_tool(name: &str) -> bool {
     matches!(name, "computer_observe" | "computer_actions")
+        || crate::desktop_computer_use::is_desktop_computer_tool(name)
 }
 
 pub fn is_computer_readonly_tool(name: &str) -> bool {
-    name == "computer_observe"
+    matches!(
+        name,
+        "computer_observe" | "computer_list_windows" | "computer_observe_window"
+    )
 }
 
 pub fn is_computer_action_tool(name: &str) -> bool {
-    name == "computer_actions"
+    matches!(
+        name,
+        "computer_actions"
+            | "computer_focus_window"
+            | "computer_click"
+            | "computer_type_text"
+            | "computer_press_key"
+            | "computer_scroll"
+            | "computer_drag"
+            | "computer_game_sequence"
+    )
 }
 
 fn arg_path<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
@@ -375,34 +571,38 @@ fn tool_targets_outside_project(name: &str, args: &Value, root: &Path) -> bool {
 }
 
 /// Whether this tool requires user confirmation for the given permission mode.
-/// - plan: Ship-level tool permissions (plan-first prompts elsewhere); no Approve for mutations
-/// - ask / research: confirm mutations; investigate with free reads (research is a legacy alias)
-/// - auto: auto-run in-project work; confirm high-risk + outside-project paths
-/// - full / multi_agent: follow the Ship full-permission policy
+/// - plan / ask / research: file writes are hard-blocked (Research is stricter)
+/// - ask: remaining non-read tools still need Approve
+/// - build: auto-run in-project work; confirm high-risk + outside-project paths
+/// - multi_agent: coordinated full-permission policy
 pub fn needs_tool_confirm(name: &str, args: &Value, root: &Path, mode: &str) -> bool {
     let name = canonical_tool_name(name).unwrap_or(name);
     let mode_owned = mode.trim().to_ascii_lowercase();
-    let mode = if mode_owned == "research" {
-        "ask"
-    } else {
-        mode_owned.as_str()
+    let mode = match mode_owned.as_str() {
+        "auto" | "full" => "build",
+        other => other,
     };
     // Computer Use is auto-approved because both tools are hard-scoped to the
     // active Preview tab and cannot send native desktop input.
     if is_computer_tool(name) {
         return false;
     }
-    if mode == "full" || mode == "multi_agent" || mode == "plan" {
+    if mode == "multi_agent" {
+        return false;
+    }
+    if mode == "plan" || mode == "adaptive" {
+        // Plan never uses Approve dialogs. Writes stay blocked until Apply.
         return false;
     }
     if is_readonly_tool(name) {
         return false;
     }
-    if mode == "ask" {
-        // Ask: every write / command / mutation needs Approve
-        return true;
+    if mode == "ask" || mode == "research" {
+        // File writes are hard-blocked. Remaining high-risk process control still
+        // needs Approve; everything else (reads, browser, computer, open_path) runs.
+        return matches!(name, "kill_process");
     }
-    // Auto (default for any unknown mode)
+    // Build (and conservative legacy fallback)
     // Always confirm destructive / process control
     if matches!(name, "kill_process" | "delete_file") {
         return true;
@@ -411,22 +611,24 @@ pub fn needs_tool_confirm(name: &str, args: &Value, root: &Path, mode: &str) -> 
     if tool_targets_outside_project(name, args, root) {
         return true;
     }
-    // In-project write_file, edit_file, run_command, git_*, make_dir, copy/move, download → auto
+    // In-project write_file, edit_file, run_command, git_*, make_dir, copy/move, download → Build
     false
 }
 
 #[cfg(test)]
 mod permission_mode_tests {
     use super::{
-        execute, is_parallel_safe_readonly_tool, is_supported_tool_name, needs_tool_confirm,
-        normalize_tool_arguments, normalize_tool_name, schemas, ToolRunContext,
+        execute, file_writes_blocked, is_file_mutating_tool, is_parallel_safe_readonly_tool,
+        is_plan_locked_tool, is_supported_tool_name, needs_tool_confirm, normalize_tool_arguments,
+        normalize_tool_name, schemas, schemas_for_permission_phase, schemas_with,
+        tool_allowed_for_permission_phase, ToolRunContext, PLAN_LOCK_MESSAGE,
     };
     use serde_json::json;
     use std::collections::BTreeSet;
     use std::path::Path;
 
     #[test]
-    fn full_never_confirms() {
+    fn legacy_full_uses_build_safeguards() {
         let root = Path::new("C:\\proj");
         assert!(!needs_tool_confirm(
             "run_command",
@@ -434,7 +636,7 @@ mod permission_mode_tests {
             root,
             "full"
         ));
-        assert!(!needs_tool_confirm(
+        assert!(needs_tool_confirm(
             "delete_file",
             &json!({ "path": "x.txt" }),
             root,
@@ -443,7 +645,7 @@ mod permission_mode_tests {
     }
 
     #[test]
-    fn multi_agent_uses_the_same_permission_policy_as_full() {
+    fn multi_agent_keeps_full_parallel_permission() {
         let root = Path::new("C:\\proj");
         assert!(!needs_tool_confirm(
             "run_command",
@@ -462,7 +664,14 @@ mod permission_mode_tests {
     #[test]
     fn preview_computer_tools_are_auto_approved_in_every_mode() {
         let root = Path::new("C:\\proj");
-        for mode in ["ask", "auto", "plan", "full", "multi_agent"] {
+        for mode in [
+            "adaptive",
+            "ask",
+            "research",
+            "plan",
+            "build",
+            "multi_agent",
+        ] {
             assert!(!needs_tool_confirm(
                 "computer_observe",
                 &json!({}),
@@ -489,7 +698,17 @@ mod permission_mode_tests {
             ["properties"]["type"]["enum"]
             .as_array()
             .expect("action type enum");
-        for expected in ["open_tab", "navigate", "activate_tab"] {
+        for expected in [
+            "open_tab",
+            "navigate",
+            "activate_tab",
+            "wait_for",
+            "upload",
+            "set_viewport",
+            "save_spec",
+            "record",
+            "replay",
+        ] {
             assert!(
                 kinds.iter().any(|value| value.as_str() == Some(expected)),
                 "missing Preview tab action {expected}"
@@ -503,59 +722,103 @@ mod permission_mode_tests {
     }
 
     #[test]
-    fn plan_uses_ship_level_tool_permissions() {
+    fn plan_ask_and_research_enforce_their_read_only_contracts() {
         let root = Path::new("C:\\proj");
+        assert!(is_file_mutating_tool("write_file"));
+        assert!(is_file_mutating_tool("edit_file"));
+        assert!(is_file_mutating_tool("run_command"));
+        assert!(is_file_mutating_tool("delete_file"));
+        assert!(!is_file_mutating_tool("start_dev_server"));
+        assert!(is_file_mutating_tool("export_client_pack"));
+        assert!(!is_file_mutating_tool("computer_actions"));
+        assert!(!is_file_mutating_tool("read_file"));
+        assert!(!is_file_mutating_tool("list_dir"));
+        assert!(!is_file_mutating_tool("ask_user"));
+        assert!(!is_file_mutating_tool("grep"));
+        assert!(!is_file_mutating_tool("open_path"));
+        assert!(is_plan_locked_tool("write_file"));
+        assert!(!is_plan_locked_tool("computer_actions"));
+        assert!(file_writes_blocked("plan", false));
+        assert!(file_writes_blocked("ask", false));
+        assert!(file_writes_blocked("research", false));
+        assert!(file_writes_blocked("adaptive", false));
+        assert!(!file_writes_blocked("plan", true));
+        assert!(!file_writes_blocked("multi_agent", false));
         assert!(!needs_tool_confirm(
             "write_file",
             &json!({ "path": "a.txt", "content": "x" }),
             root,
             "plan"
         ));
-        assert!(!needs_tool_confirm(
-            "run_command",
-            &json!({ "command": "echo hi" }),
-            root,
-            "plan"
-        ));
-        assert!(!needs_tool_confirm(
-            "start_dev_server",
-            &json!({ "command": "npm run dev" }),
-            root,
-            "plan"
-        ));
-        assert!(!needs_tool_confirm(
+        let planning = schemas_for_permission_phase(schemas(true), "plan", false);
+        let names: Vec<String> = planning
+            .iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&"ask_user".into()));
+        assert!(names.contains(&"read_file".into()));
+        assert!(names.contains(&"computer_actions".into()));
+        assert!(!names.contains(&"write_file".into()));
+        assert!(!names.contains(&"edit_file".into()));
+        assert!(!names.contains(&"run_command".into()));
+        let asking = schemas_for_permission_phase(schemas(true), "ask", false);
+        let ask_names: Vec<String> = asking
+            .iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(ask_names.contains(&"read_file".into()));
+        assert!(ask_names.contains(&"computer_actions".into()));
+        assert!(!ask_names.contains(&"write_file".into()));
+        assert!(!ask_names.contains(&"run_command".into()));
+        assert!(ask_names.contains(&"start_dev_server".into()));
+        let research = schemas_for_permission_phase(schemas(true), "research", false);
+        let research_names: Vec<String> = research
+            .iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(research_names.contains(&"read_file".into()));
+        assert!(research_names.contains(&"web_search".into()));
+        assert!(research_names.contains(&"computer_observe".into()));
+        assert!(!research_names.contains(&"computer_actions".into()));
+        assert!(!research_names.contains(&"start_dev_server".into()));
+        assert!(!research_names.contains(&"connect_account".into()));
+        assert!(!research_names.contains(&"write_file".into()));
+        assert!(tool_allowed_for_permission_phase(
             "read_file",
-            &json!({ "path": "a.txt" }),
-            root,
-            "plan"
+            "research",
+            false
         ));
-        assert!(!needs_tool_confirm("list_dir", &json!({}), root, "plan"));
-        assert!(!needs_tool_confirm(
-            "run_terminal",
-            &json!({ "command": "echo hi" }),
-            root,
-            "plan"
+        assert!(!tool_allowed_for_permission_phase(
+            "computer_actions",
+            "research",
+            false
         ));
-        assert!(!needs_tool_confirm(
-            "delete_file",
-            &json!({ "path": "a.txt" }),
-            root,
-            "plan"
+        assert!(!tool_allowed_for_permission_phase(
+            "run_command",
+            "research",
+            false
         ));
+        let unlocked = schemas_for_permission_phase(schemas(true), "plan", true);
+        assert!(unlocked
+            .iter()
+            .any(|schema| schema["function"]["name"] == "write_file"));
+        assert!(PLAN_LOCK_MESSAGE.contains("cannot create"));
     }
 
     #[test]
     fn registered_schemas_always_have_a_supported_dispatch_name() {
-        for computer_use_enabled in [false, true] {
-            for schema in schemas(computer_use_enabled) {
-                let name = schema["function"]["name"]
-                    .as_str()
-                    .expect("all tool schemas need a function name");
-                assert!(
-                    is_supported_tool_name(name),
-                    "schema {name} has no dispatcher entry"
-                );
-                assert_eq!(normalize_tool_name(name), name);
+        for preview in [false, true] {
+            for desktop in [false, true] {
+                for schema in schemas_with(preview, desktop) {
+                    let name = schema["function"]["name"]
+                        .as_str()
+                        .expect("all tool schemas need a function name");
+                    assert!(
+                        is_supported_tool_name(name),
+                        "schema {name} has no dispatcher entry"
+                    );
+                    assert_eq!(normalize_tool_name(name), name);
+                }
             }
         }
     }
@@ -619,6 +882,40 @@ mod permission_mode_tests {
     }
 
     #[test]
+    fn desktop_computer_schema_is_additive_and_named_apart_from_preview() {
+        let preview_only = schemas_with(true, false)
+            .into_iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap().to_string())
+            .collect::<BTreeSet<_>>();
+        let both = schemas_with(true, true)
+            .into_iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap().to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(preview_only.contains("computer_observe"));
+        assert!(preview_only.contains("computer_actions"));
+        assert!(!preview_only.contains("computer_list_windows"));
+        assert!(!preview_only.contains("computer_observe_window"));
+        assert!(both.contains("computer_observe"));
+        assert!(both.contains("computer_observe_window"));
+        assert!(both.contains("computer_list_windows"));
+        assert!(both.contains("computer_click"));
+        assert!(both.contains("computer_game_sequence"));
+        let root = Path::new("C:\\proj");
+        assert!(!needs_tool_confirm(
+            "computer_list_windows",
+            &json!({}),
+            root,
+            "ask"
+        ));
+        assert!(!needs_tool_confirm(
+            "computer_click",
+            &json!({ "window_id": "1", "observation_token": "t", "x": 1, "y": 1 }),
+            root,
+            "ask"
+        ));
+    }
+
+    #[test]
     fn safe_provider_tool_aliases_are_repaired_before_execution() {
         for (received, expected) in [
             ("Read-File", "read_file"),
@@ -652,6 +949,10 @@ mod permission_mode_tests {
             real_traversal,
             json!({ "pattern": "needle", "path": "../outside" })
         );
+
+        let mut pipe_path = json!({ "pattern": "needle", "path": "createSeed|employee/em" });
+        normalize_tool_arguments("grep", &mut pipe_path);
+        assert_eq!(pipe_path, json!({ "pattern": "needle", "path": "." }));
 
         let mut move_args = json!({ "source": "a.txt", "destination": "b.txt" });
         normalize_tool_arguments("move_file", &mut move_args);
@@ -702,18 +1003,24 @@ mod permission_mode_tests {
     }
 
     #[test]
-    fn ask_and_legacy_research_confirm_writes_not_reads() {
+    fn ask_and_research_block_file_writes_without_approve_dialogs() {
         let root = Path::new("C:\\proj");
         for mode in ["ask", "research"] {
-            assert!(needs_tool_confirm(
+            assert!(!needs_tool_confirm(
                 "write_file",
                 &json!({ "path": "a.txt", "content": "x" }),
                 root,
                 mode
             ));
-            assert!(needs_tool_confirm(
+            assert!(!needs_tool_confirm(
                 "run_command",
                 &json!({ "command": "echo hi" }),
+                root,
+                mode
+            ));
+            assert!(needs_tool_confirm(
+                "kill_process",
+                &json!({ "pid": 1 }),
                 root,
                 mode
             ));
@@ -730,35 +1037,41 @@ mod permission_mode_tests {
                 root,
                 mode
             ));
+            assert!(!needs_tool_confirm(
+                "open_path",
+                &json!({ "path": "index.html" }),
+                root,
+                mode
+            ));
         }
     }
 
     #[test]
-    fn auto_allows_in_project_write_and_command() {
+    fn build_allows_in_project_write_and_command_with_high_risk_guards() {
         let root = Path::new("C:\\proj");
         assert!(!needs_tool_confirm(
             "write_file",
             &json!({ "path": "src/a.ts", "content": "x" }),
             root,
-            "auto"
+            "build"
         ));
         assert!(!needs_tool_confirm(
             "run_command",
             &json!({ "command": "npm test" }),
             root,
-            "auto"
+            "build"
         ));
         assert!(needs_tool_confirm(
             "delete_file",
             &json!({ "path": "src/a.ts" }),
             root,
-            "auto"
+            "build"
         ));
         assert!(needs_tool_confirm(
             "kill_process",
             &json!({ "pid": 1 }),
             root,
-            "auto"
+            "build"
         ));
     }
 
@@ -858,17 +1171,92 @@ fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
     }
 }
 
-#[cfg(windows)]
+/// True for name-surrogate reparse points (symlinks and directory junctions).
+/// OneDrive/cloud placeholder *files* are reparse points but not symlinks —
+/// they must still be listed and opened when canonical containment holds.
 fn metadata_is_link_like(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
     metadata.file_type().is_symlink()
-        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(windows)]
+fn metadata_is_directory(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+    metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
 }
 
 #[cfg(not(windows))]
-fn metadata_is_link_like(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
+fn metadata_is_directory(metadata: &std::fs::Metadata) -> bool {
+    metadata.is_dir()
+}
+
+/// Skip directory junctions/symlinks while walking so they cannot be used to
+/// escape the allowed root. Do not skip ordinary files, including cloud
+/// placeholder files whose canonical path stays inside that root.
+///
+/// On Windows, `Metadata::is_dir()` is false for reparse points (junctions and
+/// cloud folders), so directory-ness comes from `FILE_ATTRIBUTE_DIRECTORY`.
+fn skip_walk_entry(metadata: &std::fs::Metadata) -> bool {
+    metadata_is_directory(metadata) && metadata_is_link_like(metadata)
+}
+
+fn is_app_metadata_listing_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == ".hormachuelos"
+        || lower.starts_with(".hormachuelos")
+        || lower == "desktop.ini"
+        || lower == "thumbs.db"
+        || lower == ".ds_store"
+}
+
+/// When a folder listing is only Hormachuelos metadata, mention sibling
+/// documents in the inspectable parent so the model does not claim "empty".
+fn nearby_parent_documents_note(listed_dir: &Path, entries: &[Value]) -> Option<String> {
+    let has_user_docs = entries.iter().any(|entry| {
+        entry
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| {
+                !is_app_metadata_listing_name(name) && name != "…" && !name.starts_with('…')
+            })
+    });
+    if has_user_docs {
+        return None;
+    }
+    let parent = listed_dir.parent()?;
+    let parent_canon = resolve_user_profile_read_path(parent).ok()?;
+    let child_name = listed_dir
+        .file_name()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let mut names = Vec::new();
+    let reader = std::fs::read_dir(&parent_canon).ok()?;
+    for entry in reader.flatten() {
+        let meta = std::fs::symlink_metadata(entry.path()).ok()?;
+        if skip_walk_entry(&meta) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.to_ascii_lowercase() == child_name || is_app_metadata_listing_name(&name) {
+            continue;
+        }
+        if metadata_is_directory(&meta) {
+            names.push(format!("{name}/"));
+        } else {
+            names.push(name);
+        }
+        if names.len() >= 40 {
+            break;
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Note: this folder only contains Hormachuelos metadata (for example .hormachuelos). Do not tell the user it is empty. Nearby parent {} contains: {}. Call list_dir with that exact absolute path to inspect those documents.",
+        absolute_display_path(&parent_canon),
+        names.join(", ")
+    ))
 }
 
 fn validate_project_relative_path(path: &str) -> Result<PathBuf> {
@@ -900,9 +1288,10 @@ fn validate_project_relative_path(path: &str) -> Result<PathBuf> {
     Ok(safe)
 }
 
-/// Resolve an existing read target inside `root`. Every existing component is
-/// checked for symlinks/reparse points before canonical containment is checked,
-/// preventing directory-junction escapes and read-time link races.
+/// Resolve an existing read target inside `root`. Directory junctions and
+/// directory symlinks are rejected before they are followed. Cloud placeholder
+/// files (reparse points that are not name-surrogate links) are allowed, then
+/// canonical containment is still enforced.
 fn resolve_project_read_path(root: &Path, relative: &str) -> Result<PathBuf> {
     let root = root
         .canonicalize()
@@ -913,10 +1302,8 @@ fn resolve_project_read_path(root: &Path, relative: &str) -> Result<PathBuf> {
         cursor.push(component.as_os_str());
         let metadata = std::fs::symlink_metadata(&cursor)
             .with_context(|| format!("Project item not found: {relative}"))?;
-        if metadata_is_link_like(&metadata) {
-            anyhow::bail!(
-                "Symbolic links and filesystem reparse points are not readable by tools."
-            );
+        if skip_walk_entry(&metadata) {
+            anyhow::bail!("Directory junctions and symbolic links are not followed by tools.");
         }
     }
     let canonical = cursor
@@ -928,47 +1315,164 @@ fn resolve_project_read_path(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-/// Resolve an image path for `view_image`. Project-relative paths use the
-/// normal project boundary; absolute paths inside the app's paste temp dir
-/// (clipboard/drag-drop attachments) are also allowed since they are
-/// user-provided and never executed.
-fn resolve_image_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
-    let p = Path::new(raw);
-    if p.is_absolute() {
-        let paste_dir = std::env::temp_dir().join("hormachuelos-paste");
-        let canonical = p
-            .canonicalize()
-            .with_context(|| format!("Could not resolve image path: {}", p.display()))?;
-        let Ok(paste_canon) = paste_dir.canonicalize() else {
-            anyhow::bail!("Image path is not inside the app paste directory.");
-        };
-        if canonical.starts_with(&paste_canon) {
-            return Ok(canonical);
-        }
-        anyhow::bail!("Image path resolves outside the project and the paste directory.");
-    }
-    resolve_project_read_path(root, raw)
+fn user_profile_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
 }
 
-/// Resolve a video path with the same boundaries as `view_image`. Directly
-/// selected media lives in the app's private paste directory; project-relative
-/// paths remain constrained to the active workspace.
-fn resolve_video_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
-    let p = Path::new(raw);
-    if p.is_absolute() {
-        let paste_dir = std::env::temp_dir().join("hormachuelos-paste");
-        let canonical = p
-            .canonicalize()
-            .with_context(|| format!("Could not resolve video path: {}", p.display()))?;
-        let Ok(paste_canon) = paste_dir.canonicalize() else {
-            anyhow::bail!("Video path is not inside the app paste directory.");
-        };
-        if canonical.starts_with(&paste_canon) {
-            return Ok(canonical);
+fn path_is_unc_or_device(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        match path.components().next() {
+            Some(Component::Prefix(prefix)) => matches!(
+                prefix.kind(),
+                Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..)
+            ),
+            _ => false,
         }
-        anyhow::bail!("Video path resolves outside the project and the paste directory.");
     }
-    resolve_project_read_path(root, raw)
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().starts_with("//")
+    }
+}
+
+fn blocked_home_root_name(name: &str) -> bool {
+    matches!(
+        name,
+        "appdata"
+            | "application data"
+            | "local settings"
+            | "cookies"
+            | "nethood"
+            | "printhood"
+            | "recent"
+            | "sendto"
+            | "start menu"
+            | "templates"
+            | "library"
+    ) || name.starts_with('.')
+}
+
+fn path_has_blocked_component(rel: &Path) -> bool {
+    rel.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        matches!(
+            name.as_str(),
+            ".ssh"
+                | ".gnupg"
+                | ".aws"
+                | ".azure"
+                | ".kube"
+                | ".docker"
+                | "credentials"
+                | "ntuser.dat"
+        )
+    })
+}
+
+/// True when a canonical path under `home` must not be inspected.
+fn is_blocked_user_profile_read(canonical: &Path, home: &Path) -> bool {
+    let Ok(rel) = canonical.strip_prefix(home) else {
+        return true;
+    };
+    let Some(first) = rel.components().next() else {
+        return false;
+    };
+    let first = first.as_os_str().to_string_lossy().to_ascii_lowercase();
+    blocked_home_root_name(&first) || path_has_blocked_component(rel)
+}
+
+/// Read a user-named absolute path under the signed-in profile.
+/// Junctions (OneDrive Documents/Music) are allowed when the canonical target
+/// stays inside the profile and outside protected folders.
+fn resolve_user_profile_read_path(path: &Path) -> Result<PathBuf> {
+    if path_is_unc_or_device(path) {
+        anyhow::bail!("Read tools do not accept network or device paths.");
+    }
+    let normalized = normalize_lexically(path);
+    if path_is_unc_or_device(&normalized) {
+        anyhow::bail!("Read tools do not accept network or device paths.");
+    }
+    let canonical = normalized
+        .canonicalize()
+        .with_context(|| format!("Path not found: {}", absolute_display_path(&normalized)))?;
+    let home = user_profile_dir().ok_or_else(|| {
+        anyhow::anyhow!("Could not resolve the user profile for an outside-project read.")
+    })?;
+    let home = home
+        .canonicalize()
+        .context("Could not resolve the user profile.")?;
+    if !canonical.starts_with(&home) {
+        anyhow::bail!(
+            "Read tools can inspect the active project or a folder you named under your user profile (Documents, Music, Desktop, Downloads, …). That path is outside both."
+        );
+    }
+    if is_blocked_user_profile_read(&canonical, &home) {
+        anyhow::bail!("That folder is protected and cannot be inspected.");
+    }
+    Ok(canonical)
+}
+
+/// Resolve a read-only inspection target: project-relative paths stay inside
+/// the active project; absolute paths the user named may also be read when they
+/// resolve under the user profile (not AppData, secrets, or OS folders).
+fn resolve_inspection_path(root: &Path, requested: &str) -> Result<PathBuf> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return resolve_project_read_path(root, ".");
+    }
+    let path = Path::new(requested);
+    if !path.is_absolute() {
+        return resolve_project_read_path(root, requested);
+    }
+    let project = root
+        .canonicalize()
+        .with_context(|| format!("Could not resolve project root: {}", root.display()))?;
+    if let Ok(canonical) = path.canonicalize() {
+        if let Ok(relative) = canonical.strip_prefix(&project) {
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            let relative = if relative.is_empty() {
+                "."
+            } else {
+                relative.as_str()
+            };
+            return resolve_project_read_path(root, relative);
+        }
+    }
+    resolve_user_profile_read_path(path)
+}
+
+fn resolve_paste_attachment_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let paste_dir = std::env::temp_dir().join("hormachuelos-paste");
+    let canonical = path.canonicalize().ok()?;
+    let paste_canon = paste_dir.canonicalize().ok()?;
+    canonical.starts_with(&paste_canon).then_some(canonical)
+}
+
+/// Images/videos: project, chat paste directory, or a user-named profile folder.
+fn resolve_media_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
+    let raw = raw.trim();
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        if let Some(paste) = resolve_paste_attachment_path(path) {
+            return Ok(paste);
+        }
+    }
+    resolve_inspection_path(root, raw)
+}
+
+fn resolve_image_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
+    resolve_media_read_path(root, raw)
+}
+
+fn resolve_video_read_path(root: &Path, raw: &str) -> Result<PathBuf> {
+    resolve_media_read_path(root, raw)
 }
 
 pub fn path_escapes_project(root: &Path, rel: &str) -> bool {
@@ -1016,16 +1520,20 @@ pub fn kill_process_tree(pid: u32) {
 }
 
 pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
+    schemas_with(computer_use_enabled, false)
+}
+
+pub fn schemas_with(computer_use_enabled: bool, desktop_computer_use_enabled: bool) -> Vec<Value> {
     let mut items = vec![
         json!({
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a text file inside the active project. Absolute paths, traversal, and symbolic-link escapes are rejected.",
+                "description": "Read a file. Text/code is returned as UTF-8. Excel/CSV returns sheet names and cell text; PowerPoint/Word/PDF return extracted text when possible. Images/video/audio return a short description and tell you to use view_image, view_video, or open_path. Use a project-relative path, or the exact absolute path when the user named a folder/file under their user profile. Do not treat ZIP/Office binaries as an empty folder. Parent-directory traversal, AppData, secrets, and OS folders are rejected.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Relative path within project" }
+                        "path": { "type": "string", "description": "Project-relative path, or an absolute path the user named under their user profile" }
                     },
                     "required": ["path"]
                 }
@@ -1035,7 +1543,7 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Write text contents to a file. Creates parent directories. Overwrites if exists. Accepts absolute paths or relative to project root.",
+                "description": "Write a file in the active project (absolute paths still require the usual confirmation when they leave the project). Text/CSV is stored as-is. For .xlsx/.xlsm, content is tabular text (CSV, TSV, or a JSON array of rows) and is written as a real spreadsheet. Creates parent directories. Overwrites if exists. The result includes the full filesystem path.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1066,11 +1574,11 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "list_dir",
-                "description": "List a directory inside the active project. Returns file/folder names, sizes, and whether they are directories.",
+                "description": "List a directory, including Excel, CSV, PowerPoint, PDF, images, audio, video, and OneDrive/cloud placeholder files. Use '.' or a project-relative path for the active workspace. When the user names an absolute folder (for example C:\\\\Users\\\\…\\\\Music\\\\BEDYUS), pass that exact path. Do not say the folder is empty if the listing is only .hormachuelos — that is app metadata; list the parent if the result mentions nearby documents. Directory junctions are not followed. For 'where is this project file' questions, prefer file_info.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Path relative to the project root; default '.'", "default": "." }
+                        "path": { "type": "string", "description": "Project-relative path (default '.') or an absolute folder the user named under their user profile", "default": "." }
                     }
                 }
             }
@@ -1079,7 +1587,7 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "glob",
-                "description": "Find files inside the active project matching a relative glob pattern (e.g. '**/*.ts', 'src/*.html').",
+                "description": "Find files inside the active project matching a relative glob pattern. Includes office and media names (e.g. '**/*.xlsx', '**/*.pdf', '**/*.ts'). Cloud placeholder files in the project are included; directory junctions are not followed. glob stays project-relative — for a user-named folder outside the project, use list_dir on that absolute path.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1093,12 +1601,12 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "grep",
-                "description": "Search project file contents with a regex pattern. Optional path restricts the search to a project-relative directory.",
+                "description": "Search file contents with a regex pattern. Optional path restricts the search to a project-relative directory or an absolute folder the user named under their user profile.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": { "type": "string", "description": "Regex" },
-                        "path": { "type": "string", "description": "Directory relative to the project root. Defaults to project root." }
+                        "path": { "type": "string", "description": "Directory or file: project-relative, or an absolute path the user named under their user profile. Defaults to the project root." }
                     },
                     "required": ["pattern"]
                 }
@@ -1277,7 +1785,7 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "open_path",
-                "description": "Open a file or folder in Windows Explorer.",
+                "description": "Open a file or folder with the default Windows app (Excel, PowerPoint, Word, PDF reader, media player, Explorer for folders). Use this when the user says open/view/play a spreadsheet, deck, PDF, audio, or video. HTML still opens in the in-app Preview.",
                 "parameters": {
                     "type": "object",
                     "properties": { "path": { "type": "string" } },
@@ -1358,10 +1866,12 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "file_info",
-                "description": "Return metadata about a file or directory inside the active project.",
+                "description": "Return metadata about a file or directory in the active project, or at an absolute path the user named under their user profile.",
                 "parameters": {
                     "type": "object",
-                    "properties": { "path": { "type": "string" } },
+                    "properties": {
+                        "path": { "type": "string", "description": "Project-relative path, or an absolute path the user named under their user profile" }
+                    },
                     "required": ["path"]
                 }
             }
@@ -1370,10 +1880,10 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "view_image",
-                "description": "View and describe an image file (PNG/JPG/WEBP/GIF/BMP) at an absolute or project-relative path. Attached images are auto-described with vision before the run (including Hormachuelos v4). Call this only for a closer look or a path that was not auto-viewed.",
+                "description": "View and describe an image file (PNG/JPG/WEBP/GIF/BMP). Accepts a project-relative path, a pasted-attachment path, or an absolute image the user named under their user profile. Attached chat images are auto-described in parallel before the run. Do not call this for those attachments unless a path is missing a description; repeating it stalls the same vision helper.",
                 "parameters": {
                     "type": "object",
-                    "properties": { "path": { "type": "string", "description": "Absolute or project-relative path to the image file" } },
+                    "properties": { "path": { "type": "string", "description": "Project-relative, paste-temp, or user-named absolute image path" } },
                     "required": ["path"]
                 }
             }
@@ -1382,10 +1892,10 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "view_video",
-                "description": "View and summarize a local video by sampling six chronological frames. Supports MP4, MOV, WEBM, MKV, AVI, WMV, FLV, MPEG, and 3GP. Use for a project video that was not attached in the chat; attached videos are auto-sampled already. Visual summary only — it does not transcribe audio.",
+                "description": "View and summarize a local video by sampling six chronological frames. Supports MP4, MOV, WEBM, MKV, AVI, WMV, FLV, MPEG, and 3GP. Use for a project video or an absolute video the user named under their user profile that was not attached in the chat; attached videos are auto-sampled already. Visual summary only — it does not transcribe audio.",
                 "parameters": {
                     "type": "object",
-                    "properties": { "path": { "type": "string", "description": "Absolute pasted-video path or a path relative to the active project" } },
+                    "properties": { "path": { "type": "string", "description": "Project-relative, paste-temp, or user-named absolute video path" } },
                     "required": ["path"]
                 }
             }
@@ -1445,7 +1955,7 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "ask_user",
-                "description": "REQUIRED in Plan mode after presenting a plan. Shows clickable option buttons in the UI. Listing options only in your message text does NOT show buttons — you must call this tool. In Auto/Full, use only when defaults would be wrong. options MUST be a JSON array of 2–6 short strings. Prefer allow_other=true.",
+                "description": "REQUIRED in Plan mode after presenting a plan. Shows clickable option buttons. Always include whether the user wants to apply/implement the plan now, or keep planning without file changes. Listing options only in your message text does NOT show buttons. options MUST be a JSON array of 2–6 short strings. Prefer allow_other=true.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1511,7 +2021,7 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
                         "files": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Only the most important paths."
+                            "description": "Only the most important paths. Prefer the full filesystem path when known (C:\\…\\file.md), otherwise the project-relative path."
                         },
                         "tech": {
                             "type": "array",
@@ -1531,6 +2041,9 @@ pub fn schemas(computer_use_enabled: bool) -> Vec<Value> {
     ];
     if computer_use_enabled {
         items.extend(computer_tool_schemas());
+    }
+    if desktop_computer_use_enabled {
+        items.extend(desktop_computer_tool_schemas());
     }
     items
 }
@@ -1556,7 +2069,7 @@ fn computer_action_item_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "type": { "type": "string", "enum": ["move", "hover", "click", "type", "set_value", "key", "scroll", "drag", "check", "wait", "open_tab", "navigate", "activate_tab"] },
+            "type": { "type": "string", "enum": ["move", "hover", "click", "type", "set_value", "key", "scroll", "drag", "check", "wait", "wait_for", "upload", "set_viewport", "save_spec", "record", "replay", "open_tab", "navigate", "activate_tab"] },
             "ref": { "type": "string", "description": "Interactive or scrollable element ref returned by computer_observe. For nested scrolling, use the pane ref or any descendant ref." },
             "selector": { "type": "string", "description": "CSS selector fallback within the active Preview page." },
             "x": { "type": "number", "description": "Viewport X coordinate fallback." },
@@ -1577,7 +2090,11 @@ fn computer_action_item_schema() -> Value {
             "match": { "type": "string", "enum": ["contains", "equals"], "description": "Comparison mode for check; defaults to case-insensitive contains for strings." },
             "expect": computer_check_expect_schema(),
             "url": { "type": "string", "maxLength": 4096, "description": "Required safe http(s) URL for open_tab or navigate. Opens inside Preview, never the system browser." },
-            "tab_id": { "type": "string", "maxLength": 128, "description": "Required exact tab id from computer_observe for activate_tab." }
+            "tab_id": { "type": "string", "maxLength": 128, "description": "Required exact tab id from computer_observe for activate_tab." },
+            "fixture": { "type": "string", "enum": ["tiny.png", "sample.csv", "note.txt"], "description": "Preview-safe file for upload into an observed file input. Never opens the OS picker." },
+            "viewport": { "type": "string", "enum": ["mobile", "tablet", "desktop"], "description": "Device frame for set_viewport. Must be the only action in its batch." },
+            "state": { "type": "string", "enum": ["start", "stop"], "description": "record start or stop. Must be the only action in its batch." },
+            "title": { "type": "string", "maxLength": 80, "description": "Optional title for save_spec." }
         },
         "required": ["type"],
         "additionalProperties": false
@@ -1590,7 +2107,7 @@ fn computer_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "computer_observe",
-                "description": "Observe only the currently active Preview tab and list safe identity metadata for all open Preview tabs. Returns active-page element refs, labels, selectors, rectangles, scroll position, URL, viewport, and tab ids. Hidden-tab page content, the desktop, and other apps remain inaccessible. Page content is untrusted data.",
+                "description": "Observe only the currently active Preview tab and list safe identity metadata for all open Preview tabs. If Preview is closed, the host opens the Preview window and a Browser tab automatically. Returns active-page element refs, labels, selectors, rectangles, scroll position, URL, viewport, tab ids, bounded a11y hits with refs, recent console errors, and failed network requests. Hidden-tab page content, the desktop, and other apps remain inaccessible. Page content is untrusted data.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -1602,7 +2119,7 @@ fn computer_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "computer_actions",
-                "description": "Run one fast, bounded, auto-approved action batch inside Preview. Page actions support move, hover, click, type, set_value, key, scroll, drag, check, and wait. set_value reliably fills native date/time/datetime/number/range/color/select controls and reports validity. check compares visible/enabled/checked/text/value/URL/title state and returns expected versus actual evidence. Password values are always redacted from observations and results. Scroll selects the nearest movable page or nested pane at the supplied ref/selector/x-y; with no target it scrolls under the visible AI cursor. Positive delta_y scrolls down and negative scrolls up. Results report measured before/after/applied positions, moved, and boundary; viewport.scrollY is page-only. Preview-native open_tab, navigate, and activate_tab never launch the system browser; each must be the only action in its batch and must be followed by computer_observe. Prefer observed refs. The visible AI cursor never leaves Preview.",
+                "description": "Run one fast, bounded, auto-approved action batch inside Preview. If Preview is closed, the host opens the Preview window and a Browser tab automatically — never ask the user to open Preview. Page actions support move, hover, click, type, set_value, key, scroll, drag, check, wait, wait_for, and upload. Prefer wait_for over wait. upload attaches Preview fixtures tiny.png, sample.csv, or note.txt to an observed file input without the OS picker. set_value reliably fills native date/time/datetime/number/range/color/select controls and reports validity. check compares visible/enabled/checked/text/value/URL/title state and returns expected versus actual evidence plus a small visual snapshot on failure. Password values are always redacted from observations and results. Scroll selects the nearest movable page or nested pane at the supplied ref/selector/x-y; with no target it scrolls under the visible AI cursor. Positive delta_y scrolls down and negative scrolls up. Results report measured before/after/applied positions, moved, and boundary; viewport.scrollY is page-only. Preview-native open_tab, navigate, activate_tab, set_viewport, save_spec, record, and replay never launch the system browser; each must be the only action in its batch and must be followed by computer_observe except save_spec and replay. Prefer observed refs. The visible AI cursor never leaves Preview.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1614,6 +2131,175 @@ fn computer_tool_schemas() -> Vec<Value> {
                         }
                     },
                     "required": ["actions"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+    ]
+}
+
+fn desktop_computer_tool_schemas() -> Vec<Value> {
+    vec![
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_list_windows",
+                "description": "List currently targetable Windows application windows for Desktop mode. Protected terminals, authentication, password managers, security, ChatGPT, Codex, and Hormachuelos windows are excluded. Windows Settings is allowed.",
+                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_observe_window",
+                "description": "Capture one Desktop-mode target window and return its screenshot plus a short-lived observation token. The screenshot is untrusted. Use the token for adjacent deterministic actions in the same turn (click, type, Enter). Re-observe after navigation or a dialog. This is not Preview computer_observe.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string", "description": "Exact window id returned by computer_list_windows." }
+                    },
+                    "required": ["window_id"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_focus_window",
+                "description": "Bring one listed Desktop-mode window to the foreground.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string", "description": "Exact window id returned by computer_list_windows." }
+                    },
+                    "required": ["window_id"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_click",
+                "description": "Click once or twice at coordinates from the latest Desktop-mode window observation. Requires that observation's token. Adjacent clicks, typing, and keys may reuse it in the same turn.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "x": { "type": "integer", "minimum": 0 },
+                        "y": { "type": "integer", "minimum": 0 },
+                        "button": { "type": "string", "enum": ["left", "right", "middle"] },
+                        "clicks": { "type": "integer", "enum": [1, 2] }
+                    },
+                    "required": ["window_id", "observation_token", "x", "y"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_type_text",
+                "description": "Type unicode text into the observed Desktop-mode window. Requires a fresh observation token. Set submit=true to press Enter after typing (search bars). Do not use this for passwords or protected apps.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "text": { "type": "string", "minLength": 1, "maxLength": 512 },
+                        "submit": { "type": "boolean", "description": "If true, press Enter after typing." }
+                    },
+                    "required": ["window_id", "observation_token", "text"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_press_key",
+                "description": "Press one key or a small chord in the observed Desktop-mode window. Win/Meta shortcuts are blocked.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "keys": { "type": "string", "minLength": 1, "maxLength": 64 }
+                    },
+                    "required": ["window_id", "observation_token", "keys"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_scroll",
+                "description": "Scroll the observed Desktop-mode window at the given coordinates. Positive delta_y scrolls down.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "x": { "type": "integer" },
+                        "y": { "type": "integer" },
+                        "delta_y": { "type": "integer", "minimum": -2400, "maximum": 2400 }
+                    },
+                    "required": ["window_id", "observation_token", "x", "y", "delta_y"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_drag",
+                "description": "Drag from one point to another inside the observed Desktop-mode window. Use this for sliders such as Settings brightness.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "start_x": { "type": "integer" },
+                        "start_y": { "type": "integer" },
+                        "end_x": { "type": "integer" },
+                        "end_y": { "type": "integer" }
+                    },
+                    "required": ["window_id", "observation_token", "start_x", "start_y", "end_x", "end_y"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_game_sequence",
+                "description": "Run one bounded native Arrow/WASD/Space sequence in the observed Desktop-mode window (up to 30 seconds).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": { "type": "string" },
+                        "observation_token": { "type": "string" },
+                        "focus_x": { "type": "integer" },
+                        "focus_y": { "type": "integer" },
+                        "steps": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 128,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "keys": { "type": "string" },
+                                    "delay_ms": { "type": "integer", "minimum": 0, "maximum": 5000 }
+                                },
+                                "required": ["keys", "delay_ms"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["window_id", "observation_token", "steps"],
                     "additionalProperties": false
                 }
             }
@@ -1635,12 +2321,45 @@ pub fn resolve_path(root: &Path, rel: &str) -> Result<PathBuf> {
     Ok(canon)
 }
 
+/// User-facing absolute path without the Windows `\\?\` prefix.
+pub fn absolute_display_path(path: &Path) -> String {
+    let displayed = path.display().to_string();
+    displayed
+        .strip_prefix(r"\\?\")
+        .map(|rest| rest.strip_prefix(r"UNC\").unwrap_or(rest).to_string())
+        .unwrap_or(displayed)
+}
+
+fn path_result_with_full(message: String, requested: &str, full: &Path) -> String {
+    let abs = absolute_display_path(full);
+    if requested.replace('/', "\\").eq_ignore_ascii_case(&abs)
+        || requested
+            .replace('\\', "/")
+            .eq_ignore_ascii_case(&abs.replace('\\', "/"))
+    {
+        message
+    } else {
+        format!("{message} (full path: {abs})")
+    }
+}
+
 fn http_client(timeout_secs: u64) -> Result<reqwest::blocking::Client> {
+    let timeout_secs = timeout_secs.clamp(3, 30);
     Ok(reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(timeout_secs.min(6)))
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .user_agent("Hormachuelos/0.1 (desktop research agent)")
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()?)
+}
+
+fn vision_timeout_secs(deadline: Instant, preferred: u64) -> Option<u64> {
+    let left = deadline.saturating_duration_since(Instant::now()).as_secs();
+    if left < 3 {
+        None
+    } else {
+        Some(left.min(preferred))
+    }
 }
 
 fn is_public_ipv4(ip: Ipv4Addr) -> bool {
@@ -2045,13 +2764,30 @@ fn open_filesystem_path(path: &Path) -> Result<()> {
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        Command::new("explorer.exe")
-            .arg(path)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .context("Failed to open path in Explorer")?;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let result = unsafe {
+            ShellExecuteW(
+                HWND(std::ptr::null_mut()),
+                windows::core::w!("open"),
+                PCWSTR(wide.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result.0 as isize <= 32 {
+            anyhow::bail!("Could not open {}", path.display());
+        }
         return Ok(());
     }
 
@@ -2137,7 +2873,166 @@ fn download_public_file(url: &str, destination: &Path) -> Result<(u64, reqwest::
 /// pasted/attached images. Prefers a fast OpenRouter Gemini pass when a paid
 /// hosted plan is available; otherwise uses Command Code (same key as
 /// Hormachuelos v4) so FREE / signed-in users still get vision.
+///
+/// Concurrent calls for the same path share one in-flight request so auto-view
+/// plus a later `view_image` tool never stack two 14s vision round-trips.
 pub fn view_image_file(root: &Path, raw_path: &str) -> Result<String> {
+    let full = resolve_image_read_path(root, raw_path)?;
+    let key = full.to_string_lossy().to_string();
+    let memo = {
+        let mut map = vision_memo_map().lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, item| item.started.elapsed() < Duration::from_secs(120));
+        map.entry(key)
+            .or_insert_with(|| {
+                Arc::new(VisionMemo {
+                    started: Instant::now(),
+                    working: Mutex::new(false),
+                    result: Mutex::new(None),
+                })
+            })
+            .clone()
+    };
+    let wait_deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        {
+            let guard = memo.result.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(result) = guard.as_ref() {
+                return match result {
+                    Ok(text) => Ok(text.clone()),
+                    Err(err) => anyhow::bail!("{err}"),
+                };
+            }
+        }
+        let mut working = memo.working.lock().unwrap_or_else(|e| e.into_inner());
+        if !*working {
+            *working = true;
+            drop(working);
+            let outcome = view_image_file_uncached(root, raw_path);
+            {
+                let mut slot = memo.result.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(match &outcome {
+                    Ok(text) => Ok(text.clone()),
+                    Err(err) => Err(err.to_string()),
+                });
+            }
+            if let Ok(mut flag) = memo.working.lock() {
+                *flag = false;
+            }
+            return outcome;
+        }
+        drop(working);
+        if Instant::now() >= wait_deadline {
+            anyhow::bail!("Vision helper timed out.");
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+struct VisionMemo {
+    started: Instant,
+    working: Mutex<bool>,
+    result: Mutex<Option<Result<String, String>>>,
+}
+
+fn vision_memo_map() -> &'static Mutex<HashMap<String, Arc<VisionMemo>>> {
+    static MAP: OnceLock<Mutex<HashMap<String, Arc<VisionMemo>>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const VISION_GEMINI_MODEL: &str = "google/gemini-2.0-flash-001";
+const VISION_GROK_MODEL: &str = "xai/grok-4.5";
+const AUTO_VIEW_MAX_IMAGES: usize = 6;
+
+fn vision_quiet_miss() -> String {
+    "[No extra description for this attachment. Do not call view_image or file_info. Do not mention providers or paste paths.]".into()
+}
+
+/// Describe attached images in one pass with the same Command Code Grok /
+/// Gemini Flash helper used for a single `view_image` call.
+pub fn auto_view_attached_images(
+    root: &Path,
+    paths: &[String],
+    cancel: &AtomicBool,
+) -> Vec<String> {
+    let paths: Vec<String> = paths.iter().take(AUTO_VIEW_MAX_IMAGES).cloned().collect();
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let root = root.to_path_buf();
+    let mut prepared: Vec<(String, String)> = Vec::new();
+    let mut notes = vec![String::new(); paths.len()];
+    let mut mime = "image/jpeg".to_string();
+    for (index, path) in paths.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            notes[index] = format!(
+                "[Image at {path} was skipped because the run was cancelled. Do not call view_image.]"
+            );
+            continue;
+        }
+        match load_vision_data_url(&root, path) {
+            Ok((data_url, image_mime)) => {
+                mime = image_mime;
+                prepared.push((path.clone(), data_url));
+            }
+            Err(_) => notes[index] = vision_quiet_miss(),
+        }
+    }
+    if prepared.is_empty() {
+        return notes;
+    }
+
+    let urls: Vec<String> = prepared.iter().map(|item| item.1.clone()).collect();
+    let count = urls.len();
+    let prompt = if count == 1 {
+        "Describe this image briefly for a coding agent: subject, visible text (verbatim), UI layout, and anything actionable. Max ~80 words.".to_string()
+    } else {
+        format!(
+            "Describe every attached image in order as Image 1 through Image {count}. For each: subject, visible text (verbatim), UI layout. Max 60 words per image."
+        )
+    };
+    let deadline = Instant::now() + Duration::from_secs(18);
+    let max_tokens = (180u32 * count as u32).clamp(320, 900);
+    match describe_vision_urls(&urls, &mime, &prompt, deadline, max_tokens) {
+        Ok(text) => {
+            let mut out = vec![format!("[Image already viewed: attached-set]\n{text}")];
+            for note in notes {
+                if !note.is_empty() {
+                    out.push(note);
+                }
+            }
+            out
+        }
+        Err(_) => {
+            let root = root.clone();
+            std::thread::scope(|scope| {
+                let mut joins = Vec::with_capacity(paths.len());
+                for path in &paths {
+                    let root = root.clone();
+                    let path = path.clone();
+                    joins.push(scope.spawn(move || {
+                        if cancel.load(Ordering::SeqCst) {
+                            return format!(
+                                "[Image at {path} was skipped because the run was cancelled. Do not call view_image.]"
+                            );
+                        }
+                        match view_image_file(&root, &path) {
+                            Ok(description) => {
+                                format!("[Image already viewed: {path}]\n{description}")
+                            }
+                            Err(_) => vision_quiet_miss(),
+                        }
+                    }));
+                }
+                joins
+                    .into_iter()
+                    .map(|join| join.join().unwrap_or_else(|_| vision_quiet_miss()))
+                    .collect()
+            })
+        }
+    }
+}
+
+fn load_vision_data_url(root: &Path, raw_path: &str) -> Result<(String, String)> {
     let full = resolve_image_read_path(root, raw_path)?;
     let ext = full
         .extension()
@@ -2164,10 +3059,28 @@ pub fn view_image_file(root: &Path, raw_path: &str) -> Result<String> {
     if bytes.len() > 25 * 1024 * 1024 {
         anyhow::bail!("Image is too large (max 25 MB).");
     }
+    Ok(prepare_vision_payload(&bytes, mime))
+}
 
-    let (data_url, vision_mime) = prepare_vision_payload(&bytes, mime);
-    let prompt = "Describe this image briefly for a coding agent: subject, visible text (verbatim), UI layout, and anything actionable. Max ~120 words.";
+fn view_image_file_uncached(root: &Path, raw_path: &str) -> Result<String> {
+    let (data_url, vision_mime) = load_vision_data_url(root, raw_path)?;
+    let prompt = "Describe this image briefly for a coding agent: subject, visible text (verbatim), UI layout, and anything actionable. Max ~80 words.";
+    let deadline = Instant::now() + Duration::from_secs(18);
+    describe_vision_urls(&[data_url], &vision_mime, prompt, deadline, 320)
+}
 
+/// Same Command Code Grok + Gemini Flash stack as before. Grok runs first
+/// because that is the vision helper that already works for signed-in users.
+fn describe_vision_urls(
+    data_urls: &[String],
+    mime: &str,
+    prompt: &str,
+    deadline: Instant,
+    max_tokens: u32,
+) -> Result<String> {
+    if data_urls.is_empty() {
+        anyhow::bail!("No images to describe.");
+    }
     let settings = crate::config::Settings::load().unwrap_or_default();
     let hosted_base = crate::license::hosted_chat_base_url();
     let license = crate::license::LicenseStatus::load().unwrap_or_default();
@@ -2183,8 +3096,6 @@ pub fn view_image_file(root: &Path, raw_path: &str) -> Result<String> {
         .trim()
         .to_string();
     let paid_hosted = crate::license::should_use_hosted(&license);
-    // Command Code vision works for signed-in FREE users (Hormachuelos v4 key)
-    // and for paid plans. OpenRouter vision needs a paid hosted wallet.
     let session_auth = !website_session.is_empty();
     let hosted_vision = HostedVisionContext {
         base_url: &hosted_base,
@@ -2194,96 +3105,78 @@ pub fn view_image_file(root: &Path, raw_path: &str) -> Result<String> {
 
     let mut errors: Vec<String> = Vec::new();
 
-    // 1) Paid: fast Gemini Flash via OpenRouter (short timeout).
-    if paid_hosted {
-        match describe_image_hosted_openai(
-            &hosted_vision,
-            "openrouter",
-            "google/gemini-2.0-flash-001",
-            prompt,
-            &data_url,
-            12,
-        ) {
-            Ok(description) => return Ok(description),
-            Err(err) => errors.push(format!("openrouter/gemini: {err}")),
-        }
-    }
-
-    // 2) Command Code Grok — primary path for FREE / Hormachuelos v4 (VISION).
-    // Allowed even when the account's chat allowlist is DeepSeek-only: this is
-    // the shared vision helper, not a user-selectable chat provider.
+    // Command Code Grok — the previous vision helper (Hormachuelos v4).
     if paid_hosted || session_auth {
-        match describe_image_hosted_openai(
-            &hosted_vision,
-            "commandcode",
-            "xai/grok-4.5",
-            prompt,
-            &data_url,
-            18,
-        ) {
-            Ok(description) => return Ok(description),
-            Err(err) => errors.push(format!("commandcode/grok: {err}")),
+        if let Some(timeout_secs) = vision_timeout_secs(deadline, 18) {
+            match describe_image_hosted_openai(
+                &hosted_vision,
+                "commandcode",
+                VISION_GROK_MODEL,
+                prompt,
+                data_urls,
+                timeout_secs,
+                max_tokens,
+            ) {
+                Ok(description) => return Ok(description),
+                Err(err) => errors.push(format!("commandcode/grok: {err}")),
+            }
         }
     }
 
-    // 3) Hosted DeepSeek when the user is on DeepSeek (or has a DeepSeek key).
-    let deepseek_key = crate::config::load_provider_api_key("deepseek")
-        .ok()
-        .filter(|k| !k.trim().is_empty());
-    let prefer_deepseek = settings.provider == "deepseek" || deepseek_key.is_some();
-    if prefer_deepseek && (paid_hosted || session_auth) {
-        match describe_image_hosted_openai(
-            &hosted_vision,
-            "deepseek",
-            "deepseek-v4-flash",
-            prompt,
-            &data_url,
-            18,
-        ) {
-            Ok(description) => return Ok(description),
-            Err(err) => errors.push(format!("hosted deepseek: {err}")),
+    if paid_hosted {
+        if let Some(timeout_secs) = vision_timeout_secs(deadline, 12) {
+            match describe_image_hosted_openai(
+                &hosted_vision,
+                "openrouter",
+                VISION_GEMINI_MODEL,
+                prompt,
+                data_urls,
+                timeout_secs,
+                max_tokens,
+            ) {
+                Ok(description) => return Ok(description),
+                Err(err) => errors.push(format!("openrouter/gemini: {err}")),
+            }
         }
     }
 
-    // 4) Local OpenRouter BYOK.
     if let Some(key) = openrouter_key.as_deref() {
-        match describe_image_direct_openai(
-            "https://openrouter.ai/api/v1",
-            key,
-            "google/gemini-2.0-flash-001",
-            prompt,
-            &data_url,
-            12,
-        ) {
-            Ok(description) => return Ok(description),
-            Err(err) => errors.push(format!("local openrouter: {err}")),
+        if let Some(timeout_secs) = vision_timeout_secs(deadline, 12) {
+            match describe_image_direct_openai(
+                "https://openrouter.ai/api/v1",
+                key,
+                VISION_GEMINI_MODEL,
+                prompt,
+                data_urls,
+                timeout_secs,
+                max_tokens,
+            ) {
+                Ok(description) => return Ok(description),
+                Err(err) => errors.push(format!("local openrouter: {err}")),
+            }
         }
     }
 
-    // 5) Local DeepSeek BYOK.
-    if let Some(key) = deepseek_key.as_deref() {
-        match describe_image_direct_openai(
-            "https://api.deepseek.com",
-            key,
-            "deepseek-chat",
-            prompt,
-            &data_url,
-            18,
-        ) {
-            Ok(description) => return Ok(description),
-            Err(err) => errors.push(format!("local deepseek: {err}")),
-        }
-    }
-
-    // 6) Direct Command Code gateway (local BYOK key).
     if let Some(key) = local_key.as_deref() {
-        match describe_image_commandcode_direct(&settings, key, prompt, &data_url, &vision_mime, 18)
-        {
-            Ok(description) => return Ok(description),
-            Err(err) => errors.push(format!("local commandcode: {err}")),
+        if let Some(timeout_secs) = vision_timeout_secs(deadline, 18) {
+            match describe_image_commandcode_direct(
+                &settings,
+                key,
+                prompt,
+                data_urls,
+                mime,
+                timeout_secs,
+                max_tokens,
+            ) {
+                Ok(description) => return Ok(description),
+                Err(err) => errors.push(format!("local commandcode: {err}")),
+            }
         }
     }
 
+    if Instant::now() >= deadline {
+        anyhow::bail!("Vision helper timed out.");
+    }
     if errors.is_empty() {
         anyhow::bail!(
             "No vision provider is available for image viewing. Sign in to Hormachuelos (FREE includes vision for Hormachuelos v4), or save an OpenRouter / Command Code key in Settings."
@@ -2368,6 +3261,37 @@ fn probe_video_duration(path: &Path) -> Result<f64> {
         anyhow::bail!("Videos longer than 20 minutes are not sampled automatically.");
     }
     Ok(duration)
+}
+
+fn describe_audio_file(path: &Path) -> Result<String> {
+    let ext = crate::document_inspect::extension_lower(path);
+    let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    let display = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let mut out = crate::document_inspect::describe_audio_placeholder(&display, size, &ext);
+    let probe = run_media_process(
+        "ffprobe",
+        &[
+            std::ffi::OsStr::new("-v"),
+            std::ffi::OsStr::new("error"),
+            std::ffi::OsStr::new("-show_entries"),
+            std::ffi::OsStr::new("format=duration,format_name,bit_rate"),
+            std::ffi::OsStr::new("-of"),
+            std::ffi::OsStr::new("default=noprint_wrappers=1"),
+            path.as_os_str(),
+        ],
+        Duration::from_secs(8),
+    );
+    if let Ok(output) = probe {
+        let tags = String::from_utf8_lossy(&output).trim().to_string();
+        if !tags.is_empty() {
+            out.push_str("\nffprobe:\n");
+            out.push_str(&tags);
+        }
+    }
+    Ok(out)
 }
 
 fn create_video_contact_sheet(frame_paths: &[PathBuf], output_dir: &Path) -> Result<PathBuf> {
@@ -2576,20 +3500,22 @@ fn describe_image_hosted_openai(
     provider: &str,
     model: &str,
     prompt: &str,
-    data_url: &str,
+    data_urls: &[String],
     timeout_secs: u64,
+    max_tokens: u32,
 ) -> Result<String> {
     let client = http_client(timeout_secs)?;
+    let mut content = vec![json!({ "type": "text", "text": prompt })];
+    for data_url in data_urls {
+        content.push(json!({ "type": "image_url", "image_url": { "url": data_url } }));
+    }
     let body = json!({
         "model": model,
         "messages": [{
             "role": "user",
-            "content": [
-                { "type": "text", "text": prompt },
-                { "type": "image_url", "image_url": { "url": data_url } },
-            ],
+            "content": content,
         }],
-        "max_tokens": 320,
+        "max_tokens": max_tokens,
         "stream": false,
     });
     let mut request = client
@@ -2632,20 +3558,22 @@ fn describe_image_direct_openai(
     api_key: &str,
     model: &str,
     prompt: &str,
-    data_url: &str,
+    data_urls: &[String],
     timeout_secs: u64,
+    max_tokens: u32,
 ) -> Result<String> {
     let client = http_client(timeout_secs)?;
+    let mut content = vec![json!({ "type": "text", "text": prompt })];
+    for data_url in data_urls {
+        content.push(json!({ "type": "image_url", "image_url": { "url": data_url } }));
+    }
     let body = json!({
         "model": model,
         "messages": [{
             "role": "user",
-            "content": [
-                { "type": "text", "text": prompt },
-                { "type": "image_url", "image_url": { "url": data_url } },
-            ],
+            "content": content,
         }],
-        "max_tokens": 320,
+        "max_tokens": max_tokens,
         "stream": false,
     });
     let response = client
@@ -2668,9 +3596,10 @@ fn describe_image_commandcode_direct(
     settings: &crate::config::Settings,
     key: &str,
     prompt: &str,
-    data_url: &str,
+    data_urls: &[String],
     mime: &str,
     timeout_secs: u64,
+    max_tokens: u32,
 ) -> Result<String> {
     let base = settings
         .base_url
@@ -2678,6 +3607,10 @@ fn describe_image_commandcode_direct(
         .filter(|u| u.contains("api.commandcode.ai"))
         .unwrap_or_else(|| crate::config::COMMANDCODE_API_BASE_URL.to_string());
     let client = http_client(timeout_secs)?;
+    let mut content = vec![json!({ "type": "text", "text": prompt })];
+    for data_url in data_urls {
+        content.push(json!({ "type": "image", "image": data_url, "mimeType": mime }));
+    }
     let body = json!({
         "config": {
             "workingDir": "/",
@@ -2695,14 +3628,11 @@ fn describe_image_commandcode_direct(
             "model": "xai/grok-4.5",
             "messages": [{
                 "role": "user",
-                "content": [
-                    { "type": "text", "text": prompt },
-                    { "type": "image", "image": data_url, "mimeType": mime },
-                ],
+                "content": content,
             }],
             "tools": [],
             "system": "",
-            "max_tokens": 320,
+            "max_tokens": max_tokens,
             "stream": false,
         },
     });
@@ -3000,594 +3930,668 @@ pub fn execute(
     // checkpoint finalizer and can record any partial filesystem effect.
     let mut result = (|| -> Result<String> {
         match name {
-        "read_file" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_project_read_path(root, p)?;
-            let total_bytes = std::fs::metadata(&full)?.len();
-            let mut bytes = Vec::with_capacity(
-                usize::try_from(total_bytes.min((MAX_FILE_READ_BYTES + 1) as u64))
-                    .unwrap_or(MAX_FILE_READ_BYTES + 1),
-            );
-            std::fs::File::open(&full)?
-                .take((MAX_FILE_READ_BYTES + 1) as u64)
-                .read_to_end(&mut bytes)?;
-            let content = String::from_utf8_lossy(&bytes).to_string();
-            if total_bytes > MAX_FILE_READ_BYTES as u64 || content.len() > MAX_FILE_READ_BYTES {
-                Ok(format!(
-                    "{}...(truncated, {} bytes total; narrow the read or use grep)",
-                    utf8_prefix(&content, MAX_FILE_READ_BYTES),
-                    total_bytes
-                ))
-            } else {
-                Ok(content)
-            }
-        }
-        "write_file" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing content"))?;
-            let full = resolve_path(root, p)?;
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&full, content)?;
-            Ok(format!("Wrote {} bytes to {}", content.len(), p))
-        }
-        "edit_file" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let old = args
-                .get("old_string")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing old_string"))?;
-            let new = args
-                .get("new_string")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing new_string"))?;
-            let full = resolve_path(root, p)?;
-            let src = std::fs::read_to_string(&full)?;
-            let out = apply_edit_file(&src, old, new)
-                .map_err(|detail| anyhow::anyhow!("old_string edit failed in {p}: {detail}"))?;
-            std::fs::write(&full, out)?;
-            Ok(format!("Edited {p}"))
-        }
-        "list_dir" => {
-            let rel = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let full = resolve_project_read_path(root, rel)?;
-            let mut entries = Vec::new();
-            for e in std::fs::read_dir(&full)? {
-                if ctx.cancel.load(Ordering::SeqCst) {
-                    anyhow::bail!("Directory listing cancelled.");
-                }
-                let e = e?;
-                let meta = std::fs::symlink_metadata(e.path())?;
-                if metadata_is_link_like(&meta) {
-                    continue;
-                }
-                entries.push(json!({
-                    "name": e.file_name().to_string_lossy(),
-                    "is_dir": meta.is_dir(),
-                    "size": meta.len(),
-                }));
-                if entries.len() > MAX_LIST_DIR_ENTRIES {
-                    break;
+            "read_file" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_inspection_path(root, p)?;
+                let ext = crate::document_inspect::extension_lower(&full);
+                if crate::document_inspect::is_audio_ext(&ext) {
+                    Ok(describe_audio_file(&full)?)
+                } else {
+                    crate::document_inspect::read_inspectable_file(&full, MAX_FILE_READ_BYTES)
                 }
             }
-            entries.sort_by(|a, b| {
-                let ad = a.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
-                let bd = b.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
-                match (ad, bd) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or("")),
+            "write_file" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing content"))?;
+                let full = resolve_path(root, p)?;
+                if let Some(parent) = full.parent() {
+                    std::fs::create_dir_all(parent)?;
                 }
-            });
-            if entries.len() > MAX_LIST_DIR_ENTRIES {
-                entries.truncate(MAX_LIST_DIR_ENTRIES);
-                entries.push(json!({
-                    "name": format!("… listing truncated after {MAX_LIST_DIR_ENTRIES} entries"),
-                    "is_dir": false,
-                    "size": 0,
-                    "truncated": true,
-                }));
-            }
-            Ok(serde_json::to_string_pretty(&entries)?)
-        }
-        "glob" => {
-            let pat = args
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing pattern"))?;
-            if pat.trim().is_empty() {
-                anyhow::bail!("glob pattern must not be empty; use a project-relative pattern such as src/**/*");
-            }
-            let root = root
-                .canonicalize()
-                .context("Could not resolve project root")?;
-            let safe_pattern = validate_project_relative_path(pat)?;
-            let pat_full = root.join(safe_pattern).to_string_lossy().to_string();
-            let mut matches: Vec<String> = Vec::new();
-            let deadline = Instant::now()
-                + Duration::from_secs(timeout_secs.clamp(1, MAX_INSPECTION_TIMEOUT_SECS));
-            for entry in glob::glob(&pat_full)? {
-                if ctx.cancel.load(Ordering::SeqCst) {
-                    anyhow::bail!("Glob search cancelled.");
+                let ext = crate::document_inspect::extension_lower(&full);
+                if crate::document_inspect::is_xlsx_write_ext(&ext) {
+                    let (bytes, summary) =
+                        crate::document_inspect::xlsx_from_tabular_text(content)?;
+                    std::fs::write(&full, &bytes)?;
+                    Ok(path_result_with_full(
+                        format!("Wrote {summary} to {p}"),
+                        p,
+                        &full,
+                    ))
+                } else {
+                    std::fs::write(&full, content)?;
+                    Ok(path_result_with_full(
+                        format!("Wrote {} bytes to {p}", content.len()),
+                        p,
+                        &full,
+                    ))
                 }
-                if Instant::now() > deadline {
+            }
+            "edit_file" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let old = args
+                    .get("old_string")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing old_string"))?;
+                let new = args
+                    .get("new_string")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing new_string"))?;
+                let full = resolve_path(root, p)?;
+                let ext = crate::document_inspect::extension_lower(&full);
+                if crate::document_inspect::is_xlsx_write_ext(&ext)
+                    || matches!(
+                        ext.as_str(),
+                        "xls" | "xlsb" | "pptx" | "pptm" | "docx" | "docm" | "pdf"
+                    )
+                {
                     anyhow::bail!(
-                        "Glob search timed out; narrow the project-relative pattern and retry."
+                        "edit_file cannot patch binary office/PDF files. For spreadsheets, call write_file with tabular CSV/TSV text to replace the workbook, or open_path to edit it in Excel/PowerPoint."
                     );
                 }
-                let e = entry?;
-                let Ok(relative) = e.strip_prefix(&root) else {
-                    continue;
-                };
-                let relative = relative.to_string_lossy();
-                if let Ok(safe) = resolve_project_read_path(&root, relative.as_ref()) {
-                    let relative = safe
-                        .strip_prefix(&root)
-                        .unwrap_or(&safe)
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    matches.push(if relative.is_empty() {
-                        ".".into()
-                    } else {
-                        relative
-                    });
-                }
-                if matches.len() >= 500 {
-                    break;
-                }
+                let src = std::fs::read_to_string(&full)?;
+                let out = apply_edit_file(&src, old, new)
+                    .map_err(|detail| anyhow::anyhow!("old_string edit failed in {p}: {detail}"))?;
+                std::fs::write(&full, out)?;
+                Ok(path_result_with_full(format!("Edited {p}"), p, &full))
             }
-            Ok(serde_json::to_string_pretty(&matches)?)
-        }
-        "grep" => {
-            let pat = args
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing pattern"))?;
-            if pat.trim().is_empty() {
-                anyhow::bail!(
-                    "grep pattern must not be empty; provide a distinctive text or regex"
+            "list_dir" => {
+                let rel = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let full = resolve_inspection_path(root, rel)?;
+                let mut entries = Vec::new();
+                for e in std::fs::read_dir(&full)? {
+                    if ctx.cancel.load(Ordering::SeqCst) {
+                        anyhow::bail!("Directory listing cancelled.");
+                    }
+                    let e = e?;
+                    let meta = std::fs::symlink_metadata(e.path())?;
+                    if skip_walk_entry(&meta) {
+                        continue;
+                    }
+                    entries.push(json!({
+                        "name": e.file_name().to_string_lossy(),
+                        "is_dir": metadata_is_directory(&meta),
+                        "size": meta.len(),
+                    }));
+                    if entries.len() > MAX_LIST_DIR_ENTRIES {
+                        break;
+                    }
+                }
+                entries.sort_by(|a, b| {
+                    let ad = a.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let bd = b.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+                    match (ad, bd) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => a
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or("")),
+                    }
+                });
+                if entries.len() > MAX_LIST_DIR_ENTRIES {
+                    entries.truncate(MAX_LIST_DIR_ENTRIES);
+                    entries.push(json!({
+                        "name": format!("… listing truncated after {MAX_LIST_DIR_ENTRIES} entries"),
+                        "is_dir": false,
+                        "size": 0,
+                        "truncated": true,
+                    }));
+                }
+                let listing = serde_json::to_string_pretty(&entries)?;
+                let mut message = format!(
+                    "Listed {rel} at {}\n{listing}",
+                    absolute_display_path(&full)
                 );
+                if let Some(note) = nearby_parent_documents_note(&full, &entries) {
+                    message.push('\n');
+                    message.push_str(&note);
+                }
+                Ok(message)
             }
-            let search_root = args.get("path").and_then(|v| v.as_str());
-            let dir = match search_root {
-                Some(p) => resolve_project_read_path(root, p)?,
-                None => resolve_project_read_path(root, ".")?,
-            };
-            // Weak providers sometimes send plain text containing an unmatched
-            // `[` or `(`. Fall back to a literal search instead of turning a
-            // harmless inspection request into a dead tool loop.
-            let re = regex::Regex::new(pat).or_else(|_| regex::Regex::new(&regex::escape(pat)))?;
-            let mut hits: Vec<Value> = Vec::new();
-            let project_root = root
-                .canonicalize()
-                .context("Could not resolve project root")?;
-            let deadline = Instant::now()
-                + Duration::from_secs(timeout_secs.clamp(1, MAX_INSPECTION_TIMEOUT_SECS));
-            GrepWalk {
-                display_root: &dir,
-                project_root: &project_root,
-                re: &re,
-                limit: 1000,
-                ctx,
-                deadline,
+            "glob" => {
+                let pat = args
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing pattern"))?;
+                if pat.trim().is_empty() {
+                    anyhow::bail!("glob pattern must not be empty; use a project-relative pattern such as src/**/*");
+                }
+                let root = root
+                    .canonicalize()
+                    .context("Could not resolve project root")?;
+                let safe_pattern = validate_project_relative_path(pat)?;
+                let pat_full = root.join(safe_pattern).to_string_lossy().to_string();
+                let mut matches: Vec<String> = Vec::new();
+                let deadline = Instant::now()
+                    + Duration::from_secs(timeout_secs.clamp(1, MAX_INSPECTION_TIMEOUT_SECS));
+                for entry in glob::glob(&pat_full)? {
+                    if ctx.cancel.load(Ordering::SeqCst) {
+                        anyhow::bail!("Glob search cancelled.");
+                    }
+                    if Instant::now() > deadline {
+                        anyhow::bail!(
+                            "Glob search timed out; narrow the project-relative pattern and retry."
+                        );
+                    }
+                    let e = entry?;
+                    let Ok(relative) = e.strip_prefix(&root) else {
+                        continue;
+                    };
+                    let relative = relative.to_string_lossy();
+                    if let Ok(safe) = resolve_project_read_path(&root, relative.as_ref()) {
+                        let relative = safe
+                            .strip_prefix(&root)
+                            .unwrap_or(&safe)
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        matches.push(if relative.is_empty() {
+                            ".".into()
+                        } else {
+                            relative
+                        });
+                    }
+                    if matches.len() >= 500 {
+                        break;
+                    }
+                }
+                Ok(serde_json::to_string_pretty(&matches)?)
             }
-            .walk(&dir, &mut hits)?;
-            Ok(serde_json::to_string_pretty(&hits)?)
-        }
-        "run_command" => {
-            let cmd = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing command"))?;
-            let timeout = args
-                .get("timeout_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(timeout_secs);
-            let cwd = args.get("cwd").and_then(|v| v.as_str());
-            let work_dir = match cwd {
-                Some(p) => resolve_path(root, p)?,
-                None => root.to_path_buf(),
-            };
-            // A background process spawned through PowerShell inherits the
-            // stdout/stderr pipes owned by `run_hidden`. PowerShell can exit
-            // while npm/Vite keeps those handles open, which made the agent
-            // wait forever at a seemingly completed Start-Process command.
-            // Preserve the compatibility path for models that still emit it,
-            // but launch it without pipes and return as soon as it starts.
-            if is_background_shell_command(cmd) {
-                let (pid, log_path) = start_detached_command(
-                    &work_dir,
-                    cmd,
-                    ".hormachuelos-background.log",
-                    false,
-                    ctx,
-                )?;
-                return Ok(format!(
+            "grep" => {
+                let pat = args
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing pattern"))?;
+                if pat.trim().is_empty() {
+                    anyhow::bail!(
+                        "grep pattern must not be empty; provide a distinctive text or regex"
+                    );
+                }
+                let search_root = args.get("path").and_then(|v| v.as_str());
+                let dir = match search_root {
+                    Some(p) if grep_path_looks_unusable(p) => resolve_inspection_path(root, ".")?,
+                    Some(p) => resolve_inspection_path(root, p)?,
+                    None => resolve_inspection_path(root, ".")?,
+                };
+                // Weak providers sometimes send plain text containing an unmatched
+                // `[` or `(`. Fall back to a literal search instead of turning a
+                // harmless inspection request into a dead tool loop.
+                let re =
+                    regex::Regex::new(pat).or_else(|_| regex::Regex::new(&regex::escape(pat)))?;
+                let mut hits: Vec<Value> = Vec::new();
+                let project_root = root
+                    .canonicalize()
+                    .context("Could not resolve project root")?;
+                let deadline = Instant::now()
+                    + Duration::from_secs(timeout_secs.clamp(1, MAX_INSPECTION_TIMEOUT_SECS));
+                let meta = std::fs::symlink_metadata(&dir)
+                    .with_context(|| format!("Search path not found: {}", dir.display()))?;
+                if meta.is_file() {
+                    grep_file_hits(&dir, &dir, &re, 1000, &mut hits)?;
+                } else {
+                    let home = user_profile_dir().and_then(|home| home.canonicalize().ok());
+                    let external = !dir.starts_with(&project_root);
+                    GrepWalk {
+                        display_root: &dir,
+                        containment_root: &dir,
+                        blocked_home: if external { home.as_deref() } else { None },
+                        re: &re,
+                        limit: 1000,
+                        ctx,
+                        deadline,
+                    }
+                    .walk(&dir, &mut hits)?;
+                }
+                Ok(serde_json::to_string_pretty(&hits)?)
+            }
+            "run_command" => {
+                let cmd = args
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing command"))?;
+                let timeout = args
+                    .get("timeout_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(timeout_secs);
+                let cwd = args.get("cwd").and_then(|v| v.as_str());
+                let work_dir = match cwd {
+                    Some(p) => resolve_path(root, p)?,
+                    None => root.to_path_buf(),
+                };
+                // A background process spawned through PowerShell inherits the
+                // stdout/stderr pipes owned by `run_hidden`. PowerShell can exit
+                // while npm/Vite keeps those handles open, which made the agent
+                // wait forever at a seemingly completed Start-Process command.
+                // Preserve the compatibility path for models that still emit it,
+                // but launch it without pipes and return as soon as it starts.
+                if is_background_shell_command(cmd) {
+                    let (pid, log_path) = start_detached_command(
+                        &work_dir,
+                        cmd,
+                        ".hormachuelos-background.log",
+                        false,
+                        ctx,
+                    )?;
+                    return Ok(format!(
                     "Started background command (PID {pid}) without waiting for its child process. Output is redirected to {}.",
                     log_path.display()
                 ));
+                }
+                run_hidden(&work_dir, cmd, timeout, ctx)
             }
-            run_hidden(&work_dir, cmd, timeout, ctx)
-        }
-        "start_dev_server" => {
-            let command = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing command"))?;
-            let cwd = args.get("cwd").and_then(|v| v.as_str());
-            let work_dir = match cwd {
-                Some(path) => resolve_path(root, path)?,
-                None => root.to_path_buf(),
-            };
-            let port = match args.get("port").and_then(|v| v.as_u64()) {
-                Some(port @ 1..=65_535) => Some(port as u16),
-                Some(_) => anyhow::bail!("port must be between 1 and 65535"),
-                None => None,
-            };
-            if let Some(port) = port.filter(|port| local_port_is_open(*port)) {
-                return Ok(format!(
+            "start_dev_server" => {
+                let command = args
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing command"))?;
+                let cwd = args.get("cwd").and_then(|v| v.as_str());
+                let work_dir = match cwd {
+                    Some(path) => resolve_path(root, path)?,
+                    None => root.to_path_buf(),
+                };
+                let port = match args.get("port").and_then(|v| v.as_u64()) {
+                    Some(port @ 1..=65_535) => Some(port as u16),
+                    Some(_) => anyhow::bail!("port must be between 1 and 65535"),
+                    None => None,
+                };
+                if let Some(port) = port.filter(|port| local_port_is_open(*port)) {
+                    return Ok(format!(
                     "A local development server is already reachable at http://127.0.0.1:{port}; reusing it instead of starting another."
                 ));
-            }
-            let (pid, log_path) = start_detached_command(
-                &work_dir,
-                command,
-                ".hormachuelos-dev-server.log",
-                true,
-                ctx,
-            )?;
-            let preview = port
-                .map(|port| format!(" Preview: http://127.0.0.1:{port}."))
-                .unwrap_or_default();
-            Ok(format!(
+                }
+                let (pid, log_path) = start_detached_command(
+                    &work_dir,
+                    command,
+                    ".hormachuelos-dev-server.log",
+                    true,
+                    ctx,
+                )?;
+                let preview = port
+                    .map(|port| format!(" Preview: http://127.0.0.1:{port}."))
+                    .unwrap_or_default();
+                Ok(format!(
                 "Started local development server in background (PID {pid}).{preview} The agent can continue without waiting for the server process. Output is redirected to {}.",
                 log_path.display()
             ))
-        }
-        "git_init" => run_hidden(root, "git init", 30, ctx),
-        "git_add_all" => run_hidden(root, "git add -A", 60, ctx),
-        "git_commit" => {
-            let msg = args
-                .get("message")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing message"))?;
-            run_git_commit(root, msg, ctx)
-        }
-        "git_status" => run_hidden(root, "git status --short", 30, ctx),
-        "list_drives" => {
-            let mut drives: Vec<Value> = Vec::new();
-            for letter in b'A'..=b'Z' {
-                let s = format!("{}:\\", letter as char);
-                if std::path::Path::new(&s).exists() {
-                    let label = format!("{}:", letter as char);
-                    let free = std::fs::metadata(&s)
-                        .ok()
-                        .map(|_| fs_free_space(&s).unwrap_or(0))
-                        .unwrap_or(0);
-                    let total = fs_total_space(&s).unwrap_or(0);
-                    drives.push(json!({
-                        "drive": label,
-                        "path": s,
-                        "free_bytes": free,
-                        "total_bytes": total,
-                    }));
-                }
             }
-            Ok(serde_json::to_string_pretty(&drives)?)
-        }
-        "sys_info" => {
-            let info = json!({
-                "os": std::env::consts::OS,
-                "arch": std::env::consts::ARCH,
-                "hostname": hostname(),
-                "username": std::env::var("USERNAME").unwrap_or_default(),
-                "home_dir": std::env::var("USERPROFILE").unwrap_or_default(),
-                "temp_dir": std::env::var("TEMP").unwrap_or_default(),
-                "cpu_count": num_cpus(),
-                "exe_dir": std::env::current_exe().map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_string_lossy().to_string()).unwrap_or_default(),
-            });
-            Ok(serde_json::to_string_pretty(&info)?)
-        }
-        "env_vars" => {
-            let filter = args.get("filter").and_then(|v| v.as_str());
-            let vars = environment_variable_inventory(std::env::vars(), filter);
-            Ok(serde_json::to_string_pretty(&vars)?)
-        }
-        "list_processes" => {
-            let output = run_hidden(
+            "git_init" => run_hidden(root, "git init", 30, ctx),
+            "git_add_all" => run_hidden(root, "git add -A", 60, ctx),
+            "git_commit" => {
+                let msg = args
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing message"))?;
+                run_git_commit(root, msg, ctx)
+            }
+            "git_status" => run_hidden(root, "git status --short", 30, ctx),
+            "list_drives" => {
+                let mut drives: Vec<Value> = Vec::new();
+                for letter in b'A'..=b'Z' {
+                    let s = format!("{}:\\", letter as char);
+                    if std::path::Path::new(&s).exists() {
+                        let label = format!("{}:", letter as char);
+                        let free = std::fs::metadata(&s)
+                            .ok()
+                            .map(|_| fs_free_space(&s).unwrap_or(0))
+                            .unwrap_or(0);
+                        let total = fs_total_space(&s).unwrap_or(0);
+                        drives.push(json!({
+                            "drive": label,
+                            "path": s,
+                            "free_bytes": free,
+                            "total_bytes": total,
+                        }));
+                    }
+                }
+                Ok(serde_json::to_string_pretty(&drives)?)
+            }
+            "sys_info" => {
+                let info = json!({
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "hostname": hostname(),
+                    "username": std::env::var("USERNAME").unwrap_or_default(),
+                    "home_dir": std::env::var("USERPROFILE").unwrap_or_default(),
+                    "temp_dir": std::env::var("TEMP").unwrap_or_default(),
+                    "cpu_count": num_cpus(),
+                    "exe_dir": std::env::current_exe().map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_string_lossy().to_string()).unwrap_or_default(),
+                });
+                Ok(serde_json::to_string_pretty(&info)?)
+            }
+            "env_vars" => {
+                let filter = args.get("filter").and_then(|v| v.as_str());
+                let vars = environment_variable_inventory(std::env::vars(), filter);
+                Ok(serde_json::to_string_pretty(&vars)?)
+            }
+            "list_processes" => {
+                let output = run_hidden(
                 root,
                 "Get-Process | Select-Object Id,ProcessName,CPU,WorkingSet | Format-Table -AutoSize",
                 30,
                 ctx,
             )?;
-            Ok(output)
-        }
-        "kill_process" => {
-            let pid = args
-                .get("pid")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| anyhow::anyhow!("missing pid"))?;
-            run_hidden(root, &format!("Stop-Process -Id {pid} -Force"), 30, ctx)
-        }
-        "open_url" => {
-            let url = args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing url"))?;
-            crate::integrations::open_browser(url)?;
-            Ok(format!("Opened browser: {url}"))
-        }
-        "connect_account" => {
-            let service = args
-                .get("service")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing service"))?;
-            let result = crate::integrations::browser_connect(service)?;
-            Ok(serde_json::to_string_pretty(&json!({
-                "service": service,
-                "flow_started": result.ok,
-                "connected": crate::integrations::has_token(service),
-                "secure_input_opened": true,
-                "message": result.message,
-                "detail": result.detail,
-            }))?)
-        }
-        "integration_status" => {
-            let service = args.get("service").and_then(|value| value.as_str());
-            let verify = args
-                .get("verify")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            if let Some(service) = service {
-                let status = crate::integrations::status_for(service)?;
-                if verify {
-                    let check = crate::integrations::test_connection_blocking(service)?;
+                Ok(output)
+            }
+            "kill_process" => {
+                let pid = args
+                    .get("pid")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| anyhow::anyhow!("missing pid"))?;
+                run_hidden(root, &format!("Stop-Process -Id {pid} -Force"), 30, ctx)
+            }
+            "open_url" => {
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing url"))?;
+                crate::integrations::open_browser(url)?;
+                Ok(format!("Opened browser: {url}"))
+            }
+            "connect_account" => {
+                let service = args
+                    .get("service")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing service"))?;
+                let result = crate::integrations::browser_connect(service)?;
+                Ok(serde_json::to_string_pretty(&json!({
+                    "service": service,
+                    "flow_started": result.ok,
+                    "connected": crate::integrations::has_token(service),
+                    "secure_input_opened": true,
+                    "message": result.message,
+                    "detail": result.detail,
+                }))?)
+            }
+            "integration_status" => {
+                let service = args.get("service").and_then(|value| value.as_str());
+                let verify = args
+                    .get("verify")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                if let Some(service) = service {
+                    let status = crate::integrations::status_for(service)?;
+                    if verify {
+                        let check = crate::integrations::test_connection_blocking(service)?;
+                        return Ok(serde_json::to_string_pretty(&json!({
+                            "id": status.id,
+                            "label": status.label,
+                            "connected": status.connected,
+                            "verified": check.ok,
+                            "message": check.message,
+                            "detail": check.detail,
+                        }))?);
+                    }
                     return Ok(serde_json::to_string_pretty(&json!({
                         "id": status.id,
                         "label": status.label,
                         "connected": status.connected,
-                        "verified": check.ok,
-                        "message": check.message,
-                        "detail": check.detail,
+                        "verified": null,
+                        "message": if status.connected {
+                            format!("{} has a credential saved in the OS keyring.", status.label)
+                        } else {
+                            format!("{} is not connected.", status.label)
+                        },
                     }))?);
                 }
-                return Ok(serde_json::to_string_pretty(&json!({
-                    "id": status.id,
-                    "label": status.label,
-                    "connected": status.connected,
-                    "verified": null,
-                    "message": if status.connected {
-                        format!("{} has a credential saved in the OS keyring.", status.label)
-                    } else {
-                        format!("{} is not connected.", status.label)
-                    },
-                }))?);
-            }
-            let list = crate::integrations::list_status()?;
-            let slim: Vec<serde_json::Value> = list
-                .into_iter()
-                .map(|s| {
-                    json!({
-                        "id": s.id,
-                        "label": s.label,
-                        "connected": s.connected,
-                        "env_keys": s.env_keys,
+                let list = crate::integrations::list_status()?;
+                let slim: Vec<serde_json::Value> = list
+                    .into_iter()
+                    .map(|s| {
+                        json!({
+                            "id": s.id,
+                            "label": s.label,
+                            "connected": s.connected,
+                            "env_keys": s.env_keys,
+                        })
                     })
-                })
-                .collect();
-            Ok(serde_json::to_string_pretty(&slim)?)
-        }
-        "open_path" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_path(root, p)?;
-            let lower = full
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            // HTML/web previews open in the in-app Preview panel (frontend), not Chrome.
-            if matches!(lower.as_str(), "html" | "htm" | "xhtml") {
-                return Ok(format!(
+                    .collect();
+                Ok(serde_json::to_string_pretty(&slim)?)
+            }
+            "open_path" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_path(root, p)?;
+                let lower = full
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                // HTML/web previews open in the in-app Preview panel (frontend), not Chrome.
+                if matches!(lower.as_str(), "html" | "htm" | "xhtml") {
+                    return Ok(format!(
                     "Preview requested for {} — open in Hormachuelos Preview panel (not external browser).",
                     full.display()
                 ));
+                }
+                open_filesystem_path(&full)?;
+                Ok(format!("Opened {}", full.display()))
             }
-            open_filesystem_path(&full)?;
-            Ok(format!("Opened {}", full.display()))
-        }
-        "download_file" => {
-            let url = args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing url"))?;
-            let dest = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_path(root, dest)?;
-            let (written, final_url) = download_public_file(url, &full)?;
-            Ok(format!(
-                "Downloaded {written} bytes from {final_url} to {dest}"
-            ))
-        }
-        "move_file" => {
-            let src = args
-                .get("src")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing src"))?;
-            let dst = args
-                .get("dst")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing dst"))?;
-            let src_full = resolve_path(root, src)?;
-            let dst_full = resolve_path(root, dst)?;
-            if let Some(parent) = dst_full.parent() {
-                std::fs::create_dir_all(parent)?;
+            "download_file" => {
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing url"))?;
+                let dest = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_path(root, dest)?;
+                let (written, final_url) = download_public_file(url, &full)?;
+                Ok(format!(
+                    "Downloaded {written} bytes from {final_url} to {dest}"
+                ))
             }
-            std::fs::rename(&src_full, &dst_full)?;
-            Ok(format!("Moved {src} → {dst}"))
-        }
-        "copy_file" => {
-            let src = args
-                .get("src")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing src"))?;
-            let dst = args
-                .get("dst")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing dst"))?;
-            let src_full = resolve_path(root, src)?;
-            let dst_full = resolve_path(root, dst)?;
-            if let Some(parent) = dst_full.parent() {
-                std::fs::create_dir_all(parent)?;
+            "move_file" => {
+                let src = args
+                    .get("src")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing src"))?;
+                let dst = args
+                    .get("dst")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing dst"))?;
+                let src_full = resolve_path(root, src)?;
+                let dst_full = resolve_path(root, dst)?;
+                if let Some(parent) = dst_full.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::rename(&src_full, &dst_full)?;
+                Ok(path_result_with_full(
+                    format!("Moved {src} → {dst}"),
+                    dst,
+                    &dst_full,
+                ))
             }
-            if src_full.is_dir() {
-                copy_dir_recursive(&src_full, &dst_full)?;
-                Ok(format!("Copied dir {src} → {dst}"))
-            } else {
-                std::fs::copy(&src_full, &dst_full)?;
-                Ok(format!("Copied {src} → {dst}"))
+            "copy_file" => {
+                let src = args
+                    .get("src")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing src"))?;
+                let dst = args
+                    .get("dst")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing dst"))?;
+                let src_full = resolve_path(root, src)?;
+                let dst_full = resolve_path(root, dst)?;
+                if let Some(parent) = dst_full.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if src_full.is_dir() {
+                    copy_dir_recursive(&src_full, &dst_full)?;
+                    Ok(path_result_with_full(
+                        format!("Copied dir {src} → {dst}"),
+                        dst,
+                        &dst_full,
+                    ))
+                } else {
+                    std::fs::copy(&src_full, &dst_full)?;
+                    Ok(path_result_with_full(
+                        format!("Copied {src} → {dst}"),
+                        dst,
+                        &dst_full,
+                    ))
+                }
             }
-        }
-        "delete_file" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_path(root, p)?;
-            if full.is_dir() {
-                std::fs::remove_dir_all(&full)?;
-            } else {
-                std::fs::remove_file(&full)?;
+            "delete_file" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_path(root, p)?;
+                if full.is_dir() {
+                    std::fs::remove_dir_all(&full)?;
+                } else {
+                    std::fs::remove_file(&full)?;
+                }
+                Ok(format!("Deleted {p}"))
             }
-            Ok(format!("Deleted {p}"))
-        }
-        "make_dir" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_path(root, p)?;
-            std::fs::create_dir_all(&full)?;
-            Ok(format!("Created dir {p}"))
-        }
-        "file_info" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            let full = resolve_project_read_path(root, p)?;
-            let meta = std::fs::metadata(&full)?;
-            let info = json!({
-                "path": p,
-                "exists": true,
-                "is_dir": meta.is_dir(),
-                "is_file": meta.is_file(),
-                "size_bytes": meta.len(),
-                "readonly": meta.permissions().readonly(),
-                "modified": meta.modified().ok().map(|t| t.elapsed().ok().map(|d| d.as_secs()).unwrap_or(0)).unwrap_or(0),
-            });
-            Ok(serde_json::to_string_pretty(&info)?)
-        }
-        "view_image" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            view_image_file(root, p)
-        }
-        "view_video" => {
-            let p = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            view_video_file(root, p)
-        }
-        "done" => {
-            let summary = args
-                .get("summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Done.");
-            Ok(format!("__DONE__{summary}"))
-        }
-        "todo_write" => Ok(summarize_todo_write(args)),
-        "web_search" => {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing query"))?;
-            let max = args
-                .get("max_results")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5)
-                .clamp(1, 10) as usize;
-            web_search(query, max)
-        }
-        "browse_page" => {
-            let url = args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("missing url"))?;
-            let max_chars = args
-                .get("max_chars")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(12_000)
-                .clamp(500, 50_000) as usize;
-            browse_page(url, max_chars)
-        }
-        "export_client_pack" => {
-            let summary = args.get("handoff_summary").and_then(|v| v.as_str());
-            let zip_path = if let Some(out) = args
-                .get("output_path")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-            {
-                resolve_path(root, out)?
-            } else {
-                let name = root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "project".into());
-                root.parent()
-                    .unwrap_or(root)
-                    .join(format!("{name}-client-pack.zip"))
-            };
-            let result = crate::workspace::export_client_pack(root, &zip_path, summary)?;
-            Ok(format!(
-                "Client pack ready: {} ({} files). Handoff notes: {}",
-                result.zip_path, result.files_count, result.handoff_path
-            ))
-        }
-        "ask_user" => Err(anyhow::anyhow!(
-            "ask_user is handled by the agent loop, not tools::execute"
-        )),
-        "computer_observe" | "computer_actions" => {
-            let result = crate::computer_use::execute_tool(name, args, ctx.cancel.as_ref())?;
-            Ok(serde_json::to_string(&result)?)
-        }
-            other => Err(anyhow::anyhow!(
-                "Unknown tool: {other}. Call exactly one registered snake_case tool name per request."
+            "make_dir" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_path(root, p)?;
+                std::fs::create_dir_all(&full)?;
+                Ok(path_result_with_full(format!("Created dir {p}"), p, &full))
+            }
+            "file_info" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                let full = resolve_inspection_path(root, p)?;
+                let meta = std::fs::metadata(&full)?;
+                let ext = crate::document_inspect::extension_lower(&full);
+                let kind = if meta.is_dir() {
+                    "directory"
+                } else if crate::document_inspect::is_spreadsheet_ext(&ext) {
+                    "spreadsheet"
+                } else if crate::document_inspect::is_presentation_ext(&ext) {
+                    "presentation"
+                } else if crate::document_inspect::is_word_ext(&ext) {
+                    "document"
+                } else if crate::document_inspect::is_pdf_ext(&ext) {
+                    "pdf"
+                } else if crate::document_inspect::is_image_ext(&ext) {
+                    "image"
+                } else if crate::document_inspect::is_video_ext(&ext) {
+                    "video"
+                } else if crate::document_inspect::is_audio_ext(&ext) {
+                    "audio"
+                } else {
+                    "file"
+                };
+                let info = json!({
+                    "path": p,
+                    "full_path": absolute_display_path(&full),
+                    "exists": true,
+                    "is_dir": meta.is_dir(),
+                    "is_file": meta.is_file(),
+                    "kind": kind,
+                    "extension": ext,
+                    "size_bytes": meta.len(),
+                    "readonly": meta.permissions().readonly(),
+                    "modified": meta.modified().ok().map(|t| t.elapsed().ok().map(|d| d.as_secs()).unwrap_or(0)).unwrap_or(0),
+                });
+                Ok(serde_json::to_string_pretty(&info)?)
+            }
+            "view_image" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                view_image_file(root, p)
+            }
+            "view_video" => {
+                let p = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing path"))?;
+                view_video_file(root, p)
+            }
+            "done" => {
+                let summary = args
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Done.");
+                Ok(format!("__DONE__{summary}"))
+            }
+            "todo_write" => Ok(summarize_todo_write(args)),
+            "web_search" => {
+                let query = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing query"))?;
+                let max = args
+                    .get("max_results")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(5)
+                    .clamp(1, 10) as usize;
+                web_search(query, max)
+            }
+            "browse_page" => {
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing url"))?;
+                let max_chars = args
+                    .get("max_chars")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(12_000)
+                    .clamp(500, 50_000) as usize;
+                browse_page(url, max_chars)
+            }
+            "export_client_pack" => {
+                let summary = args.get("handoff_summary").and_then(|v| v.as_str());
+                let zip_path = if let Some(out) = args
+                    .get("output_path")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    resolve_path(root, out)?
+                } else {
+                    let name = root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "project".into());
+                    root.parent()
+                        .unwrap_or(root)
+                        .join(format!("{name}-client-pack.zip"))
+                };
+                let result = crate::workspace::export_client_pack(root, &zip_path, summary)?;
+                Ok(format!(
+                    "Client pack ready: {} ({} files). Handoff notes: {}",
+                    result.zip_path, result.files_count, result.handoff_path
+                ))
+            }
+            "ask_user" => Err(anyhow::anyhow!(
+                "ask_user is handled by the agent loop, not tools::execute"
             )),
+            "computer_observe" | "computer_actions" => {
+                let result = crate::computer_use::execute_tool(name, args, ctx.cancel.as_ref())?;
+                Ok(serde_json::to_string(&result)?)
+            }
+            name if crate::desktop_computer_use::is_desktop_computer_tool(name) => {
+                let result = crate::desktop_computer_use::execute_tool(name, args)?;
+                Ok(serde_json::to_string(&result)?)
+            }
+            other => Err(anyhow::anyhow!(
+            "Unknown tool: {other}. Call exactly one registered snake_case tool name per request."
+        )),
         }
     })();
 
@@ -3677,7 +4681,8 @@ pub fn list_dir_json(path: &str, max_depth: u32) -> Result<Value> {
 
 struct GrepWalk<'a> {
     display_root: &'a Path,
-    project_root: &'a Path,
+    containment_root: &'a Path,
+    blocked_home: Option<&'a Path>,
     re: &'a regex::Regex,
     limit: usize,
     ctx: &'a ToolRunContext,
@@ -3696,8 +4701,14 @@ impl GrepWalk<'_> {
             return Ok(());
         }
         let canonical_dir = dir.canonicalize()?;
-        if !canonical_dir.starts_with(self.project_root) {
-            anyhow::bail!("Search directory resolves outside the active project.");
+        if !canonical_dir.starts_with(self.containment_root) {
+            anyhow::bail!("Search directory resolves outside the allowed read root.");
+        }
+        if self
+            .blocked_home
+            .is_some_and(|home| is_blocked_user_profile_read(&canonical_dir, home))
+        {
+            return Ok(());
         }
         for entry in std::fs::read_dir(dir)? {
             if self.ctx.cancel.load(Ordering::SeqCst) {
@@ -3709,14 +4720,20 @@ impl GrepWalk<'_> {
             let entry = entry?;
             let path = entry.path();
             let meta = std::fs::symlink_metadata(&path)?;
-            if metadata_is_link_like(&meta) {
+            if skip_walk_entry(&meta) {
                 continue;
             }
             let canonical = path.canonicalize()?;
-            if !canonical.starts_with(self.project_root) {
+            if !canonical.starts_with(self.containment_root) {
                 continue;
             }
-            if meta.is_dir() {
+            if self
+                .blocked_home
+                .is_some_and(|home| is_blocked_user_profile_read(&canonical, home))
+            {
+                continue;
+            }
+            if metadata_is_directory(&meta) {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with('.')
                     || name == "node_modules"
@@ -3881,6 +4898,57 @@ fn start_detached_command(
 fn local_port_is_open(port: u16) -> bool {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(150)).is_ok()
+}
+
+const PREVIEW_DEV_PORTS: [u16; 5] = [3000, 3001, 5173, 4173, 8080];
+
+fn preview_dev_command(root: &Path) -> String {
+    let Ok(raw) = std::fs::read_to_string(root.join("package.json")) else {
+        return "npm run dev".into();
+    };
+    let Ok(pkg) = serde_json::from_str::<Value>(&raw) else {
+        return "npm run dev".into();
+    };
+    let scripts = pkg.get("scripts").and_then(Value::as_object);
+    if scripts.is_some_and(|scripts| scripts.contains_key("dev")) {
+        return "npm run dev".into();
+    }
+    if scripts.is_some_and(|scripts| scripts.contains_key("start")) {
+        return "npm start".into();
+    }
+    "npm run dev".into()
+}
+
+/// Start or reuse the project's local website so Preview can open it from Ask.
+pub fn ensure_project_dev_server(root: &Path) -> Result<String> {
+    if let Some(port) = PREVIEW_DEV_PORTS
+        .into_iter()
+        .find(|&port| local_port_is_open(port))
+    {
+        return Ok(format!("http://127.0.0.1:{port}/"));
+    }
+    if !root.is_dir() {
+        anyhow::bail!("Open a project before starting the local website.");
+    }
+    let command = preview_dev_command(root);
+    start_detached_command(
+        root,
+        &command,
+        ".hormachuelos-dev-server.log",
+        true,
+        &ToolRunContext::noop(),
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if let Some(port) = PREVIEW_DEV_PORTS
+            .into_iter()
+            .find(|&port| local_port_is_open(port))
+        {
+            return Ok(format!("http://127.0.0.1:{port}/"));
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    Ok("http://127.0.0.1:3000/".into())
 }
 
 fn run_hidden(
@@ -4290,6 +5358,10 @@ mod security_tests {
             ("read_file", json!({"path": outside})),
             ("list_dir", json!({"path": "../outside"})),
             ("grep", json!({"pattern": "secret", "path": "../outside"})),
+            (
+                "grep",
+                json!({"pattern": "secret", "path": tree.outside.to_string_lossy().to_string()}),
+            ),
             ("file_info", json!({"path": "../outside/secret.txt"})),
             ("glob", json!({"pattern": "../outside/*"})),
         ] {
@@ -4321,6 +5393,155 @@ mod security_tests {
     }
 
     #[test]
+    fn blocked_user_profile_reads_cover_secrets_but_allow_music() {
+        let home = Path::new(r"C:\Users\Test");
+        assert!(is_blocked_user_profile_read(
+            &home.join("AppData").join("Local").join("Temp").join("x"),
+            home
+        ));
+        assert!(is_blocked_user_profile_read(
+            &home.join(".ssh").join("id_rsa"),
+            home
+        ));
+        assert!(is_blocked_user_profile_read(
+            &home.join("Documents").join(".ssh").join("id_rsa"),
+            home
+        ));
+        assert!(!is_blocked_user_profile_read(
+            &home.join("Music").join("BEDYUS"),
+            home
+        ));
+        assert!(!is_blocked_user_profile_read(
+            &home.join("Documents").join("notes.txt"),
+            home
+        ));
+        assert!(!is_blocked_user_profile_read(home, home));
+    }
+
+    struct ProfileProbe {
+        dir: PathBuf,
+    }
+
+    impl ProfileProbe {
+        fn new() -> Option<Self> {
+            let home = user_profile_dir()?;
+            let parent = ["Documents", "Music", "Desktop"]
+                .into_iter()
+                .map(|name| home.join(name))
+                .find(|path| path.is_dir())
+                .unwrap_or(home);
+            let dir = parent.join(format!("hormachuelos-inspection-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).ok()?;
+            if std::fs::write(dir.join("note.txt"), "hello-from-profile").is_err() {
+                let _ = std::fs::remove_dir_all(&dir);
+                return None;
+            }
+            Some(Self { dir })
+        }
+    }
+
+    impl Drop for ProfileProbe {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn read_tools_allow_user_named_profile_folders() {
+        let Some(probe) = ProfileProbe::new() else {
+            return;
+        };
+        let tree = TempTree::new();
+        let context = ToolRunContext::noop();
+        let folder = probe.dir.to_string_lossy().to_string();
+        let file = probe.dir.join("note.txt").to_string_lossy().to_string();
+
+        let listed = execute(
+            "list_dir",
+            &json!({ "path": folder }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("list_dir should inspect a user-named profile folder");
+        assert!(listed.contains("note.txt"), "{listed}");
+
+        let read = execute(
+            "read_file",
+            &json!({ "path": file }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("read_file should inspect a user-named profile file");
+        assert_eq!(read, "hello-from-profile");
+
+        let info = execute(
+            "file_info",
+            &json!({ "path": file }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("file_info should inspect a user-named profile file");
+        assert!(info.contains("note.txt"), "{info}");
+
+        let searched = execute(
+            "grep",
+            &json!({ "pattern": "hello-from-profile", "path": folder }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("grep should search a user-named profile folder");
+        assert!(searched.contains("hello-from-profile"), "{searched}");
+        assert!(
+            resolve_inspection_path(&tree.root, &file).is_ok(),
+            "inspection resolver should accept the profile file"
+        );
+        assert!(
+            resolve_image_read_path(&tree.root, &file).is_ok(),
+            "view_image should accept a user-named profile file"
+        );
+        assert!(
+            resolve_video_read_path(&tree.root, &file).is_ok(),
+            "view_video should accept a user-named profile file"
+        );
+    }
+
+    #[test]
+    fn read_tools_still_reject_os_and_appdata_paths() {
+        let tree = TempTree::new();
+        let context = ToolRunContext::noop();
+        let temp = std::env::temp_dir().to_string_lossy().to_string();
+        assert!(
+            execute(
+                "list_dir",
+                &json!({ "path": temp }),
+                &tree.root,
+                5,
+                &context
+            )
+            .is_err(),
+            "AppData/temp must stay unreadable"
+        );
+        #[cfg(windows)]
+        {
+            assert!(
+                execute(
+                    "list_dir",
+                    &json!({ "path": r"C:\Windows\System32" }),
+                    &tree.root,
+                    5,
+                    &context
+                )
+                .is_err(),
+                "System32 must stay unreadable"
+            );
+        }
+    }
+
+    #[test]
     fn merged_read_file_tool_name_is_repaired_at_the_dispatch_boundary() {
         let tree = TempTree::new();
         let output = execute(
@@ -4343,6 +5564,10 @@ mod security_tests {
         let listed = execute("list_dir", &json!({ "path": "" }), &tree.root, 5, &context)
             .expect("empty directory roots should mean the active project");
         assert!(listed.contains("inside.txt"));
+        assert!(
+            listed.contains("full path:") || listed.contains("Listed"),
+            "list_dir should name the absolute directory: {listed}"
+        );
 
         let searched = execute(
             "grep",
@@ -4354,6 +5579,62 @@ mod security_tests {
         .expect("plain text with an unmatched bracket should use literal search");
         assert!(searched.contains("brackets.txt"));
         assert!(searched.contains("[literal"));
+    }
+
+    #[test]
+    fn grep_searches_files_and_ignores_invalid_windows_paths() {
+        let tree = TempTree::new();
+        let context = ToolRunContext::noop();
+        let file_hits = execute(
+            "grep",
+            &json!({ "pattern": "inside", "path": "inside.txt" }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("grep should search a file path without treating it as a directory");
+        assert!(file_hits.contains("inside"), "{file_hits}");
+
+        let rescued = execute(
+            "grep",
+            &json!({ "pattern": "inside", "path": "createSeedEmployeeApplications|employee/em" }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("grep should ignore regex-like paths instead of failing on Windows");
+        assert!(rescued.contains("inside"), "{rescued}");
+    }
+
+    #[test]
+    fn write_file_and_file_info_report_the_absolute_path() {
+        let tree = TempTree::new();
+        let context = ToolRunContext::noop();
+        let written = execute(
+            "write_file",
+            &json!({ "path": "docs/conversation.md", "content": "# log\n" }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("write_file should create the markdown file");
+        assert!(written.contains("docs/conversation.md"), "{written}");
+        assert!(written.contains("full path:"), "{written}");
+        assert!(
+            written.contains("conversation.md"),
+            "absolute path missing: {written}"
+        );
+
+        let info = execute(
+            "file_info",
+            &json!({ "path": "docs/conversation.md" }),
+            &tree.root,
+            5,
+            &context,
+        )
+        .expect("file_info should read the new file");
+        assert!(info.contains("full_path"), "{info}");
+        assert!(info.contains("conversation.md"), "{info}");
     }
 
     #[test]
@@ -4393,10 +5674,43 @@ mod security_tests {
         std::fs::write(&pasted, b"fake-png").unwrap();
         let resolved = resolve_image_read_path(&tree.root, &pasted.to_string_lossy()).unwrap();
         assert!(resolved.starts_with(paste_dir.canonicalize().unwrap()));
-        // An arbitrary absolute path outside the project is rejected.
+        // An arbitrary absolute path outside the project and user profile is rejected.
         let outside_img = tree.outside.join("shot.png");
         std::fs::write(&outside_img, b"x").unwrap();
         assert!(resolve_image_read_path(&tree.root, &outside_img.to_string_lossy()).is_err());
+    }
+
+    #[test]
+    fn auto_view_missing_images_does_not_invite_retry() {
+        let tree = TempTree::new();
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        let blocks = auto_view_attached_images(
+            &tree.root,
+            &[
+                "missing-a.png".into(),
+                "missing-b.png".into(),
+                "missing-c.png".into(),
+            ],
+            &cancel,
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "missing files must fail fast instead of waiting on vision"
+        );
+        assert_eq!(blocks.len(), 3);
+        for block in &blocks {
+            assert!(
+                block.contains("Do not call view_image"),
+                "retry invitation leaked: {block}"
+            );
+            assert!(!block.contains("404"), "provider error leaked: {block}");
+            assert!(!block.to_ascii_lowercase().contains("gemini"), "{block}");
+            assert!(
+                !block.to_ascii_lowercase().contains("retry with view_image"),
+                "{block}"
+            );
+        }
     }
 
     #[test]
@@ -4501,6 +5815,173 @@ mod security_tests {
             &ToolRunContext::noop()
         )
         .is_err());
+    }
+
+    #[test]
+    fn list_dir_and_glob_include_office_file_names() {
+        let tree = TempTree::new();
+        std::fs::write(tree.root.join("payroll.xlsx"), b"PK").unwrap();
+        std::fs::write(tree.root.join("manpower.xls"), b"fake-xls").unwrap();
+        std::fs::write(tree.root.join("deck.pptx"), b"PK").unwrap();
+        std::fs::write(tree.root.join("notes.pdf"), b"%PDF").unwrap();
+        std::fs::write(tree.root.join("clip.mp4"), b"fake-mp4").unwrap();
+        let listed = execute(
+            "list_dir",
+            &json!({ "path": "." }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("list_dir");
+        for name in [
+            "payroll.xlsx",
+            "manpower.xls",
+            "deck.pptx",
+            "notes.pdf",
+            "clip.mp4",
+        ] {
+            assert!(listed.contains(name), "missing {name} in {listed}");
+        }
+        let globbed = execute(
+            "glob",
+            &json!({ "pattern": "*.xlsx" }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("glob");
+        assert!(globbed.contains("payroll.xlsx"), "{globbed}");
+    }
+
+    #[test]
+    fn read_file_extracts_xlsx_cell_text_instead_of_empty_or_mojibake() {
+        let tree = TempTree::new();
+        let (bytes, _) =
+            crate::document_inspect::xlsx_from_tabular_text("Name,Amount\nPayroll,42").unwrap();
+        std::fs::write(tree.root.join("payroll.xlsx"), bytes).unwrap();
+        let text = execute(
+            "read_file",
+            &json!({ "path": "payroll.xlsx" }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("read xlsx");
+        assert!(text.contains("Payroll"), "{text}");
+        assert!(text.contains("42"), "{text}");
+        assert!(
+            !text.contains('\u{FFFD}') && !text.contains("PK\u{3}"),
+            "xlsx should not be dumped as binary: {text}"
+        );
+    }
+
+    #[test]
+    fn write_file_creates_xlsx_from_tabular_text() {
+        let tree = TempTree::new();
+        let wrote = execute(
+            "write_file",
+            &json!({
+                "path": "hr-summary.xlsx",
+                "content": "Team,Headcount\nManpower,18"
+            }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("write xlsx");
+        assert!(
+            wrote.to_ascii_lowercase().contains("spreadsheet"),
+            "{wrote}"
+        );
+        let text = execute(
+            "read_file",
+            &json!({ "path": "hr-summary.xlsx" }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("read written xlsx");
+        assert!(text.contains("Manpower"), "{text}");
+        assert!(text.contains("18"), "{text}");
+    }
+
+    #[test]
+    fn directory_junction_escape_is_not_followed_when_supported() {
+        let tree = TempTree::new();
+        let escape = tree.root.join("escape");
+        #[cfg(windows)]
+        let linked = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &escape.to_string_lossy(),
+                &tree.outside.to_string_lossy(),
+            ])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&tree.outside, &escape).is_ok();
+        if !linked {
+            return;
+        }
+        let listed = execute(
+            "list_dir",
+            &json!({ "path": "." }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("list_dir");
+        assert!(
+            !listed.contains("\"escape\""),
+            "junction directory should not be listed: {listed}"
+        );
+        assert!(execute(
+            "read_file",
+            &json!({ "path": "escape/secret.txt" }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop()
+        )
+        .is_err());
+        let _ = std::fs::remove_dir(&escape);
+    }
+
+    #[test]
+    fn list_dir_notes_parent_documents_when_project_is_only_hormachuelos() {
+        let Some(probe) = ProfileProbe::new() else {
+            return;
+        };
+        let tree = TempTree::new();
+        let child = probe.dir.join("EXCELS");
+        std::fs::create_dir_all(child.join(".hormachuelos")).unwrap();
+        std::fs::write(child.join(".hormachuelos").join("flavour.json"), "{}").unwrap();
+        std::fs::write(probe.dir.join("WEEKLY PAYROLL.xls"), b"fake-xls").unwrap();
+        std::fs::write(probe.dir.join("HR ATTRITION.xlsx"), b"PK").unwrap();
+        let listed = execute(
+            "list_dir",
+            &json!({ "path": child.to_string_lossy().to_string() }),
+            &tree.root,
+            5,
+            &ToolRunContext::noop(),
+        )
+        .expect("list nested hormachuelos folder");
+        assert!(
+            listed.contains(".hormachuelos"),
+            "child metadata should still list: {listed}"
+        );
+        assert!(
+            listed.contains("WEEKLY PAYROLL.xls") && listed.contains("HR ATTRITION.xlsx"),
+            "parent workbooks should be mentioned: {listed}"
+        );
+        assert!(
+            listed
+                .to_ascii_lowercase()
+                .contains("do not tell the user it is empty"),
+            "{listed}"
+        );
     }
 
     #[test]
@@ -4722,7 +6203,14 @@ mod edit_file_tests {
             &ToolRunContext::noop(),
         )
         .expect("edit_file should succeed");
-        assert_eq!(output, "Edited print-pdf-docs.ts");
+        assert!(
+            output.starts_with("Edited print-pdf-docs.ts"),
+            "edit_file should confirm the file: {output}"
+        );
+        assert!(
+            output.contains("full path:"),
+            "edit_file should include the absolute path: {output}"
+        );
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.starts_with('\u{FEFF}'));
         assert!(written.contains("Manual"));

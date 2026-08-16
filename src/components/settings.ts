@@ -2,6 +2,7 @@ import {
   api,
   onComputerUseStatus,
   type ComputerUseStatus,
+  type DesktopComputerUseStatus,
   type HostedProviderCatalogEntry,
   type IntegrationStatus,
   type Settings,
@@ -20,7 +21,8 @@ export type ProviderDef = {
     | "openai"
     | "grok"
     | "hormachuelos"
-    | "commandcode";
+    | "commandcode"
+    | "gemini";
   logoSrc: string;
   defaultModel: string;
   defaultBaseUrl: string;
@@ -134,6 +136,44 @@ export const PROVIDERS: ProviderDef[] = [
     models: ["openrouter/free"],
   },
   {
+    id: "gemini",
+    label: "Gemini",
+    logoKey: "gemini",
+    logoSrc: "./logos/gemini.svg",
+    defaultModel: "gemini-3.7-flash",
+    defaultBaseUrl: "https://hormachuelos.vercel.app/api/v1",
+    keyUrl: "https://commandcode.ai/docs/studio/api-keys",
+    keyRequired: false,
+    hostedManaged: true,
+    models: [
+      "gemini-3.7-flash",
+      "gemini-3.5-flash",
+      "gemini-3.1-pro",
+      "gemini-3-flash",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+    ],
+  },
+  {
+    id: "gemini_cli",
+    label: "Gemini CLI",
+    logoKey: "gemini",
+    logoSrc: "./logos/gemini.svg",
+    defaultModel: "gemini-3.5-flash",
+    defaultBaseUrl: "https://cloudcode-pa.googleapis.com",
+    keyUrl: "",
+    keyRequired: false,
+    models: [
+      "gemini-3.5-flash",
+      "gemini-3.1-pro-preview",
+      "gemini-3-pro-preview",
+      "gemini-3-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+    ],
+  },
+  {
     id: "glm",
     label: "OpenCode",
     logoKey: "glm",
@@ -216,6 +256,12 @@ const BUILTIN_PROVIDERS: ProviderDef[] = PROVIDERS.map((provider) => ({
   ...provider,
   models: [...provider.models],
 }));
+/** Providers that run on this PC, not through the Hormachuelos hosted catalog. */
+export const LOCAL_MACHINE_PROVIDER_IDS = new Set(["ollama", "gemini_cli"]);
+
+export function isLocalMachineProvider(providerId: string): boolean {
+  return LOCAL_MACHINE_PROVIDER_IDS.has(String(providerId || "").trim().toLowerCase());
+}
 const HOSTED_PROVIDER_CATALOG = new Map<string, HostedProviderCatalogEntry>();
 const HOSTED_MODEL_DISPLAY_NAMES = new Map<string, string>();
 /** When true, the server allowlist is exclusive — no builtin provider/model fallbacks. */
@@ -231,7 +277,7 @@ function hostedModelNameKey(providerId: string, modelId: string): string {
 
 function isHostedProviderAlias(value: string): boolean {
   const id = String(value || "").trim().toLowerCase();
-  return /^[a-z][a-z0-9_-]{0,48}$/.test(id) && id !== "cursor" && id !== "ollama";
+  return /^[a-z][a-z0-9_-]{0,48}$/.test(id) && id !== "cursor" && id !== "ollama" && id !== "gemini_cli";
 }
 
 function uniqueModels(models: readonly string[]): string[] {
@@ -285,7 +331,7 @@ function providerFromHostedCatalog(entry: HostedProviderCatalogEntry): ProviderD
   // under an admin allowlist, in which case the server list is exclusive.
   const approvedModels = hostedCatalogRestricted
     ? models
-    : id === "hormachuelos_free"
+    : id === "hormachuelos_free" || id === "gemini"
       ? uniqueModels([...builtin.models, ...models])
       : id === "openrouter"
         ? ["openrouter/free"]
@@ -311,15 +357,16 @@ function rebuildProviderCatalog() {
     if (provider) managed.set(provider.id, provider);
   }
 
-  // Admin allowlists are exclusive: only the providers returned by the hosted
-  // catalog may appear. Local BYOK / Ollama / Cursor are also locked out so a
-  // prohibited model cannot be selected outside the allowlist.
+  // Keep local machine providers such as Gemini CLI and Ollama in the picker.
+  // Admin allowlists hide hosted BYOK chips. These local providers do not use
+  // the Hormachuelos plan catalog.
   if (hostedCatalogRestricted && managed.size > 0) {
     const providers = [...managed.values()].map((provider) => ({
       ...provider,
       hidden: false,
       models: [...provider.models],
     }));
+    appendLocalMachineProviders(providers);
     PROVIDERS.splice(0, PROVIDERS.length, ...providers);
     return;
   }
@@ -345,8 +392,9 @@ export function setHostedProviderCatalog(
   for (const entry of entries) {
     const provider = providerFromHostedCatalog(entry);
     if (!provider || HOSTED_PROVIDER_CATALOG.has(provider.id)) continue;
-    // When restricted, trust the server model list exactly. Otherwise keep the
-    // previous filter that drops unknown labels while preserving known aliases.
+    // Keep friendly names for every catalog model the picker can actually
+    // show. Hosted-managed providers (including dashboard-created ones) must
+    // accept newly added aliases without waiting for a desktop rebuild.
     const models = entry.models
       .map((model) => ({ id: String(model?.id || "").trim(), label: String(model?.label || "").trim() }))
       .filter((model) =>
@@ -354,7 +402,7 @@ export function setHostedProviderCatalog(
         model.label.length > 0 &&
         model.label.length <= 120 &&
         !/[\u0000-\u001f\u007f]/.test(model.label) &&
-        (hostedCatalogRestricted || provider.models.includes(model.id)),
+        (hostedCatalogRestricted || provider.hostedManaged || provider.models.includes(model.id)),
       );
     if (!models.length) continue;
     HOSTED_PROVIDER_CATALOG.set(provider.id, {
@@ -382,9 +430,28 @@ export async function refreshHostedProviderCatalog(): Promise<HostedProviderCata
   return payload.data;
 }
 
+function localMachineBuiltinProviders(): ProviderDef[] {
+  return BUILTIN_PROVIDERS
+    .filter((provider) => isLocalMachineProvider(provider.id))
+    .map((provider) => ({
+      ...provider,
+      hidden: false,
+      models: [...provider.models],
+    }));
+}
+
+function appendLocalMachineProviders(providers: ProviderDef[]) {
+  for (const builtin of localMachineBuiltinProviders()) {
+    if (providers.some((provider) => provider.id === builtin.id)) continue;
+    providers.push(builtin);
+  }
+}
+
 /** Providers shown in pickers. */
 export function visibleProviders(): ProviderDef[] {
-  return PROVIDERS.filter((p) => !p.hidden);
+  const visible = PROVIDERS.filter((p) => !p.hidden);
+  appendLocalMachineProviders(visible);
+  return visible;
 }
 
 /** Friendly labels for model IDs (API id unchanged). */
@@ -412,9 +479,16 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   "claude-4.5-opus": "Claude 4.5 Opus",
   "claude-4-sonnet": "Claude 4 Sonnet",
   "claude-opus-4": "Claude Opus 4",
+  "gemini-3.7-flash": "Gemini 3.7 Flash",
+  "gemini-3-7-flash": "Gemini 3.7 Flash",
+  "google/gemini-3.7-flash": "Gemini 3.7 Flash",
   "gemini-3.5-flash": "Gemini 3.5 Flash",
   "gemini-3.1-pro": "Gemini 3.1 Pro",
+  "gemini-3.1-pro-preview": "Gemini 3.1 Pro",
+  "gemini-3-pro-preview": "Gemini 3 Pro",
   "gemini-3-flash": "Gemini 3 Flash",
+  "gemini-3-flash-preview": "Gemini 3 Flash",
+  "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite",
   "gemini-2.5-pro": "Gemini 2.5 Pro",
   "gemini-2.5-flash": "Gemini 2.5 Flash",
   "composer-2": "Composer 2",
@@ -456,6 +530,8 @@ export const REASONING_EFFORT_PROVIDER_IDS = new Set([
   "openai",
   "ollama",
   "pollinations",
+  "gemini",
+  "gemini_cli",
 ]);
 
 /** Provider catalogs that are deliberately pinned (no live /models flood). */
@@ -479,6 +555,19 @@ export function hasStaticModelCatalog(providerId: string): boolean {
   return STATIC_MODEL_PROVIDER_IDS.has(providerId) || Boolean(getProviderMeta(providerId)?.hostedManaged);
 }
 
+function modelBelongsWithProvider(providerId: string, modelId: string): boolean {
+  const provider = String(providerId || "").trim().toLowerCase();
+  const model = String(modelId || "").trim().toLowerCase();
+  if (!provider || !model) return false;
+  if (model.startsWith("hormachuelos-v")) return provider === "hormachuelos_free";
+  if (model.startsWith("gemini-") || model.startsWith("google/gemini")) {
+    return provider === "gemini" || provider === "gemini_cli";
+  }
+  if (model.startsWith("deepseek")) return provider === "deepseek";
+  if (model === "openrouter/free" || model === "free") return provider === "openrouter";
+  return true;
+}
+
 /**
  * Preserve the built-in Hormachuelos aliases when the hosted catalog is
  * refreshed.  The website can add models at any time, but an older deployed
@@ -487,17 +576,20 @@ export function hasStaticModelCatalog(providerId: string): boolean {
  */
 export function mergeProviderModelCatalog(providerId: string, models: readonly string[]): string[] {
   const hosted = HOSTED_PROVIDER_CATALOG.get(providerId);
-  if (hostedCatalogRestricted && hosted?.models?.length) {
+  if (hostedCatalogRestricted && hosted?.models?.length && !isLocalMachineProvider(providerId)) {
     return uniqueModels(hosted.models.map((model) => model.id));
   }
   const meta = getProviderMeta(providerId);
   const configured =
     providerId === "hormachuelos_free" ||
     providerId === "openrouter" ||
+    providerId === "gemini" ||
+    providerId === "gemini_cli" ||
     meta?.hostedManaged
       ? meta?.models ?? []
       : [];
-  return [...new Set([...configured, ...models].map((model) => model.trim()).filter(Boolean))];
+  const incoming = models.filter((model) => modelBelongsWithProvider(providerId, model));
+  return [...new Set([...configured, ...incoming].map((model) => model.trim()).filter(Boolean))];
 }
 
 /**
@@ -521,9 +613,51 @@ export const DEEPSEEK_EFFORT_OPTIONS = [
 
 export type EffortId = (typeof CURSOR_EFFORT_OPTIONS)[number]["id"];
 
-export function effortOptionsForProvider(providerId: string) {
+export function effortOptionsForProvider(providerId: string, modelId?: string) {
   if (providerId === "deepseek") return DEEPSEEK_EFFORT_OPTIONS;
+  if (providerId === "gemini" || providerId === "gemini_cli") {
+    return geminiEffortOptions(modelId || "");
+  }
   return CURSOR_EFFORT_OPTIONS;
+}
+
+function isGemini25Model(modelId: string): boolean {
+  const model = String(modelId || "").toLowerCase();
+  return model.includes("2.5") || model.includes("2-5");
+}
+
+function geminiAllowsMinimalThinking(modelId: string): boolean {
+  const model = String(modelId || "").toLowerCase();
+  if (isGemini25Model(model)) return false;
+  if (model.includes("3.7")) return false;
+  if (model.includes("pro") && !model.includes("flash")) return false;
+  return true;
+}
+
+/** Google thinking levels / budgets, stored as the shared effort ids. */
+export function geminiEffortOptions(modelId: string): { id: EffortId; label: string }[] {
+  if (isGemini25Model(modelId)) {
+    return [
+      { id: "light", label: "Off" },
+      { id: "medium", label: "Low" },
+      { id: "high", label: "Medium" },
+      { id: "xhigh", label: "High" },
+      { id: "ultra", label: "Dynamic" },
+    ];
+  }
+  if (geminiAllowsMinimalThinking(modelId)) {
+    return [
+      { id: "light", label: "Minimal" },
+      { id: "medium", label: "Low" },
+      { id: "high", label: "Medium" },
+      { id: "xhigh", label: "High" },
+    ];
+  }
+  return [
+    { id: "light", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+  ];
 }
 
 /** Normalize UI effort ids (legacy low/max accepted). */
@@ -541,11 +675,23 @@ export function normalizeEffort(value: string | null | undefined): EffortId {
 export function normalizeEffortForProvider(
   providerId: string,
   value: string | null | undefined,
+  modelId?: string,
 ): EffortId {
   const v = (value || "").trim().toLowerCase();
   if (providerId === "deepseek") {
     // DeepSeek accepts light/high/ultra (→ low/high/max upstream).
     if (v === "medium" || v === "xhigh") return v === "medium" ? "light" : "ultra";
+    return normalizeEffort(value);
+  }
+  if (providerId === "gemini" || providerId === "gemini_cli") {
+    const opts = geminiEffortOptions(modelId || "");
+    let id: EffortId = normalizeEffort(value);
+    if (v === "minimal" || v === "off") id = "light";
+    if (v === "dynamic") id = "ultra";
+    if (!opts.some((opt) => opt.id === id)) {
+      return (opts[opts.length - 1]?.id as EffortId) || "high";
+    }
+    return id;
   }
   return normalizeEffort(value);
 }
@@ -648,7 +794,25 @@ function isKnownProviderBaseUrl(value: string): boolean {
 export function getProviderMeta(id: string) {
   const normalized = String(id || "").trim().toLowerCase();
   return PROVIDERS.find((p) => p.id === normalized) ||
+    BUILTIN_PROVIDERS.find((p) => p.id === normalized) ||
     (isHostedProviderAlias(normalized) ? fallbackHostedProvider(normalized) : undefined);
+}
+
+export function normalizeAllowedApps(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const cleaned: string[] = [];
+  for (const item of value) {
+    const name = String(item || "")
+      .trim()
+      .replace(/^.*[\\/]/, "")
+      .toLowerCase();
+    if (!name.endsWith(".exe") || name.length > 128 || !/^[a-z0-9._-]+\.exe$/.test(name)) {
+      continue;
+    }
+    if (!cleaned.includes(name)) cleaned.push(name);
+    if (cleaned.length >= 32) break;
+  }
+  return cleaned;
 }
 
 /** Default settings matching the Rust Default impl. */
@@ -662,12 +826,14 @@ export function defaultSettings(): Settings {
     // The agent loop is now intentionally unbounded.
     max_iterations: 0,
     command_timeout_secs: 120,
-    auto_approve: false,
-    permission_mode: "plan",
-    capability_mode: "thinking",
+    auto_approve: true,
+    permission_mode: "adaptive",
+    capability_mode: "balanced",
     taglish: false,
     computer_use_enabled: false,
     computer_use_prompt_activation: true,
+    desktop_computer_use_enabled: false,
+    desktop_computer_use_allowed_apps: [],
     smart_agent_enabled: true,
     flavour_enabled: true,
     model_effort: "high",
@@ -686,19 +852,24 @@ export async function getSettingsSafe(): Promise<Settings> {
 /** Normalize provider settings while preserving user-entered custom model IDs. */
 export function normalizeSettings(s: Settings): Settings {
   s.provider = String(s.provider || "").trim().toLowerCase();
-  if (!s.permission_mode || !["plan", "auto", "ask", "research", "full", "multi_agent"].includes(s.permission_mode)) {
-    s.permission_mode = s.auto_approve ? "auto" : "plan";
-  }
-  if (s.permission_mode === "research") s.permission_mode = "ask";
+  const rawMode = String(s.permission_mode || "").trim().toLowerCase();
+  s.permission_mode = rawMode === "auto"
+    ? "adaptive"
+    : rawMode === "full"
+      ? "build"
+      : ["adaptive", "ask", "research", "plan", "build", "multi_agent"].includes(rawMode)
+        ? rawMode
+        : "adaptive";
   s.auto_approve =
-    s.permission_mode === "auto" ||
-    s.permission_mode === "full" ||
+    s.permission_mode === "adaptive" ||
+    s.permission_mode === "build" ||
     s.permission_mode === "multi_agent";
   const capsByMode: Record<string, string[]> = {
+    adaptive: ["balanced", "agent"],
+    ask: ["answer_max", "brief"],
+    research: ["investigate", "answer_max"],
     plan: ["thinking", "guided"],
-    auto: ["agent", "balanced"],
-    ask: ["answer_max", "investigate", "brief"],
-    full: ["autonomous", "max"],
+    build: ["agent", "balanced"],
     multi_agent: ["autonomous", "max"],
   };
   const allowed = capsByMode[s.permission_mode] || ["thinking"];
@@ -710,13 +881,17 @@ export function normalizeSettings(s: Settings): Settings {
   // Missing on older settings means Auto: explicit user prompts may enable
   // Computer Use for that request, while unrelated requests remain off.
   s.computer_use_prompt_activation = s.computer_use_prompt_activation !== false;
-  // Missing on older desktop settings means enabled: Smart Agent is a safe,
+  s.desktop_computer_use_enabled = !!s.desktop_computer_use_enabled;
+  s.desktop_computer_use_allowed_apps = normalizeAllowedApps(
+    s.desktop_computer_use_allowed_apps,
+  );
+  // Missing on older desktop settings means enabled: Director is a safe,
   // provider-neutral orchestration layer and does not change credentials.
   s.smart_agent_enabled = s.smart_agent_enabled !== false;
   // Flavour is local, provider-neutral memory. Missing on older settings means
   // enabled so long-running and continuing sessions benefit after upgrading.
   s.flavour_enabled = s.flavour_enabled !== false;
-  s.model_effort = normalizeEffortForProvider(s.provider, s.model_effort);
+  s.model_effort = normalizeEffortForProvider(s.provider, s.model_effort, s.model);
   // Older builds pointed the OpenAI label at Cursor. Keep that path for a
   // genuine Cursor key; an explicit xAI endpoint uses the native xAI route.
   if (s.provider === "openai" && s.base_url === "https://api.cursor.com/v1") {
@@ -811,6 +986,7 @@ export class SettingsModal {
   modelDiscoveryMessages: Record<string, string> = {};
   integrations: IntegrationStatus[] = [];
   computerUseStatus: ComputerUseStatus | null = null;
+  desktopComputerUseStatus: DesktopComputerUseStatus | null = null;
   private computerUseUnlisten: (() => void) | null = null;
   private previousFocus: HTMLElement | null = null;
   private modalSessionActive = false;
@@ -869,6 +1045,7 @@ export class SettingsModal {
     }
     if (!this.modalSessionActive) return;
     this.computerUseStatus = await api.getComputerUseStatus().catch(() => null);
+    this.desktopComputerUseStatus = await api.getDesktopComputerUseStatus().catch(() => null);
     if (!this.modalSessionActive) return;
     this.computerUseUnlisten?.();
     this.computerUseUnlisten = await onComputerUseStatus((status) => {
@@ -876,6 +1053,8 @@ export class SettingsModal {
       if (!this.modalSessionActive) return;
       const panel = this.root.querySelector<HTMLElement>(".computer-use-panel");
       if (panel) panel.replaceWith(this.renderComputerUsePanel());
+      const desktopPanel = this.root.querySelector<HTMLElement>(".desktop-computer-use-panel");
+      if (desktopPanel) desktopPanel.replaceWith(this.renderDesktopComputerUsePanel());
     }).catch(() => null);
     if (!this.modalSessionActive) return;
     for (const p of PROVIDERS) {
@@ -1204,6 +1383,8 @@ export class SettingsModal {
         ? "Free OpenCode models only. Get a key at opencode.ai/auth."
         : uiIdForKeys === "ollama"
         ? "Select a locally installed Ollama model above."
+        : uiIdForKeys === "gemini_cli"
+        ? "Uses the Google account already logged into Gemini CLI on this PC. No API key is stored in Hormachuelos."
         : discoveryProvider.keyRequired && !this.keyStates[discoveryProvider.id]
           ? "Paste and save an API key — models load automatically from the provider."
           : "Models load automatically from the provider after the key is saved.");
@@ -1314,6 +1495,8 @@ export class SettingsModal {
       const note = el("div", { class: "set-hint", style: "padding:8px 10px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2)" });
       note.textContent = activeProvider.id === "hormachuelos_free"
         ? "Included for signed-in Hormachuelos users. Model credentials are protected by the hosted service and are never bundled with the app."
+        : activeProvider.id === "gemini_cli"
+          ? "Uses the Google account already logged into Gemini CLI on this PC. Sign in with `gemini` if the picker cannot load models. Hormachuelos never copies that login into its own keyring."
         : activeProvider.hostedManaged
           ? "This provider and its model aliases are managed in the Hormachuelos admin dashboard. Its upstream key stays on the hosted service; sign in with an active hosted plan to use it."
           : `${activeProvider.label} does not require an API key. Just pick a model and start building.`;
@@ -1329,7 +1512,7 @@ export class SettingsModal {
       return inp;
     }));
 
-    body.appendChild(this.field("Smart Agent", () => {
+    body.appendChild(this.field("Adaptive Director runtime", () => {
       const wrap = el("label", { class: "set-check", style: "display:flex;align-items:center;gap:8px;cursor:pointer" });
       const inp = el("input", { type: "checkbox" }) as HTMLInputElement;
       inp.checked = this.settings.smart_agent_enabled !== false;
@@ -1337,11 +1520,11 @@ export class SettingsModal {
         this.settings.smart_agent_enabled = inp.checked;
       });
       wrap.appendChild(inp);
-      wrap.appendChild(document.createTextNode("Keep task plans, automatic recovery, and a final verification check"));
+      wrap.appendChild(document.createTextNode("Keep host-owned Answer / Change / Ship / Operate jobs, automatic recovery, and verification for mutating work"));
       return wrap;
     }));
     body.appendChild(el("div", { class: "set-hint", style: "margin-top:-6px;margin-bottom:12px" }, [
-      "For build, fix, app, website, software, APK, and release work: keeps the same session moving and checks evidence before the AI says it is done. It never changes your selected provider, model, or API key.",
+      "This runtime enforces the effective mode after routing: read-only turns cannot mutate files, Build stays focused, and broad Parallel work gets one integrated verification pass. It never changes your selected provider, model, or API key.",
     ]));
 
     body.appendChild(this.field("Flavour memory", () => {
@@ -1362,28 +1545,30 @@ export class SettingsModal {
     body.appendChild(this.field("Permission mode", () => {
       const sel = el("select", { class: "field" }) as HTMLSelectElement;
       for (const [value, label] of [
-        ["plan", "Plan — refine request, suggest options, numbered plan, then execute with full permissions"],
-        ["auto", "Auto — build with defaults; confirm delete/kill/outside project"],
-        ["ask", "Ask — investigate code with evidence; reads free, writes need Approve"],
-        ["full", "Full — maximum autonomy, zero desktop prompts"],
-        ["multi_agent", "Multi-Agent — Ship permission; independent workspace checks run together"],
+        ["adaptive", "Adaptive Director (recommended) — auto-route each turn by intent, complexity, and risk"],
+        ["ask", "Ask — direct bounded answer; project writes locked"],
+        ["research", "Research — deep read-only evidence, cross-checking, and synthesis"],
+        ["plan", "Plan — scope, decisions, acceptance criteria, and verification before changes"],
+        ["build", "Build — focused implementation with relevant verification"],
+        ["multi_agent", "Parallel (Multi-Agent) — coordinated independent workstreams and one delivery"],
       ] as const) {
         const opt = el("option", { value }, [label]);
-        if ((this.settings.permission_mode || "plan") === value) opt.setAttribute("selected", "selected");
+        if ((this.settings.permission_mode || "adaptive") === value) opt.setAttribute("selected", "selected");
         sel.appendChild(opt);
       }
       sel.addEventListener("change", () => {
         this.settings.permission_mode = sel.value;
         this.settings.auto_approve =
-          sel.value === "auto" || sel.value === "full" || sel.value === "multi_agent";
+          sel.value === "adaptive" || sel.value === "build" || sel.value === "multi_agent";
       });
       return sel;
     }));
     body.appendChild(el("div", { class: "set-hint", style: "margin-top:-6px;margin-bottom:12px" }, [
-      "Plan: improve brief, options, then execute with Ship-level permissions. Ask: explore & answer with evidence (reads free). Auto: implement in-project quickly. Full: no tool prompts. Multi-Agent: Ship-level access with safe independent workspace checks started together. Same switch sits next to the chat box.",
+      "Adaptive keeps your selection stable while routing each turn to Ask, Research, Plan, Build, or Parallel. Ask is direct and bounded. Research performs deeper read-only evidence gathering. Plan stays locked until Apply. Build uses one focused owner and verifies the requested change. Parallel is for genuinely separable workstreams; dependent edits remain ordered and one Director synthesizes the delivery.",
     ]));
 
     body.appendChild(this.renderComputerUsePanel());
+    body.appendChild(this.renderDesktopComputerUsePanel());
 
     body.appendChild(this.field("Taglish replies", () => {
       const wrap = el("label", { class: "set-check", style: "display:flex;align-items:center;gap:8px;cursor:pointer" });
@@ -1476,10 +1661,10 @@ export class SettingsModal {
     saveAllBtn.addEventListener("click", async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this.settings.permission_mode = (this.settings.permission_mode || "plan").toLowerCase();
+      this.settings.permission_mode = (this.settings.permission_mode || "adaptive").toLowerCase();
       this.settings.auto_approve =
-        this.settings.permission_mode === "auto" ||
-        this.settings.permission_mode === "full" ||
+        this.settings.permission_mode === "adaptive" ||
+        this.settings.permission_mode === "build" ||
         this.settings.permission_mode === "multi_agent";
       try {
         await api.saveSettings(this.settings);
@@ -1651,6 +1836,164 @@ export class SettingsModal {
     panel.appendChild(controls);
     return panel;
   }
+
+  private renderDesktopComputerUsePanel(): HTMLElement {
+    const status = this.desktopComputerUseStatus;
+    const supported = status?.supported ?? false;
+    const panel = el("section", {
+      class: "computer-use-panel desktop-computer-use-panel",
+      "aria-labelledby": "desktop-computer-use-title",
+    });
+
+    const head = el("div", { class: "computer-use-head" });
+    const titleWrap = el("div", { class: "computer-use-title-wrap" });
+    titleWrap.appendChild(
+      el("div", { class: "computer-use-title", id: "desktop-computer-use-title" }, ["Desktop mode"]),
+    );
+    titleWrap.appendChild(
+      el("div", { class: "computer-use-subtitle" }, [
+        "Control ordinary Windows apps, including Settings",
+      ]),
+    );
+    head.appendChild(titleWrap);
+    const badge = el("span", {
+      class: "computer-use-badge",
+      role: "status",
+      "aria-live": "polite",
+    });
+    head.appendChild(badge);
+    panel.appendChild(head);
+
+    const enabledId = this.nextFieldId();
+    const toggle = el("label", { class: "computer-use-toggle", for: enabledId });
+    const input = el("input", { id: enabledId, type: "checkbox" }) as HTMLInputElement;
+    input.checked = !!this.settings.desktop_computer_use_enabled;
+    input.disabled = !supported;
+    toggle.appendChild(input);
+    const copy = el("span", { class: "computer-use-toggle-copy" });
+    copy.appendChild(el("span", { class: "computer-use-toggle-label" }, ["Enable Desktop Computer Use"]));
+    copy.appendChild(
+      el("span", { class: "computer-use-toggle-note" }, [
+        supported
+          ? "Off by default. Lets the agent click, type, scroll, and drag outside Preview — including Windows Settings brightness."
+          : "Desktop Computer Use is available on Windows only.",
+      ]),
+    );
+    toggle.appendChild(copy);
+    panel.appendChild(toggle);
+
+    const warning = el("div", { class: "computer-use-warning" });
+    const paint = () => {
+      this.settings.desktop_computer_use_enabled = input.checked;
+      const paused = !!status?.paused;
+      badge.textContent = !supported ? "Unsupported" : paused ? "Paused" : input.checked ? "On" : "Off";
+      badge.className = "computer-use-badge " +
+        (paused ? "paused" : supported && input.checked ? "ready" : "unavailable");
+      warning.textContent = input.checked
+        ? "Password managers, Windows Security, terminals, and Hormachuelos stay blocked. Press Ctrl+Alt+Esc to stop."
+        : "Desktop mode is off. Preview Computer Use above is unchanged.";
+    };
+    input.addEventListener("change", paint);
+    panel.appendChild(warning);
+    paint();
+
+    const apps = el("div", { class: "computer-use-apps" });
+    apps.appendChild(el("div", { class: "computer-use-apps-label" }, ["Allowed apps"]));
+    const chips = el("div", { class: "computer-use-app-chips" });
+    const renderChips = () => {
+      clear(chips);
+      const names = this.settings.desktop_computer_use_allowed_apps || [];
+      if (!names.length) {
+        chips.appendChild(
+          el("span", { class: "computer-use-app-empty" }, [
+            "Empty = all ordinary apps except the safety blocklist",
+          ]),
+        );
+        return;
+      }
+      for (const name of names) {
+        const chip = el("span", { class: "computer-use-app-chip" }, [name]);
+        const remove = el("button", {
+          class: "computer-use-app-remove",
+          type: "button",
+          "aria-label": "Remove " + name,
+        }, ["×"]) as HTMLButtonElement;
+        remove.addEventListener("click", () => {
+          this.settings.desktop_computer_use_allowed_apps =
+            this.settings.desktop_computer_use_allowed_apps.filter((item) => item !== name);
+          renderChips();
+        });
+        chip.appendChild(remove);
+        chips.appendChild(chip);
+      }
+    };
+    renderChips();
+    apps.appendChild(chips);
+
+    const addRow = el("div", { class: "computer-use-app-add" });
+    const addInput = el("input", {
+      class: "field",
+      type: "text",
+      placeholder: "notepad.exe",
+      "aria-label": "Process name to allow",
+    }) as HTMLInputElement;
+    const addButton = el("button", { class: "btn sm", type: "button" }, ["Add"]) as HTMLButtonElement;
+    const addFromWindows = el("button", { class: "btn sm", type: "button" }, [
+      "Add open window",
+    ]) as HTMLButtonElement;
+    const addName = (raw: string) => {
+      const next = normalizeAllowedApps([
+        ...(this.settings.desktop_computer_use_allowed_apps || []),
+        raw,
+      ]);
+      this.settings.desktop_computer_use_allowed_apps = next;
+      addInput.value = "";
+      renderChips();
+    };
+    addButton.addEventListener("click", () => addName(addInput.value));
+    addInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addName(addInput.value);
+      }
+    });
+    addFromWindows.addEventListener("click", async () => {
+      addFromWindows.disabled = true;
+      try {
+        const listed = await api.listComputerUseTargets();
+        const windows = listed.windows || [];
+        if (!windows.length) {
+          alert("No ordinary windows are currently targetable.");
+          return;
+        }
+        const choice = windows
+          .map((window) => `${window.processName} — ${window.title}`)
+          .join("\n");
+        const picked = prompt("Type the process name to pin, for example notepad.exe:\n\n" + choice);
+        if (picked) addName(picked);
+      } catch (error) {
+        alert("Could not list windows: " + String(error));
+      } finally {
+        addFromWindows.disabled = false;
+      }
+    });
+    addRow.appendChild(addInput);
+    addRow.appendChild(addButton);
+    addRow.appendChild(addFromWindows);
+    apps.appendChild(addRow);
+    panel.appendChild(apps);
+
+    const controls = el("div", { class: "computer-use-controls" });
+    const shortcut = status?.emergencyShortcut || this.computerUseStatus?.emergencyShortcut || "Ctrl+Alt+Esc";
+    controls.appendChild(
+      el("div", { class: "computer-use-emergency" }, [
+        "Emergency stop: press " + shortcut + " to pause Preview and Desktop actions.",
+      ]),
+    );
+    panel.appendChild(controls);
+    return panel;
+  }
+
   /** GitHub / Supabase / Vercel / … connect cards */
   private renderIntegrationsPanel(): HTMLElement {
     const wrap = el("div", { class: "integrations-list" });

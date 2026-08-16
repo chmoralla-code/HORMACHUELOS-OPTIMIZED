@@ -8,12 +8,17 @@ def main() -> None:
         page_errors: list[str] = []
         page.on("pageerror", lambda error: page_errors.append(str(error)))
         page.goto("http://127.0.0.1:1420/fast-ship-harness.html")
+        page.wait_for_load_state("networkidle")
         page.wait_for_function("() => Boolean(window.__fastShipHarness)")
 
         initial = page.evaluate("() => window.__fastShipHarness.initial()")
         assert initial["profile"] == "auto"
         assert initial["activeLabel"] == "Auto"
         assert "3 protected actions" in initial["checkpointText"]
+        assert "WORKSPACE TIME MACHINE" in page.locator("#changes-panel").inner_text().upper()
+        assert "Edit file" in initial["checkpointText"]
+        assert "src/main.ts" in initial["checkpointText"]
+        assert "Whole project snapshot" in initial["checkpointText"]
         assert "Shell-command side effects" in initial["checkpointText"]
         assert initial["rollbackDisabled"] is False
         assert initial["foreground"] != initial["background"], "light-mode checkpoint text is invisible"

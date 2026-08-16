@@ -120,6 +120,7 @@ pub struct LlmResponse {
 pub mod anthropic;
 pub mod commandcode;
 pub mod gemini;
+pub mod gemini_cli;
 pub mod glm;
 pub mod openai;
 
@@ -134,7 +135,7 @@ pub fn provider_needs_key(provider: &str) -> bool {
     }
     !matches!(
         provider.to_lowercase().as_str(),
-        "ollama" | "hormachuelos_free"
+        "ollama" | "hormachuelos_free" | "gemini_cli"
     )
 }
 
@@ -151,6 +152,7 @@ pub fn provider_default_base_url(provider: &str) -> Option<&'static str> {
         "hormachuelos_free" => Some("https://hormachuelos.vercel.app/api/v1"),
         "anthropic" => Some("https://api.anthropic.com"),
         "gemini" => Some("https://generativelanguage.googleapis.com"),
+        "gemini_cli" => Some("https://cloudcode-pa.googleapis.com"),
         "commandcode" => Some(crate::config::COMMANDCODE_API_BASE_URL),
         _ => None,
     }
@@ -218,7 +220,41 @@ pub fn build_provider_with_effort(
             ))
         }
         "anthropic" => Ok(Box::new(anthropic::Anthropic::new(api_key, base, model))),
-        "gemini" | "google" => Ok(Box::new(gemini::Gemini::new(api_key, base, model))),
+        "gemini" | "google" => {
+            // Command Code Studio keys (`user_…`) speak the OpenAI-compatible
+            // Provider API, including google/gemini-3.7-flash. Google AI Studio
+            // keys stay on generateContent. Hosted Hormachuelos aliases use the
+            // OpenAI-compatible proxy so admin-added models do not need a
+            // native Gemini client.
+            if gemini::uses_command_code_provider_api(&key, base) {
+                Ok(Box::new(
+                    openai::OpenAi::new(
+                        &key,
+                        Some(gemini::COMMAND_CODE_PROVIDER_API),
+                        &gemini::command_code_gemini_model(model),
+                        "gemini",
+                    )
+                    .with_reasoning_effort(model_effort),
+                ))
+            } else if gemini::uses_hosted_gemini_proxy(&key, base) {
+                Ok(Box::new(
+                    openai::OpenAi::new(&key, base, model, "gemini")
+                        .with_reasoning_effort(model_effort),
+                ))
+            } else {
+                let native_base = if gemini::is_google_gemini_api_key(&key) {
+                    Some("https://generativelanguage.googleapis.com")
+                } else {
+                    base
+                };
+                Ok(Box::new(
+                    gemini::Gemini::new(&key, native_base, model).with_effort(model_effort),
+                ))
+            }
+        }
+        "gemini_cli" => Ok(Box::new(
+            gemini_cli::GeminiCli::new(model).with_effort(model_effort),
+        )),
         "commandcode" => {
             // Through the Hormachuelos hosted proxy the OpenAI-compatible
             // chat/completions endpoint is used (the proxy translates to the
@@ -297,6 +333,11 @@ mod tests {
             );
         }
         assert!(!provider_needs_key("ollama"));
+        assert!(!provider_needs_key("gemini_cli"));
+        assert_eq!(
+            provider_default_base_url("gemini_cli"),
+            Some("https://cloudcode-pa.googleapis.com")
+        );
         assert_eq!(
             provider_default_base_url("hormachuelos_free"),
             Some("https://hormachuelos.vercel.app/api/v1")

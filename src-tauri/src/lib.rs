@@ -1,12 +1,16 @@
 pub mod agent;
 pub mod app_updater;
 pub mod checkpoint;
+pub mod computer_fx;
 pub mod computer_use;
 pub mod config;
 pub mod cursor_bridge;
 pub mod design_source;
+pub mod desktop_computer_use;
+pub mod document_inspect;
 pub mod execution_profile;
 pub mod flavour;
+pub mod frontend_shell;
 pub mod integration_chat;
 pub mod integrations;
 pub mod license;
@@ -21,7 +25,9 @@ pub mod tools;
 pub mod workspace;
 
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
+};
 use tauri_plugin_opener::OpenerExt;
 
 #[derive(serde::Serialize)]
@@ -68,6 +74,16 @@ struct HostedProviderCatalogResult {
 #[tauri::command]
 fn get_project_root(state: tauri::State<'_, state::AppState>) -> Option<String> {
     state.project_root.lock().unwrap().clone()
+}
+
+#[tauri::command]
+async fn ensure_project_dev_server(project_root: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::tools::ensure_project_dev_server(std::path::Path::new(&project_root))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -142,11 +158,12 @@ async fn save_settings(
     // Normalize permission mode + auto_approve together
     let mode = settings.permission_mode.trim().to_ascii_lowercase();
     settings.permission_mode = match mode.as_str() {
-        "ask" | "research" => "ask".into(),
-        "plan" | "auto" | "full" | "multi_agent" => mode,
+        "auto" => "adaptive".into(),
+        "full" => "build".into(),
+        "adaptive" | "ask" | "research" | "plan" | "build" | "multi_agent" => mode,
         _ => {
             if settings.auto_approve {
-                "auto".into()
+                "adaptive".into()
             } else {
                 "plan".into()
             }
@@ -154,10 +171,15 @@ async fn save_settings(
     };
     settings.auto_approve = matches!(
         settings.permission_mode.as_str(),
-        "auto" | "full" | "multi_agent"
+        "adaptive" | "build" | "multi_agent"
     );
+    settings.capability_mode =
+        config::normalize_capability_for_mode(&settings.permission_mode, &settings.capability_mode);
     settings.validate().map_err(|e| e.to_string())?;
+    settings.desktop_computer_use_allowed_apps =
+        desktop_computer_use::sanitize_allowed_apps(settings.desktop_computer_use_allowed_apps);
     settings.save().map_err(|e| e.to_string())?;
+    desktop_computer_use::set_allowed_apps(settings.desktop_computer_use_allowed_apps.clone());
     *state.settings.lock().unwrap() = settings;
     Ok(())
 }
@@ -174,12 +196,23 @@ fn set_computer_use_paused(
     state: tauri::State<'_, state::AppState>,
 ) -> computer_use::ComputerUseStatus {
     computer_use::set_paused(paused);
+    desktop_computer_use::set_paused(paused);
     if paused {
         state.stop_all_runs();
     }
     let status = computer_use::status();
     let _ = app.emit("computer-use-status", &status);
     status
+}
+
+#[tauri::command]
+fn get_desktop_computer_use_status() -> desktop_computer_use::ComputerUseStatus {
+    desktop_computer_use::status()
+}
+
+#[tauri::command]
+fn list_computer_use_targets() -> Result<serde_json::Value, String> {
+    desktop_computer_use::list_targets().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -448,6 +481,11 @@ async fn list_provider_models(
     base_url: Option<String>,
 ) -> Result<Vec<String>, String> {
     config::validate_provider_id(&provider).map_err(|e| e.to_string())?;
+    if provider.eq_ignore_ascii_case("gemini_cli") {
+        return llm::gemini_cli::fetch_model_ids()
+            .await
+            .map_err(|e| e.to_string());
+    }
     if provider.eq_ignore_ascii_case("hormachuelos_free") {
         let builtin_aliases = [
             "hormachuelos-v1",
@@ -495,14 +533,28 @@ async fn list_provider_models(
             .collect());
     }
     let license = license::LicenseStatus::load().unwrap_or_default();
-    let use_hosted = license::should_use_hosted_for_provider(&license, &provider);
-    if config::is_custom_hosted_provider_alias(&provider) && !use_hosted {
+    let gemini_byok = if provider.eq_ignore_ascii_case("gemini") {
+        config::load_provider_api_key("gemini")
+            .ok()
+            .filter(|key| !key.trim().is_empty())
+    } else {
+        None
+    };
+    let use_hosted =
+        gemini_byok.is_none() && license::should_use_hosted_for_provider(&license, &provider);
+    if config::is_custom_hosted_provider_alias(&provider) && !use_hosted && gemini_byok.is_none() {
         return Err(
             "This provider alias is managed by the Hormachuelos server. Sign in with an active hosted plan to load its models."
                 .into(),
         );
     }
-    let (key, base_url) = if use_hosted {
+    let (key, base_url) = if let Some(key) = gemini_byok {
+        if llm::gemini::is_command_code_api_key(&key) {
+            (key, llm::gemini::COMMAND_CODE_PROVIDER_API.to_string())
+        } else {
+            (key, "https://generativelanguage.googleapis.com".to_string())
+        }
+    } else if use_hosted {
         (license.license_key.clone(), license::hosted_chat_base_url())
     } else {
         let base_url = base_url
@@ -522,6 +574,11 @@ async fn list_provider_models(
     };
     match provider.to_lowercase().as_str() {
         "anthropic" => llm::anthropic::fetch_model_ids(&key, &base_url).await,
+        "gemini"
+            if llm::gemini::is_command_code_api_key(&key) || base_url.contains("hormachuelos") =>
+        {
+            llm::openai::fetch_model_ids("gemini", &key, &base_url).await
+        }
         "gemini" => llm::gemini::fetch_model_ids(&key, &base_url).await,
         _ => llm::openai::fetch_model_ids(&provider, &key, &base_url).await,
     }
@@ -581,6 +638,7 @@ async fn list_hosted_provider_catalog() -> Result<HostedProviderCatalogResult, S
         if config::validate_provider_id(&id).is_err()
             || id.eq_ignore_ascii_case("cursor")
             || id.eq_ignore_ascii_case("ollama")
+            || id.eq_ignore_ascii_case("gemini_cli")
             || !provider_ids.insert(id.clone())
         {
             continue;
@@ -1085,6 +1143,22 @@ fn delete_project_file(
 }
 
 #[tauri::command]
+fn write_preview_computer_spec(
+    relative_path: String,
+    contents: String,
+    state: tauri::State<'_, state::AppState>,
+) -> Result<String, String> {
+    let root = state
+        .project_root
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "Open a project to save a Preview Computer Use spec.".to_string())?;
+    workspace::write_preview_computer_spec(std::path::Path::new(&root), &relative_path, &contents)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn clear_project_files(state: tauri::State<'_, state::AppState>) -> Result<u64, String> {
     let root = state
         .project_root
@@ -1139,6 +1213,7 @@ async fn agent_run(
     task_profile: Option<String>,
     execution_profile: Option<String>,
     run_settings: Option<config::Settings>,
+    requested_permission_mode: Option<String>,
     app: tauri::AppHandle,
     state: tauri::State<'_, state::AppState>,
 ) -> Result<Option<String>, String> {
@@ -1195,6 +1270,9 @@ async fn agent_run(
     } else {
         match config::Settings::load() {
             Ok(s) => {
+                crate::desktop_computer_use::set_allowed_apps(
+                    s.desktop_computer_use_allowed_apps.clone(),
+                );
                 *state.settings.lock().unwrap() = s.clone();
                 s
             }
@@ -1258,6 +1336,7 @@ async fn agent_run(
         cursor_resume,
         task_profile,
         Some(resolved_execution_profile.wire_name().to_string()),
+        requested_permission_mode,
     )
     .await;
     checkpoint.mark_finished(if run.cancel.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1433,6 +1512,39 @@ async fn start_integration_browser_auth(
         .map_err(|e| e.to_string())
 }
 
+fn size_computer_fx_overlay(window: &tauri::WebviewWindow) {
+    let (x, y, width, height) = computer_fx::overlay_bounds();
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+    let _ = window.set_size(PhysicalSize::new(width, height));
+    let _ = window.set_ignore_cursor_events(true);
+}
+
+fn ensure_computer_fx_overlay(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("computer-fx") {
+        size_computer_fx_overlay(&window);
+        let _ = window.show();
+        return;
+    }
+    if let Ok(window) = WebviewWindowBuilder::new(
+        app,
+        "computer-fx",
+        WebviewUrl::App("computer-fx.html".into()),
+    )
+    .title("Computer FX")
+    .transparent(true)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .focused(false)
+    .resizable(false)
+    .build()
+    {
+        size_computer_fx_overlay(&window);
+        let _ = window.show();
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         // Keep this first: Tauri's single-instance guard must initialize before
@@ -1444,6 +1556,8 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
+                #[cfg(not(feature = "custom-protocol"))]
+                frontend_shell::reload_dev_frontend(&window);
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -1452,6 +1566,7 @@ pub fn run() {
         .manage(design_source::DesignSourceState::default())
         .invoke_handler(tauri::generate_handler![
             get_project_root,
+            ensure_project_dev_server,
             app_updater::save_update_backup,
             app_updater::load_update_backup,
             app_updater::clear_update_backup,
@@ -1466,6 +1581,8 @@ pub fn run() {
             save_settings,
             get_computer_use_status,
             set_computer_use_paused,
+            get_desktop_computer_use_status,
+            list_computer_use_targets,
             computer_use::respond_preview_computer,
             set_api_key,
             has_api_key,
@@ -1485,6 +1602,7 @@ pub fn run() {
             list_project_files,
             read_project_file,
             delete_project_file,
+            write_preview_computer_spec,
             clear_project_files,
             list_run_checkpoints,
             rollback_run_checkpoint,
@@ -1524,8 +1642,26 @@ pub fn run() {
             start_integration_browser_auth,
         ])
         .setup(|app| {
+            let handle = app.handle().clone();
+            computer_fx::install_emitter(move |event| {
+                let clear = event.kind == "clear";
+                if !clear {
+                    ensure_computer_fx_overlay(&handle);
+                }
+                let _ = handle.emit("computer-use-fx", &event);
+                if clear {
+                    if let Some(window) = handle.get_webview_window("computer-fx") {
+                        let _ = window.hide();
+                    }
+                }
+            });
             computer_use::install(app.handle().clone());
             computer_use::install_emergency_hotkey(app.handle().clone());
+            desktop_computer_use::install(app.handle().clone());
+            #[cfg(not(feature = "custom-protocol"))]
+            if let Some(window) = app.get_webview_window("main") {
+                frontend_shell::recover_dev_frontend(window);
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -35,11 +35,14 @@ test("both page engines destroy their overlays on errors and explicit stop", () 
 
 test("active perimeter is monochrome, bounded, background-aware, and accessible", () => {
   const activeRule = workspaceCss.match(/\.site-preview\.is-computer-use-active\s*\{[\s\S]*?\n\}/)?.[0] || "";
-  assert.match(activeRule, /conic-gradient\(/);
-  assert.match(activeRule, /#000/);
-  assert.match(activeRule, /#fff/);
-  assert.match(activeRule, /2\.4s linear infinite/);
+  assert.match(activeRule, /border-color: transparent/);
   assert.doesNotMatch(activeRule, /(?:backdrop-)?filter\s*:/);
+  assert.match(workspaceCss, /site-preview-computer-glow/);
+  assert.match(workspaceCss, /site-preview-computer-shade/);
+  assert.match(workspaceCss, /5\.2s ease-in-out infinite/);
+  assert.match(workspaceCss, /linear-gradient\(to right, #000/);
+  assert.match(workspaceCss, /inset 0 0 0 2px #fff/);
+  assert.match(workspaceCss, /site-preview-frame-host::before/);
   assert.match(workspaceCss, /:root\.app-backgrounded \.site-preview\.is-computer-use-active[\s\S]*animation-play-state: paused/);
   assert.match(workspaceCss, /prefers-reduced-motion: reduce[\s\S]*\.site-preview\.is-computer-use-active[\s\S]*animation: none/);
   assert.match(workspaceCss, /border: 2px solid transparent/);

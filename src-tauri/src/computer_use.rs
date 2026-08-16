@@ -82,6 +82,7 @@ pub fn is_paused() -> bool {
 
 pub fn set_paused(paused: bool) {
     PAUSED.store(paused, Ordering::SeqCst);
+    crate::desktop_computer_use::set_paused(paused);
     if paused {
         if let Some(app) = APP.get() {
             let _ = app.emit("preview-computer-stop", json!({ "reason": "paused" }));
@@ -110,6 +111,12 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
                 | "set_value"
                 | "check"
                 | "wait"
+                | "wait_for"
+                | "upload"
+                | "set_viewport"
+                | "save_spec"
+                | "record"
+                | "replay"
                 | "open_tab"
                 | "navigate"
                 | "activate_tab"
@@ -181,6 +188,54 @@ fn validate_action(action: &Value, index: usize, text_chars: &mut usize) -> Resu
             ensure!(
                 matches!(mode, "contains" | "equals"),
                 "Invalid Preview check match mode."
+            );
+        }
+    }
+    if kind == "wait_for" {
+        if let Some(expected) = object.get("expect").and_then(Value::as_object) {
+            for (key, value) in expected {
+                ensure!(
+                    matches!(
+                        key.as_str(),
+                        "visible" | "enabled" | "checked" | "text" | "value" | "url" | "title"
+                    ),
+                    "Unsupported Preview wait_for field: {key}."
+                );
+                if matches!(key.as_str(), "visible" | "enabled" | "checked") {
+                    ensure!(
+                        value.is_boolean(),
+                        "Preview wait_for {key} must be boolean."
+                    );
+                }
+            }
+        }
+    }
+    if kind == "upload" {
+        let fixture = object
+            .get("fixture")
+            .and_then(Value::as_str)
+            .unwrap_or("tiny.png");
+        ensure!(
+            matches!(fixture, "tiny.png" | "sample.csv" | "note.txt"),
+            "Preview upload fixtures are tiny.png, sample.csv, or note.txt."
+        );
+    }
+    if kind == "set_viewport" {
+        let viewport = object
+            .get("viewport")
+            .or_else(|| object.get("value"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        ensure!(
+            matches!(viewport, "mobile" | "tablet" | "desktop"),
+            "set_viewport requires viewport=mobile, tablet, or desktop."
+        );
+    }
+    if kind == "record" {
+        if let Some(state) = object.get("state").and_then(Value::as_str) {
+            ensure!(
+                matches!(state, "start" | "stop"),
+                "record state must be start or stop."
             );
         }
     }
@@ -265,19 +320,25 @@ fn validate_tool_request(name: &str, args: &Value) -> Result<&'static str> {
                 "A preview action batch may contain at most {MAX_ACTIONS} actions."
             );
             let mut text_chars = 0usize;
-            let mut tab_action_count = 0usize;
+            let mut host_action_count = 0usize;
             for (index, action) in actions.iter().enumerate() {
                 validate_action(action, index, &mut text_chars)?;
                 if matches!(
                     action.get("type").and_then(Value::as_str),
-                    Some("open_tab") | Some("navigate") | Some("activate_tab")
+                    Some("open_tab")
+                        | Some("navigate")
+                        | Some("activate_tab")
+                        | Some("set_viewport")
+                        | Some("save_spec")
+                        | Some("record")
+                        | Some("replay")
                 ) {
-                    tab_action_count += 1;
+                    host_action_count += 1;
                 }
             }
             ensure!(
-                tab_action_count == 0 || (tab_action_count == 1 && actions.len() == 1),
-                "Preview open_tab, navigate, and activate_tab must be the only action in their batch; observe the newly active tab next."
+                host_action_count == 0 || (host_action_count == 1 && actions.len() == 1),
+                "Preview open_tab, navigate, activate_tab, set_viewport, save_spec, record, and replay must be the only action in their batch; observe the newly active tab next."
             );
             Ok("actions")
         }
@@ -295,7 +356,7 @@ pub fn execute_tool(
 ) -> Result<Value> {
     ensure!(
         !is_paused(),
-        "Preview Computer Use is paused. Resume it in Settings before continuing."
+        "Preview Computer Use is paused. Resume it from the Preview sandwich menu before continuing."
     );
     let operation = validate_tool_request(name, args)?;
     let app = APP
@@ -520,6 +581,27 @@ mod tests {
         assert!(validate_tool_request(
             "computer_actions",
             &json!({ "actions": [{ "type": "check", "ref": "p1", "expect": {} }] })
+        )
+        .is_err());
+        assert!(validate_tool_request(
+            "computer_actions",
+            &json!({ "actions": [
+                { "type": "wait_for", "ref": "p1", "expect": { "visible": true }, "duration_ms": 800 },
+                { "type": "upload", "ref": "p2", "fixture": "tiny.png" }
+            ] })
+        )
+        .is_ok());
+        assert!(validate_tool_request(
+            "computer_actions",
+            &json!({ "actions": [{ "type": "set_viewport", "viewport": "mobile" }] })
+        )
+        .is_ok());
+        assert!(validate_tool_request(
+            "computer_actions",
+            &json!({ "actions": [
+                { "type": "set_viewport", "viewport": "mobile" },
+                { "type": "click", "ref": "p1" }
+            ] })
         )
         .is_err());
     }

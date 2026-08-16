@@ -96,7 +96,8 @@ pub fn to_billable_tokens(provider: &str, model: &str, raw: u64) -> u64 {
         "openrouter" => 0.45,
         // GLM 5.2 $1.40/$4.40 → $2.00 blend
         "glm" | "zhipu" => 2.0 / ref_blend,
-        // Gemini 3.1 Pro $2/$12 → $4.00 blend
+        // Gemini 3.7 Flash $0.75/$3.75 → ~$1.50 blend; Pro-class stays $4.00
+        "gemini" if m.contains("flash") => 1.5 / ref_blend,
         "gemini" => 4.0 / ref_blend,
         // Claude Opus-class $5/$25 → $9.00 blend
         "anthropic" => 9.0 / ref_blend,
@@ -257,6 +258,7 @@ pub fn should_use_hosted(status: &LicenseStatus) -> bool {
 pub fn should_use_hosted_for_provider(status: &LicenseStatus, provider: &str) -> bool {
     !provider.eq_ignore_ascii_case("ollama")
         && !provider.eq_ignore_ascii_case("cursor")
+        && !provider.eq_ignore_ascii_case("gemini_cli")
         && should_use_hosted(status)
 }
 
@@ -737,6 +739,8 @@ mod tests {
         assert!(should_use_hosted(&status));
         assert!(!should_use_hosted_for_provider(&status, "cursor"));
         assert!(!should_use_hosted_for_provider(&status, "CURSOR"));
+        assert!(!should_use_hosted_for_provider(&status, "gemini_cli"));
+        assert!(!should_use_hosted_for_provider(&status, "GEMINI_CLI"));
     }
 
     #[test]

@@ -3,6 +3,7 @@ import {
   api,
   type AgentTaskProfile,
   type ComputerUseStatus,
+  type DesktopComputerUseStatus,
   type DesignDomContext,
   type DesignSourceLocation,
   type DesignTargetProbe,
@@ -19,15 +20,32 @@ import { clear, el } from "./util";
 import { icon } from "./icons";
 import {
   runFrameComputerUse,
+  startFrameRecording,
   stopFrameComputerUse,
+  stopFrameRecording,
   type PreviewComputerAction,
 } from "./preview-computer-use";
+import {
+  isPreviewDeviceFrame,
+  previewPlaywrightSpec,
+  PREVIEW_DEVICE_FRAMES,
+  sanitizePreviewRecording,
+  type PreviewDeviceFrame,
+} from "./preview-computer-qa";
 import {
   isExternalPreviewUrl,
   previewTabKindForEntry,
 } from "./preview-url-policy";
+import { normalizeAllowedApps } from "./settings";
+import { previewBrowserBoundsFromRect } from "./preview-resize";
 
-export { isExternalPreviewUrl } from "./preview-url-policy";
+export { PREVIEW_RESIZE_GUTTER, previewBrowserBoundsFromRect } from "./preview-resize";
+
+export {
+  extractPreviewBrowserUrlFromPrompt,
+  isExternalPreviewUrl,
+  promptWantsLocalWebsite,
+} from "./preview-url-policy";
 
 export type PreviewComputerUseMode = "off" | "auto" | "on";
 
@@ -843,6 +861,16 @@ export class SitePreview {
   private computerUseStatus: ComputerUseStatus | null = null;
   private computerUseBusy = false;
   private computerUseMessage = "";
+  private desktopComputerUseControl: HTMLElement;
+  private desktopComputerUseEnabled = false;
+  private desktopComputerUseAllowedApps: string[] = [];
+  private desktopComputerUseStatus: DesktopComputerUseStatus | null = null;
+  private desktopComputerUseBusy = false;
+  private desktopComputerUseMessage = "";
+  private deviceFrame: PreviewDeviceFrame = "desktop";
+  private watchingPreview = false;
+  private lastPreviewActions: PreviewComputerAction[] = [];
+  private lastPreviewRecording: PreviewComputerAction[] = [];
   private buildMenuToggle: HTMLButtonElement;
   private buildMenu: HTMLElement;
   private buildMenuCleanup: (() => void) | null = null;
@@ -1109,7 +1137,12 @@ export class SitePreview {
       class: "site-preview-computer-use",
       "aria-label": "Preview Computer Use",
     });
+    this.desktopComputerUseControl = el("section", {
+      class: "site-preview-computer-use site-preview-desktop-use",
+      "aria-label": "Desktop mode",
+    });
     this.renderComputerUseControl();
+    this.renderDesktopComputerUseControl();
     void this.refreshComputerUseControl();
 
     const actions = el("div", { class: "site-preview-actions" });
@@ -1133,6 +1166,7 @@ export class SitePreview {
     });
     this.previewActionsMenu.append(
       this.computerUseControl,
+      this.desktopComputerUseControl,
       buildLauncher,
       this.makePublicBtn,
       this.androidBtn,
@@ -1218,7 +1252,10 @@ export class SitePreview {
 
     this.root.append(resizeHandle, chrome, this.statusEl, this.viewport, this.editBar);
     this.applySavedPreviewSize();
-    this.browserResizeObserver = new ResizeObserver(() => this.scheduleBrowserBoundsSync());
+    this.browserResizeObserver = new ResizeObserver(() => {
+      if (this.resizing) return;
+      this.scheduleBrowserBoundsSync();
+    });
     this.browserResizeObserver.observe(this.frameHost);
     void this.bindBrowserEvents();
 
@@ -1250,10 +1287,9 @@ export class SitePreview {
       }
     });
     window.addEventListener("resize", () => {
-      if (this.isOpen) {
-        this.applySavedPreviewSize();
-        this.scheduleBrowserBoundsSync();
-      }
+      if (!this.isOpen || this.resizing) return;
+      this.applySavedPreviewSize();
+      this.scheduleBrowserBoundsSync();
     });
   }
 
@@ -1314,6 +1350,7 @@ export class SitePreview {
     handle.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 || this.root.hidden) return;
       e.preventDefault();
+      e.stopPropagation();
       const wb = this.workbench();
       if (!wb) return;
 
@@ -1321,10 +1358,17 @@ export class SitePreview {
       this.resizing = true;
       wb.classList.add("is-resizing");
       document.body.style.cursor = isStackedPreview() ? "row-resize" : "col-resize";
-      handle.setPointerCapture(e.pointerId);
+      this.syncBrowserSurfaces(false);
+      try {
+        handle.setPointerCapture(e.pointerId);
+      } catch {
+        /* capture can fail if the native Preview Browser already owns the pointer */
+      }
 
       const stacked = isStackedPreview();
+      let finished = false;
       const onMove = (ev: PointerEvent) => {
+        if (finished || ev.pointerId !== e.pointerId) return;
         const rect = wb.getBoundingClientRect();
         if (stacked) {
           const fromBottom = rect.bottom - ev.clientY;
@@ -1340,6 +1384,9 @@ export class SitePreview {
       };
 
       const onUp = (ev: PointerEvent) => {
+        if (finished) return;
+        if (ev.pointerId !== e.pointerId && ev !== e) return;
+        finished = true;
         if (handle.hasPointerCapture(ev.pointerId)) {
           handle.releasePointerCapture(ev.pointerId);
         }
@@ -1352,15 +1399,23 @@ export class SitePreview {
         if (Number.isFinite(size) && size > 0) {
           writeStoredSize(stacked ? PREVIEW_H_KEY : PREVIEW_W_KEY, size);
         }
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        window.removeEventListener("pointercancel", onUp);
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onUp);
+        handle.removeEventListener("pointercancel", onUp);
+        window.removeEventListener("pointermove", onMove, true);
+        window.removeEventListener("pointerup", onUp, true);
+        window.removeEventListener("pointercancel", onUp, true);
         this.resizeCleanup = null;
+        this.syncBrowserSurfaces(true);
+        this.scheduleBrowserBoundsSync();
       };
 
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-      window.addEventListener("pointercancel", onUp);
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onUp);
+      handle.addEventListener("pointercancel", onUp);
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onUp, true);
+      window.addEventListener("pointercancel", onUp, true);
       this.resizeCleanup = () => onUp(e);
       onMove(e);
     });
@@ -1449,9 +1504,10 @@ export class SitePreview {
 
   public async refreshComputerUseControl(): Promise<void> {
     try {
-      const [settings, status] = await Promise.all([
+      const [settings, status, desktopStatus] = await Promise.all([
         api.getSettings(),
         api.getComputerUseStatus(),
+        api.getDesktopComputerUseStatus().catch(() => null),
       ]);
       this.computerUseMode = settings.computer_use_enabled
         ? "on"
@@ -1460,10 +1516,17 @@ export class SitePreview {
           : "off";
       this.computerUseStatus = status;
       this.computerUseMessage = "";
+      this.desktopComputerUseEnabled = !!settings.desktop_computer_use_enabled;
+      this.desktopComputerUseAllowedApps = normalizeAllowedApps(
+        settings.desktop_computer_use_allowed_apps,
+      );
+      this.desktopComputerUseStatus = desktopStatus;
+      this.desktopComputerUseMessage = "";
     } catch (error) {
       this.computerUseMessage = "Computer Use settings unavailable: " + String(error);
     }
     this.renderComputerUseControl();
+    this.renderDesktopComputerUseControl();
   }
 
   private renderComputerUseControl() {
@@ -1555,7 +1618,7 @@ export class SitePreview {
       foot.appendChild(resume);
     }
 
-    this.computerUseControl.append(head, copy, modes, foot);
+    this.computerUseControl.append(head, copy, modes, this.renderPreviewQaTools(), foot);
     if (this.computerUseMessage) {
       this.computerUseControl.appendChild(
         el("div", { class: "site-preview-computer-message", role: "status" }, [
@@ -1568,6 +1631,176 @@ export class SitePreview {
         "ACTIVE PREVIEW TAB ONLY · EMERGENCY STOP CTRL+ALT+ESC",
       ]),
     );
+  }
+
+  private renderPreviewQaTools(): HTMLElement {
+    const tools = el("div", { class: "site-preview-computer-qa" });
+    const frames = el("div", {
+      class: "site-preview-computer-modes",
+      role: "radiogroup",
+      "aria-label": "Preview device frame",
+    });
+    for (const id of ["desktop", "tablet", "mobile"] as PreviewDeviceFrame[]) {
+      const selected = this.deviceFrame === id;
+      const button = el("button", {
+        class: "site-preview-computer-mode" + (selected ? " is-selected" : ""),
+        type: "button",
+        role: "radio",
+        "aria-checked": String(selected),
+        title: PREVIEW_DEVICE_FRAMES[id].label + " Preview frame",
+      }, [PREVIEW_DEVICE_FRAMES[id].label]) as HTMLButtonElement;
+      button.addEventListener("click", () => {
+        this.applyDeviceFrame(id);
+        this.renderComputerUseControl();
+      });
+      frames.appendChild(button);
+    }
+    const actions = el("div", { class: "site-preview-computer-qa-actions" });
+    const watch = el("button", {
+      class: "site-preview-computer-resume",
+      type: "button",
+      title: "Record your clicks and typing in Preview, then replay them",
+    }, [this.watchingPreview ? "Stop watching" : "Watch me"]) as HTMLButtonElement;
+    watch.addEventListener("click", () => void this.togglePreviewWatch());
+    const replay = el("button", {
+      class: "site-preview-computer-resume",
+      type: "button",
+      title: "Replay the last Watch me recording",
+    }, ["Replay"]) as HTMLButtonElement;
+    replay.disabled = this.lastPreviewRecording.length === 0;
+    replay.addEventListener("click", () => void this.replayPreviewRecording());
+    const save = el("button", {
+      class: "site-preview-computer-resume",
+      type: "button",
+      title: "Write the last Preview Computer Use run as a Playwright spec",
+    }, ["Save as test"]) as HTMLButtonElement;
+    save.disabled = this.lastPreviewActions.length === 0 && this.lastPreviewRecording.length === 0;
+    save.addEventListener("click", () => void this.savePreviewSpec().catch((error) => {
+      this.computerUseMessage = String(error);
+      this.renderComputerUseControl();
+    }));
+    actions.append(watch, replay, save);
+    tools.append(
+      el("div", { class: "site-preview-desktop-apps-label" }, ["Device frame"]),
+      frames,
+      actions,
+    );
+    return tools;
+  }
+
+  private applyDeviceFrame(frame: PreviewDeviceFrame): void {
+    this.deviceFrame = frame;
+    this.root.dataset.deviceFrame = frame;
+    this.scheduleBrowserBoundsSync();
+  }
+
+  private async togglePreviewWatch(): Promise<void> {
+    const tab = this.activeTab;
+    if (!tab) {
+      this.computerUseMessage = "Open a Preview tab before watching.";
+      this.renderComputerUseControl();
+      return;
+    }
+    if (this.watchingPreview) {
+      const recorded = tab.kind === "browser"
+        ? await this.stopBrowserRecording(tab.id)
+        : stopFrameRecording(tab.frame);
+      this.watchingPreview = false;
+      this.lastPreviewRecording = sanitizePreviewRecording(recorded) as PreviewComputerAction[];
+      this.computerUseMessage = this.lastPreviewRecording.length
+        ? `Recorded ${this.lastPreviewRecording.length} Preview step${this.lastPreviewRecording.length === 1 ? "" : "s"}.`
+        : "Watch me stopped with no steps.";
+    } else {
+      if (tab.kind === "browser") {
+        await api.previewBrowserComputer(tab.id, "actions", {
+          actions: [{ type: "record", state: "start" }],
+        }).catch(() => undefined);
+      } else {
+        startFrameRecording(tab.frame);
+      }
+      this.watchingPreview = true;
+      this.computerUseMessage = "Watch me is on. Click and type in Preview, then stop watching.";
+    }
+    this.renderComputerUseControl();
+  }
+
+  private async stopBrowserRecording(label: string): Promise<PreviewComputerAction[]> {
+    const result = await api.previewBrowserComputer(label, "actions", {
+      actions: [{ type: "record", state: "stop" }],
+    }).catch(() => ({ recorded: [] as PreviewComputerAction[] }));
+    const recorded = Array.isArray((result as { recorded?: unknown }).recorded)
+      ? (result as { recorded: PreviewComputerAction[] }).recorded
+      : Array.isArray((result as { results?: Array<{ recorded?: PreviewComputerAction[] }> }).results?.[0]?.recorded)
+        ? (result as { results: Array<{ recorded: PreviewComputerAction[] }> }).results[0].recorded
+        : [];
+    return recorded;
+  }
+
+  private async replayPreviewRecording(): Promise<void> {
+    if (!this.lastPreviewRecording.length) return;
+    try {
+      await this.handleComputerUseRequest({
+        requestId: "preview-replay",
+        protocolVersion: 2,
+        operation: "actions",
+        args: { actions: this.lastPreviewRecording },
+      });
+      this.computerUseMessage = "Replayed the last Watch me recording.";
+    } catch (error) {
+      this.computerUseMessage = "Replay failed: " + String(error);
+    }
+    this.renderComputerUseControl();
+  }
+
+  private async savePreviewSpec(title?: string): Promise<Record<string, unknown>> {
+    const actions = this.lastPreviewRecording.length
+      ? this.lastPreviewRecording
+      : this.lastPreviewActions;
+    if (!actions.length) throw new Error("Run or record a Preview scenario before saving a test.");
+    const frame = PREVIEW_DEVICE_FRAMES[this.deviceFrame];
+    const spec = previewPlaywrightSpec({
+      title: title || "Preview Computer Use scenario",
+      url: this.activeTab?.entryPath || "/",
+      viewport: frame.width > 0 ? { width: frame.width, height: frame.height } : undefined,
+      actions,
+    });
+    const path = await api.writePreviewComputerSpec("tests/horma-preview.spec.ts", spec);
+    this.computerUseMessage = "Saved Playwright spec at " + path + ".";
+    this.renderComputerUseControl();
+    return { ok: true, path, bytes: spec.length };
+  }
+
+  private async attachCheckSnapshots(
+    tab: PreviewTab,
+    result: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const results = Array.isArray(result.results) ? result.results as Array<Record<string, unknown>> : [];
+    for (const item of results) {
+      if (item.type !== "check" || item.passed !== false || !item.rect || typeof item.rect !== "object") continue;
+      const rect = item.rect as { x: number; y: number; width: number; height: number };
+      try {
+        if (tab.kind === "browser") {
+          item.snapshot = await api.capturePreviewBrowserSelection(tab.id, {
+            x: Math.max(0, rect.x),
+            y: Math.max(0, rect.y),
+            width: Math.min(320, Math.max(8, rect.width)),
+            height: Math.min(180, Math.max(8, rect.height)),
+          });
+        } else {
+          const frameRect = tab.frame.getBoundingClientRect();
+          item.snapshot = await api.capturePreviewSelection({
+            x: frameRect.left + rect.x,
+            y: frameRect.top + rect.y,
+            width: Math.min(320, Math.max(8, rect.width)),
+            height: Math.min(180, Math.max(8, rect.height)),
+            devicePixelRatio: window.devicePixelRatio || 1,
+          });
+        }
+      } catch {
+        item.snapshot = null;
+      }
+    }
+    return result;
   }
 
   private async setComputerUseMode(mode: PreviewComputerUseMode): Promise<void> {
@@ -1603,6 +1836,250 @@ export class SitePreview {
       this.renderComputerUseControl();
     }
   }
+
+  private renderDesktopComputerUseControl() {
+    clear(this.desktopComputerUseControl);
+    const status = this.desktopComputerUseStatus;
+    const supported = status?.supported === true;
+    const paused = status?.paused === true;
+    const enabled = this.desktopComputerUseEnabled;
+
+    const head = el("div", { class: "site-preview-computer-head" });
+    const titleWrap = el("div", { class: "site-preview-computer-title-wrap" });
+    titleWrap.append(
+      el("span", { class: "site-preview-computer-pulse", "aria-hidden": "true" }),
+      el("span", { class: "site-preview-computer-title" }, ["Desktop mode"]),
+    );
+    const badgeText = paused
+      ? "Paused"
+      : !status
+        ? "Loading"
+        : !supported
+          ? "Unavailable"
+          : enabled
+            ? "On"
+            : "Off";
+    const badge = el("span", {
+      class: "site-preview-computer-badge is-" + (paused ? "paused" : enabled ? "on" : "off"),
+      role: "status",
+      "aria-live": "polite",
+    }, [badgeText]);
+    head.append(titleWrap, badge);
+
+    const copy = el("div", { class: "site-preview-computer-copy" }, [
+      "Control ordinary Windows apps outside Preview, including Settings brightness.",
+    ]);
+    const modes = el("div", {
+      class: "site-preview-computer-modes site-preview-desktop-modes",
+      role: "radiogroup",
+      "aria-label": "Desktop mode",
+    });
+    for (const definition of [
+      { id: false, label: "Off", title: "Block Desktop mode until you turn it on here." },
+      { id: true, label: "On", title: "Let the agent click, type, scroll, and drag ordinary Windows apps." },
+    ] as const) {
+      const selected = definition.id === enabled;
+      const button = el("button", {
+        class: "site-preview-computer-mode" + (selected ? " is-selected" : ""),
+        type: "button",
+        role: "radio",
+        "aria-checked": String(selected),
+        title: definition.title,
+        disabled: String(this.desktopComputerUseBusy || !supported),
+      }, [definition.label]) as HTMLButtonElement;
+      button.disabled = this.desktopComputerUseBusy || !supported;
+      button.addEventListener("click", () => {
+        void this.setDesktopComputerUseEnabled(definition.id);
+      });
+      modes.appendChild(button);
+    }
+
+    const foot = el("div", { class: "site-preview-computer-foot" });
+    foot.appendChild(el("span", {}, [
+      enabled
+        ? "Password managers, terminals, and Hormachuelos stay blocked."
+        : "Off by default. Preview Computer Use above is unchanged.",
+    ]));
+    if (paused && supported) {
+      const resume = el("button", {
+        class: "site-preview-computer-resume",
+        type: "button",
+      }, ["Resume"]) as HTMLButtonElement;
+      resume.addEventListener("click", async () => {
+        resume.disabled = true;
+        try {
+          await api.setComputerUsePaused(false);
+          this.desktopComputerUseStatus = await api.getDesktopComputerUseStatus()
+            .catch(() => this.desktopComputerUseStatus);
+          this.computerUseStatus = await api.getComputerUseStatus()
+            .catch(() => this.computerUseStatus);
+          this.desktopComputerUseMessage = "Desktop mode resumed.";
+        } catch (error) {
+          this.desktopComputerUseMessage = "Could not resume: " + String(error);
+        }
+        this.renderComputerUseControl();
+        this.renderDesktopComputerUseControl();
+      });
+      foot.appendChild(resume);
+    }
+
+    this.desktopComputerUseControl.append(head, copy, modes, foot);
+
+    const apps = el("div", { class: "site-preview-desktop-apps" });
+    apps.appendChild(el("div", { class: "site-preview-desktop-apps-label" }, ["Allowed apps"]));
+    const chips = el("div", { class: "site-preview-desktop-chips" });
+    const names = this.desktopComputerUseAllowedApps;
+    if (!names.length) {
+      chips.appendChild(
+        el("span", { class: "site-preview-desktop-empty" }, [
+          "Empty = all ordinary apps except the safety blocklist",
+        ]),
+      );
+    } else {
+      for (const name of names) {
+        const chip = el("span", { class: "site-preview-desktop-chip" }, [name]);
+        const remove = el("button", {
+          class: "site-preview-desktop-chip-remove",
+          type: "button",
+          "aria-label": "Remove " + name,
+        }, ["×"]) as HTMLButtonElement;
+        remove.disabled = this.desktopComputerUseBusy;
+        remove.addEventListener("click", () => {
+          void this.setDesktopComputerUseAllowedApps(
+            this.desktopComputerUseAllowedApps.filter((item) => item !== name),
+          );
+        });
+        chip.appendChild(remove);
+        chips.appendChild(chip);
+      }
+    }
+    apps.appendChild(chips);
+
+    const addRow = el("div", { class: "site-preview-desktop-add" });
+    const addInput = el("input", {
+      class: "site-preview-desktop-add-input",
+      type: "text",
+      placeholder: "notepad.exe",
+      "aria-label": "Process name to allow",
+    }) as HTMLInputElement;
+    const addButton = el("button", {
+      class: "site-preview-desktop-add-btn",
+      type: "button",
+    }, ["Add"]) as HTMLButtonElement;
+    const pinButton = el("button", {
+      class: "site-preview-desktop-add-btn",
+      type: "button",
+      title: "Pin a currently open window",
+    }, ["Pin"]) as HTMLButtonElement;
+    const addName = (raw: string) => {
+      void this.setDesktopComputerUseAllowedApps(normalizeAllowedApps([
+        ...this.desktopComputerUseAllowedApps,
+        raw,
+      ]));
+    };
+    addButton.disabled = this.desktopComputerUseBusy;
+    pinButton.disabled = this.desktopComputerUseBusy;
+    addButton.addEventListener("click", () => {
+      addName(addInput.value);
+      addInput.value = "";
+    });
+    addInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      addName(addInput.value);
+      addInput.value = "";
+    });
+    pinButton.addEventListener("click", async () => {
+      pinButton.disabled = true;
+      try {
+        const listed = await api.listComputerUseTargets();
+        const windows = listed.windows || [];
+        if (!windows.length) {
+          this.desktopComputerUseMessage = "No ordinary windows are currently targetable.";
+          this.renderDesktopComputerUseControl();
+          return;
+        }
+        const choice = windows
+          .map((window) => `${window.processName} — ${window.title}`)
+          .join("\n");
+        const picked = prompt("Type the process name to pin, for example notepad.exe:\n\n" + choice);
+        if (picked) addName(picked);
+      } catch (error) {
+        this.desktopComputerUseMessage = "Could not list windows: " + String(error);
+        this.renderDesktopComputerUseControl();
+      } finally {
+        pinButton.disabled = false;
+      }
+    });
+    addRow.append(addInput, addButton, pinButton);
+    apps.appendChild(addRow);
+    this.desktopComputerUseControl.appendChild(apps);
+
+    if (this.desktopComputerUseMessage) {
+      this.desktopComputerUseControl.appendChild(
+        el("div", { class: "site-preview-computer-message", role: "status" }, [
+          this.desktopComputerUseMessage,
+        ]),
+      );
+    }
+    this.desktopComputerUseControl.appendChild(
+      el("div", { class: "site-preview-computer-scope" }, [
+        "WINDOWS APPS OUTSIDE PREVIEW · EMERGENCY STOP CTRL+ALT+ESC",
+      ]),
+    );
+  }
+
+  private async setDesktopComputerUseEnabled(enabled: boolean): Promise<void> {
+    if (this.desktopComputerUseBusy || enabled === this.desktopComputerUseEnabled) return;
+    await this.persistDesktopComputerUse({ enabled });
+  }
+
+  private async setDesktopComputerUseAllowedApps(allowedApps: string[]): Promise<void> {
+    if (this.desktopComputerUseBusy) return;
+    await this.persistDesktopComputerUse({ allowedApps });
+  }
+
+  private async persistDesktopComputerUse(partial: {
+    enabled?: boolean;
+    allowedApps?: string[];
+  }): Promise<void> {
+    const previousEnabled = this.desktopComputerUseEnabled;
+    const previousApps = this.desktopComputerUseAllowedApps.slice();
+    if (partial.enabled !== undefined) this.desktopComputerUseEnabled = partial.enabled;
+    if (partial.allowedApps) this.desktopComputerUseAllowedApps = partial.allowedApps;
+    this.desktopComputerUseBusy = true;
+    this.desktopComputerUseMessage = partial.enabled !== undefined
+      ? (partial.enabled ? "Turning Desktop mode on…" : "Turning Desktop mode off…")
+      : "Saving allowed apps…";
+    this.renderDesktopComputerUseControl();
+    try {
+      const settings = await api.getSettings();
+      settings.desktop_computer_use_enabled = this.desktopComputerUseEnabled;
+      settings.desktop_computer_use_allowed_apps = this.desktopComputerUseAllowedApps;
+      await api.saveSettings(settings);
+      this.desktopComputerUseStatus = await api.getDesktopComputerUseStatus()
+        .catch(() => this.desktopComputerUseStatus);
+      this.desktopComputerUseMessage = this.desktopComputerUseEnabled
+        ? (this.desktopComputerUseAllowedApps.length
+          ? "Desktop mode is on for pinned apps."
+          : "Desktop mode is on for ordinary Windows apps.")
+        : "Desktop mode is off until you turn it on here.";
+      window.dispatchEvent(new CustomEvent("horma:desktop-computer-use-changed", {
+        detail: {
+          enabled: this.desktopComputerUseEnabled,
+          allowedApps: this.desktopComputerUseAllowedApps,
+        },
+      }));
+    } catch (error) {
+      this.desktopComputerUseEnabled = previousEnabled;
+      this.desktopComputerUseAllowedApps = previousApps;
+      this.desktopComputerUseMessage = "Could not save Desktop mode: " + String(error);
+    } finally {
+      this.desktopComputerUseBusy = false;
+      this.renderDesktopComputerUseControl();
+    }
+  }
+
   private togglePreviewActionsMenu() {
     if (this.previewActionsMenu.hidden) this.openPreviewActionsMenu();
     else this.closePreviewActionsMenu(true);
@@ -2039,6 +2516,62 @@ export class SitePreview {
    * single-action batches so the model must observe the newly active page before
    * reusing element refs.
    */
+  private async runComputerUseHostAction(
+    action: PreviewComputerAction,
+  ): Promise<Record<string, unknown>> {
+    if (action.type === "open_tab" || action.type === "navigate" || action.type === "activate_tab") {
+      return this.runComputerUseTabAction(action);
+    }
+    if (action.type === "set_viewport") {
+      const frame = String(action.viewport || action.value || "desktop");
+      if (!isPreviewDeviceFrame(frame)) {
+        throw new Error("set_viewport requires viewport=mobile, tablet, or desktop.");
+      }
+      this.applyDeviceFrame(frame);
+      this.renderComputerUseControl();
+      const size = PREVIEW_DEVICE_FRAMES[frame];
+      return {
+        ok: true,
+        completed: 1,
+        results: [{ index: 0, type: "set_viewport", ok: true, viewport: frame, width: size.width, height: size.height }],
+        needsObservation: true,
+      };
+    }
+    if (action.type === "save_spec") {
+      const saved = await this.savePreviewSpec(action.title);
+      return { ok: true, completed: 1, results: [{ index: 0, type: "save_spec", ok: true, ...saved }] };
+    }
+    if (action.type === "record") {
+      const state = action.state === "stop" ? "stop" : "start";
+      if (state === "start" && !this.watchingPreview) await this.togglePreviewWatch();
+      if (state === "stop" && this.watchingPreview) await this.togglePreviewWatch();
+      return {
+        ok: true,
+        completed: 1,
+        results: [{
+          index: 0,
+          type: "record",
+          ok: true,
+          state,
+          recorded: this.lastPreviewRecording.length,
+        }],
+        recorded: this.lastPreviewRecording,
+      };
+    }
+    if (action.type === "replay") {
+      if (!this.lastPreviewRecording.length) {
+        throw new Error("No Watch me recording is available to replay.");
+      }
+      await this.replayPreviewRecording();
+      return {
+        ok: true,
+        completed: 1,
+        results: [{ index: 0, type: "replay", ok: true, steps: this.lastPreviewRecording.length }],
+      };
+    }
+    throw new Error(`Unsupported Preview host action: ${action.type}`);
+  }
+
   private async runComputerUseTabAction(
     action: PreviewComputerAction,
   ): Promise<Record<string, unknown>> {
@@ -2115,10 +2648,57 @@ export class SitePreview {
     };
   }
 
+  /**
+   * Open the Preview window (and a Browser tab when needed) so Computer Use
+   * can start from a prompt without asking the user to click Preview first.
+   */
+  async openForComputerUse(opts: { projectRoot: string; url?: string | null }): Promise<void> {
+    const root = String(opts.projectRoot || "").trim();
+    if (!root) {
+      throw new Error("Open a project first. Computer Use can then open Preview and a Browser tab automatically.");
+    }
+    if (!this.projectRoot) this.projectRoot = root;
+    await this.ensureOpenForComputerUse({ url: opts.url || null });
+  }
+
+  private computerUseRequestedUrl(request: PreviewComputerRequest): string | null {
+    if (request.operation !== "actions") return null;
+    const actions = Array.isArray(request.args?.actions)
+      ? request.args.actions as PreviewComputerAction[]
+      : [];
+    const nav = actions.find((action) => action.type === "open_tab" || action.type === "navigate");
+    if (!nav) return null;
+    return normalizeBrowserUrl(String(nav.url || ""));
+  }
+
+  private async ensureOpenForComputerUse(opts?: { url?: string | null }): Promise<void> {
+    if (!this.projectRoot) {
+      throw new Error("Open a project first. Computer Use can then open Preview and a Browser tab automatically.");
+    }
+    if (!this.isOpen) {
+      this.showShell("Preview");
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    }
+    const url = normalizeBrowserUrl(opts?.url || "") || "";
+    if (url) {
+      const tab = await this.openBrowserTab(url, {
+        activate: true,
+        title: browserTitleFromUrl(url),
+      });
+      if (!tab) throw new Error("Preview could not open a Browser tab for Computer Use.");
+      return;
+    }
+    if (this.activeTab) return;
+    const tab = await this.openBrowserTab(BROWSER_HOME, { activate: true });
+    if (!tab) throw new Error("Preview could not open a Browser tab for Computer Use.");
+  }
+
   /** Handle one backend request against the tab that is active right now. */
   async handleComputerUseRequest(request: PreviewComputerRequest): Promise<Record<string, unknown>> {
-    if (!this.isOpen) throw new Error("Open the Preview window before using the AI cursor.");
-    if (!this.activeTab) throw new Error("No active Preview tab is available for Computer Use.");
+    await this.ensureOpenForComputerUse({ url: this.computerUseRequestedUrl(request) });
+    if (!this.isOpen || !this.activeTab) {
+      throw new Error("Preview could not open a Browser tab for Computer Use.");
+    }
     this.setComputerUseActive(true);
     this.statusEl.textContent = request.operation === "observe"
       ? "AI cursor is observing this Preview tab…"
@@ -2133,14 +2713,21 @@ export class SitePreview {
         action.type === "open_tab"
         || action.type === "navigate"
         || action.type === "activate_tab"
+        || action.type === "set_viewport"
+        || action.type === "save_spec"
+        || action.type === "record"
+        || action.type === "replay"
       );
       if (tabActions.length > 0) {
         if (actions.length !== 1 || tabActions.length !== 1) {
-          throw new Error("Preview open_tab, navigate, and activate_tab must be the only action in their batch. Observe the newly active tab next.");
+          throw new Error("Preview open_tab, navigate, activate_tab, set_viewport, save_spec, record, and replay must be the only action in their batch.");
         }
-        result = await this.runComputerUseTabAction(tabActions[0]);
+        result = await this.runComputerUseHostAction(tabActions[0]);
       } else {
         result = await this.runComputerUseOnActiveTab(request);
+        const activeForSnapshot = this.activeTab;
+        if (activeForSnapshot) result = await this.attachCheckSnapshots(activeForSnapshot, result);
+        this.lastPreviewActions = actions;
       }
     } else {
       result = await this.runComputerUseOnActiveTab(request);
@@ -2384,30 +2971,33 @@ export class SitePreview {
   }
 
   private browserBounds(): PreviewBrowserBounds | null {
-    const rect = this.frameHost.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2 || rect.left < 0 || rect.top < 0) return null;
-    const bounds = {
-      x: rect.left,
-      y: rect.top,
-      width: rect.width,
-      height: rect.height,
-    };
-    this.lastBrowserBounds = bounds;
+    const bounds = previewBrowserBoundsFromRect(this.frameHost.getBoundingClientRect(), isStackedPreview());
+    if (bounds) this.lastBrowserBounds = bounds;
     return bounds;
   }
 
   private scheduleBrowserBoundsSync() {
+    if (this.resizing) return;
     if (this.browserBoundsFrame) window.cancelAnimationFrame(this.browserBoundsFrame);
     this.browserBoundsFrame = window.requestAnimationFrame(() => {
       this.browserBoundsFrame = 0;
+      if (this.resizing) return;
       this.syncBrowserSurfaces();
     });
+  }
+
+  private overlayChromeOpen(): boolean {
+    return !this.newTabMenu.hidden || !this.previewActionsMenu.hidden;
+  }
+
+  private browserSurfaceAllowed(): boolean {
+    return this.isOpen && !this.overlayChromeOpen();
   }
 
   private syncBrowserSurfaces(allowActive = true) {
     const bounds = this.browserBounds() || this.lastBrowserBounds;
     if (!bounds) return;
-    const activeAllowed = allowActive && this.isOpen && this.newTabMenu.hidden;
+    const activeAllowed = allowActive && this.browserSurfaceAllowed() && !this.resizing;
     for (const tab of this.tabs) {
       if (tab.kind !== "browser" || !tab.browserReady) continue;
       const visible = activeAllowed && tab.id === this.activeTabId;
@@ -2425,7 +3015,7 @@ export class SitePreview {
         bounds = this.browserBounds();
       }
       if (!bounds) throw new Error("Browser viewport is not ready.");
-      const visible = this.isOpen && tab.id === this.activeTabId && this.newTabMenu.hidden;
+      const visible = this.browserSurfaceAllowed() && tab.id === this.activeTabId;
       await api.createPreviewBrowser(tab.id, tab.entryPath || BROWSER_HOME, bounds, visible);
       if (!this.tabs.includes(tab)) {
         await api.closePreviewBrowser(tab.id).catch(() => undefined);

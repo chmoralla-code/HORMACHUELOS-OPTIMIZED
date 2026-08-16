@@ -11,7 +11,7 @@ export type Settings = {
   max_iterations: number;
   command_timeout_secs: number;
   auto_approve: boolean;
-  /** plan | auto | ask | full | multi_agent (research is a legacy alias for ask) */
+  /** adaptive | ask | research | plan | build | multi_agent (legacy: auto/full) */
   permission_mode: string;
   /** thinking | guided | agent | balanced | investigate | brief | autonomous | max */
   capability_mode: string;
@@ -21,6 +21,10 @@ export type Settings = {
   computer_use_enabled: boolean;
   /** Allow explicit chat prompts to activate Preview Computer Use for one request. */
   computer_use_prompt_activation: boolean;
+  /** Opt-in native Windows Desktop Computer Use. Off by default. */
+  desktop_computer_use_enabled: boolean;
+  /** Optional process names the Desktop agent may control. Empty = all ordinary apps except the blocklist. */
+  desktop_computer_use_allowed_apps: string[];
   /** Keep long build tasks on a durable plan and request a final verification pass. */
   smart_agent_enabled: boolean;
   /** Recall bounded project preferences and private per-session working memory. */
@@ -45,6 +49,17 @@ export type AgentTaskProfile =
 /** Speed, verification, and rollback policy; Auto is resolved by the host. */
 export type AgentExecutionProfile = "auto" | "fast" | "balanced" | "thorough" | "safe";
 
+export type CheckpointActionSummary = {
+  id: number;
+  tool: string;
+  status: string;
+  toolOk: boolean | null;
+  /** Project-relative targets only; arguments and contents are never exposed. */
+  targets: string[];
+  projectWide: boolean;
+  createdAtMs: number;
+};
+
 export type CheckpointSummary = {
   id: string;
   sessionId: string;
@@ -58,6 +73,7 @@ export type CheckpointSummary = {
   unprotectedActions: number;
   createdAtMs: number;
   finishedAtMs: number | null;
+  actions: CheckpointActionSummary[];
 };
 
 export type RollbackResult = {
@@ -69,7 +85,7 @@ export type RollbackResult = {
   message: string;
 };
 
-export type Provider = "deepseek" | "openrouter" | "glm" | "openai" | "cursor" | "hormachuelos_free" | "anthropic" | "gemini" | "ollama" | "pollinations";
+export type Provider = "deepseek" | "openrouter" | "glm" | "openai" | "cursor" | "hormachuelos_free" | "anthropic" | "gemini" | "gemini_cli" | "ollama" | "pollinations";
 
 export type ConnectionTestResult = {
   ok: boolean;
@@ -104,6 +120,26 @@ export type ComputerUseStatus = {
   autoApproved: boolean;
 };
 
+export type DesktopComputerUseStatus = {
+  supported: boolean;
+  paused: boolean;
+  emergencyShortcut: string;
+  emergencyShortcutAvailable: boolean;
+};
+
+export type ComputerUseTarget = {
+  id: string;
+  title: string;
+  processName: string;
+  processId: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isForeground: boolean;
+  isMinimized: boolean;
+};
+
 export type PreviewComputerRequest = {
   requestId: string;
   protocolVersion: number;
@@ -123,6 +159,11 @@ export type ComputerUseFxEvent = {
   text?: string | null;
   charIndex?: number | null;
   totalChars?: number | null;
+  gesture?: string | null;
+  width?: number | null;
+  height?: number | null;
+  deltaX?: number | null;
+  deltaY?: number | null;
 };
 
 export type AppUpdateProgress = {
@@ -301,6 +342,10 @@ export const api = {
   getComputerUseStatus: (): Promise<ComputerUseStatus> => invoke("get_computer_use_status"),
   setComputerUsePaused: (paused: boolean): Promise<ComputerUseStatus> =>
     invoke("set_computer_use_paused", { paused }),
+  getDesktopComputerUseStatus: (): Promise<DesktopComputerUseStatus> =>
+    invoke("get_desktop_computer_use_status"),
+  listComputerUseTargets: (): Promise<{ windows?: ComputerUseTarget[] }> =>
+    invoke("list_computer_use_targets"),
   respondPreviewComputer: (
     requestId: string,
     ok: boolean,
@@ -342,6 +387,8 @@ export const api = {
   /** Permanently delete one regular file inside the active project. */
   deleteProjectFile: (relativePath: string): Promise<void> =>
     invoke("delete_project_file", { relativePath }),
+  writePreviewComputerSpec: (relativePath: string, contents: string): Promise<string> =>
+    invoke("write_preview_computer_spec", { relativePath, contents }),
   /** Clear active-project contents while keeping the project directory and .git history. */
   clearProjectFiles: (): Promise<number> => invoke("clear_project_files"),
   /** Durable agent-owned workspace checkpoints, newest first. */
@@ -463,6 +510,7 @@ export const api = {
     taskProfile: AgentTaskProfile = "default",
     executionProfile: AgentExecutionProfile = "auto",
     runSettings?: Settings,
+    requestedPermissionMode?: string,
   ): Promise<string | null> =>
     invoke("agent_run", {
       prompt,
@@ -474,12 +522,15 @@ export const api = {
       taskProfile,
       executionProfile,
       runSettings: runSettings ?? null,
+      requestedPermissionMode: requestedPermissionMode ?? null,
     }),
   agentStop: (sessionId: string): Promise<void> => invoke("agent_stop", { sessionId }),
   /** Native source of truth for cross-project/session busy indicators. */
   activeAgentSessions: (): Promise<string[]> => invoke("active_agent_sessions"),
   openProjectInExplorer: (relativePath: string | null = null): Promise<void> =>
     invoke("open_project_in_explorer", { relativePath }),
+  ensureProjectDevServer: (projectRoot: string): Promise<string> =>
+    invoke("ensure_project_dev_server", { projectRoot }),
   appVersion: (): Promise<string> => invoke("app_version"),
   /** Match in-app updates to the installer family already present on Windows. */
   appInstallKind: (): Promise<"msi" | "nsis" | "unknown"> => invoke("app_install_kind"),
@@ -577,7 +628,7 @@ export type IntegrationTestResult = {
 };
 
 export type AgentEventPayload =
-  | { kind: "start"; payload: { prompt: string; permission_mode?: string; smart_agent_enabled?: boolean; flavour_enabled?: boolean; task_profile?: AgentTaskProfile; execution_profile?: Exclude<AgentExecutionProfile, "auto">; repair_budget?: number; checkpoint_id?: string | null } }
+  | { kind: "start"; payload: { prompt: string; permission_mode?: string; requested_permission_mode?: string; adaptive_reason?: string; adaptive_complexity?: "low" | "medium" | "high"; adaptive_risk?: "low" | "guarded" | "high"; smart_agent_enabled?: boolean; flavour_enabled?: boolean; task_profile?: AgentTaskProfile; execution_profile?: Exclude<AgentExecutionProfile, "auto">; repair_budget?: number; checkpoint_id?: string | null } }
   | { kind: "task_plan"; payload: { title: string; summary: string; steps: { id: string; label: string; state: string }[]; active_step: number; status: string; detail?: string } }
   | { kind: "task_progress"; payload: { step: number; phase: string; status: string; detail: string; completed_before?: number; complete_all?: boolean } }
   | { kind: "thinking"; payload: { iteration: number } }
@@ -600,7 +651,7 @@ export type AgentEventPayload =
   | { kind: "console_chunk"; payload: { stream: string; text: string } }
   | { kind: "usage"; payload: { iteration: number; turn_tokens: number; total_tokens: number; raw_tokens?: number; license?: LicenseStatus | null } }
   | { kind: "question"; payload: { id: string; question: string; options: string[]; allow_other: boolean } }
-  | { kind: "done"; payload: { summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; total_tokens?: number } }
+  | { kind: "done"; payload: { summary: string; title: string; description: string; files: string[]; tech: string[]; features: string[]; kind?: string; total_tokens?: number } }
   | { kind: "cancelled"; payload: { iteration: number } }
   | { kind: "end"; payload: { reason: string; iteration: number; total_tokens?: number } };
 
