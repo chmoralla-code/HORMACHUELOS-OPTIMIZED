@@ -1957,15 +1957,14 @@ export class Chat {
           }
           break;
         case "agentic_plan":
-          this.startAgenticWorkbench(msg.runId, msg.at);
-          this.agenticWorkbench?.updatePlan({
+          this.startAgenticWorkbench(msg.runId, msg.at).updatePlan({
             run_id: msg.runId,
             phases: msg.phases,
             max_workers: msg.maxWorkers,
           });
           break;
         case "agentic_phase":
-          this.agenticWorkbench?.updatePhase({
+          this.ensureAgenticWorkbench(msg.runId, msg.at).updatePhase({
             run_id: msg.runId,
             phase: msg.phase,
             state: msg.state,
@@ -1973,7 +1972,7 @@ export class Chat {
           });
           break;
         case "agentic_agent":
-          this.agenticWorkbench?.updateAgent(msg.agent);
+          this.ensureAgenticWorkbench(msg.runId, msg.at).updateAgent(msg.agent);
           break;
         case "multi_agent_batch":
           this.showMultiAgentBatch(msg.tools);
@@ -2004,7 +2003,7 @@ export class Chat {
         }
         case "tool_call":
           if (this.agenticRun || msg.runId) {
-            this.agenticWorkbench?.queueTool({
+            this.ensureAgenticWorkbench(msg.runId, msg.at).queueTool({
               id: msg.id,
               name: msg.name,
               arguments: msg.arguments,
@@ -2017,7 +2016,7 @@ export class Chat {
           break;
         case "tool_result":
           if (this.agenticRun || msg.runId) {
-            this.agenticWorkbench?.finishTool({
+            this.ensureAgenticWorkbench(msg.runId, msg.at).finishTool({
               id: msg.id,
               name: msg.name,
               ok: msg.ok,
@@ -2041,7 +2040,7 @@ export class Chat {
         case "cancelled":
           this.runCompleted = false;
           this.sealPendingTools("cancelled");
-          if (this.agenticRun) this.agenticWorkbench?.cancel();
+          if (this.agenticRun) this.ensureAgenticWorkbench(undefined, msg.at).cancel();
           else this.appendSystemNote("Run cancelled.", msg.at);
           if (msg.workMs != null) this.sealAiTimestamp(msg.at, msg.workMs);
           break;
@@ -2329,8 +2328,8 @@ export class Chat {
     return pretty || "Action";
   }
 
-  private startAgenticWorkbench(runId: string, at = this.now()) {
-    if (this.agenticWorkbench?.root.dataset.runId === runId) return;
+  private startAgenticWorkbench(runId: string, at = this.now()): AgenticWorkbench {
+    if (this.agenticWorkbench?.root.dataset.runId === runId) return this.agenticWorkbench;
     this.agenticWorkbench?.dispose();
     this.agenticRun = true;
     this.setActivePermissionMode("agentic");
@@ -2340,6 +2339,12 @@ export class Chat {
     this.agenticWorkbench = workbench;
     this.node.appendChild(workbench.root);
     this.scrollToBottom();
+    return workbench;
+  }
+
+  private ensureAgenticWorkbench(runId?: string, at = this.now()): AgenticWorkbench {
+    return this.agenticWorkbench
+      ?? this.startAgenticWorkbench(runId || `agentic-${at}`, at);
   }
 
   private completeAgenticWorkbench(completion: NonNullable<Extract<AgentEvent, { kind: "done" }>["payload"]["agentic"]>, at?: number, workMs?: number) {
