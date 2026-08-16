@@ -921,11 +921,15 @@ function renderMarkdownLists(text: string): string {
 function emphasizeMarkdownLeadLabels(text: string): string {
   return text
     .replace(
-      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)\*\*([A-Z][^*\n]{1,44}:)\*\*(?=\s+\S)/gm,
+      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)<strong>\s*([A-Z][^<\n]{1,44}:)\s*<\/strong>(?=\s+\S)/gm,
       '$1<strong class="md-lead">$2</strong>',
     )
     .replace(
-      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)__([A-Z][^_\n]{1,44}:)__(?=\s+\S)/gm,
+      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)\*\*\s*([A-Z][^*\n]{1,44}:)\s*\*\*(?=\s+\S)/gm,
+      '$1<strong class="md-lead">$2</strong>',
+    )
+    .replace(
+      /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)__\s*([A-Z][^_\n]{1,44}:)\s*__(?=\s+\S)/gm,
       '$1<strong class="md-lead">$2</strong>',
     )
     .replace(
@@ -986,6 +990,7 @@ export function renderMarkdown(src: string): string {
   text = text.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
   text = text.replace(/__([^_]+)__/g, "<strong>$1</strong>");
   text = text.replace(/(?<!_)_([^_\n]+)_(?!_)/g, "<em>$1</em>");
+  text = emphasizeMarkdownLeadLabels(text);
 
   // Headings
   text = text.replace(/^######\s+(.+)$/gm, "<h6>$1</h6>");
@@ -1025,6 +1030,7 @@ export function renderMarkdown(src: string): string {
     .map((block) => {
       const t = block.trim();
       if (!t) return "";
+      if (/^\\u0000FENCE\\d+\\u0000$/.test(t)) return t;
       if (/^<(h[1-6]|ul|ol|pre|blockquote|div|table|hr)/.test(t)) return t;
       return `<p>${t.replace(/\n/g, "<br>")}</p>`;
     })
