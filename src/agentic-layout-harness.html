@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" data-appearance="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/theme/tokens.css" />
+    <link rel="stylesheet" href="/theme/globals.css" />
+    <link rel="stylesheet" href="/app.css" />
+    <link rel="stylesheet" href="/theme/agentic-workbench.css" />
+    <title>AGENTIC Workbench layout harness</title>
+    <style>
+      html, body { width: 100%; min-width: 0 !important; min-height: 100%; overflow-x: hidden; }
+      body { display: block; margin: 0; background: var(--canvas); }
+      .agentic-harness-shell { width: min(100%, 1320px); margin: 0 auto; padding: clamp(12px, 3vw, 42px); }
+      #chat { position: static; width: 100%; height: auto; min-height: 0; overflow: visible; padding: 0; }
+      #chat .msg { width: min(920px, 100%); max-width: 100%; margin: 22px auto 0; }
+    </style>
+  </head>
+  <body class="fps-optimized">
+    <main class="agentic-harness-shell">
+      <section id="chat" aria-label="AGENTIC reply preview"></section>
+    </main>
+    <script type="module">
+      import { AgenticWorkbench } from "/components/agentic-workbench.ts";
+      import { renderMarkdown } from "/components/util.ts";
+
+      const params = new URLSearchParams(location.search);
+      const theme = params.get("theme") || "dark";
+      const scenario = params.get("scenario") || "live";
+      document.documentElement.dataset.appearance = theme;
+      const chat = document.getElementById("chat");
+      const runId = "agentic-layout-run";
+      const workbench = new AgenticWorkbench(runId, Date.now() - 74_000, async () => {});
+      chat.append(workbench.root);
+
+      const phases = [
+        { phase: "ask", state: "completed" },
+        { phase: "plan", state: "completed" },
+        { phase: "research", state: scenario === "simple" ? "skipped" : "completed" },
+        { phase: "multi_agent", state: scenario === "simple" ? "skipped" : "active" },
+        { phase: "build", state: scenario === "simple" ? "skipped" : "pending" },
+      ];
+      workbench.updatePlan({ run_id: runId, phases, max_workers: 3 });
+      workbench.updatePhase({
+        run_id: runId,
+        phase: scenario === "simple" ? "ask" : "multi_agent",
+        state: scenario === "simple" ? "completed" : "active",
+        detail: scenario === "simple"
+          ? "The question was answered directly; orchestration would not add value."
+          : "Three isolated workers are gathering independent evidence.",
+      });
+
+      const director = {
+        id: "director", name: "Director", role: "Orchestration and integration",
+        assignment: "Own permissions, all writes, integration, verification, and delivery.",
+        status: "running", toolCount: 2, usage: { totalTokens: 1840 },
+      };
+      workbench.updateAgent(director);
+      if (scenario !== "simple") {
+        [
+          ["worker-1", "Frontend reviewer", "Inspect responsive layout and accessibility."],
+          ["worker-2", "Backend reviewer", "Inspect event ownership and cancellation."],
+          ["worker-3", "Test reviewer", "Inspect deterministic coverage and release gates."],
+        ].forEach(([id, role, assignment], index) => {
+          workbench.updateAgent({
+            id, name: `Worker ${index + 1}`, role, assignment,
+            status: index === 2 && scenario === "partial" ? "failed" : "completed",
+            toolCount: 3 + index,
+            usage: { totalTokens: 1100 + index * 210 },
+            resultSummary: index === 2 && scenario === "partial"
+              ? "The test assignment stopped after a mocked provider error."
+              : `Concrete ${role.toLowerCase()} evidence is ready for the Director.`,
+          });
+        });
+        [
+          ["worker-1:glob", "glob", "worker-1", "multi_agent", true],
+          ["worker-2:grep", "grep", "worker-2", "multi_agent", true],
+          ["worker-3:read", "read_file", "worker-3", "multi_agent", scenario !== "partial"],
+          ["director:test", "run_command", "director", "build", scenario !== "partial"],
+        ].forEach(([id, name, agent_id, phase, ok]) => {
+          workbench.queueTool({
+            id, name, agent_id, phase,
+            arguments: name === "run_command"
+              ? { command: "npm run test:agentic" }
+              : { path: ".", pattern: "agentic" },
+          });
+          workbench.finishTool({
+            id, name, agent_id, phase, ok,
+            content: ok ? "Mocked evidence completed successfully." : "Mocked verification failed.",
+          });
+        });
+      }
+
+      const reply = document.createElement("article");
+      reply.className = "msg assistant structured-reply";
+      const body = document.createElement("div");
+      body.className = "msg-body md";
+      body.setAttribute("role", "document");
+      body.setAttribute("aria-label", "AI response");
+      body.innerHTML = renderMarkdown([
+        "The Director synthesized the run into one readable answer.",
+        "",
+        "## Result",
+        "",
+        "- **Clear ownership:** workers gathered evidence; only the Director could write.",
+        "- **Readable delivery:** the answer remains full-width below the execution lanes.",
+        "",
+        "---",
+        "",
+        "## Evidence",
+        "",
+        "Tool results stay inspectable without exposing private model reasoning.",
+      ].join("\n"));
+      const footer = document.createElement("footer");
+      footer.className = "msg-meta";
+      const copy = document.createElement("button");
+      copy.className = "msg-copy";
+      copy.type = "button";
+      copy.setAttribute("aria-label", "Copy reply");
+      copy.textContent = "Copy reply";
+      copy.addEventListener("click", () => { copy.textContent = "Copied"; });
+      footer.append(copy);
+      reply.append(body, footer);
+      chat.append(reply);
+
+      const complete = (kind = scenario) => {
+        if (kind === "cancelled") {
+          workbench.cancel();
+          return;
+        }
+        const partial = kind === "partial";
+        const unverified = kind === "unverified";
+        workbench.complete({
+          status: partial ? "partial" : unverified ? "needs_attention" : "completed",
+          outcome: partial
+            ? "The implementation is usable, but one worker and one check need attention."
+            : unverified
+              ? "The requested changes were made, but no host-observed verification ran."
+              : scenario === "simple"
+                ? "The Director answered the question without unnecessary phases."
+                : "The Director integrated the requested work and verified the result.",
+          changes: scenario === "simple" ? [] : [
+            { behavior: "Added the split Execution Workbench.", files: ["src/components/agentic-workbench.ts"] },
+            { behavior: "Added evidence-backed terminal delivery." },
+          ],
+          verification: unverified || scenario === "simple" ? [] : [{
+            name: "AGENTIC suite",
+            status: partial ? "failed" : "passed",
+            evidence: partial ? "npm run test:agentic exited 1" : "npm run test:agentic exited 0",
+            toolId: "director:test",
+          }],
+          contributions: [
+            { agentId: "director", name: "Director", result: "Owned integration and final delivery." },
+            ...(scenario === "simple" ? [] : [
+              { agentId: "worker-1", name: "Worker 1", result: "Reviewed frontend evidence." },
+              { agentId: "worker-2", name: "Worker 2", result: "Reviewed backend evidence." },
+              { agentId: "worker-3", name: "Worker 3", result: partial ? "Provider failed." : "Reviewed test evidence." },
+            ]),
+          ],
+          risks: partial ? ["One mocked verification failed."] : unverified ? ["Verification was not run."] : [],
+          nextActions: partial ? ["Repair and rerun the failed suite."] : unverified ? ["Run deterministic checks before release."] : [],
+          facts: {
+            elapsedMs: 74_000, totalTokens: scenario === "simple" ? 1840 : 5570,
+            workers: scenario === "simple" ? 0 : 3,
+            tools: scenario === "simple" ? 0 : 4,
+            changedFiles: scenario === "simple" ? 0 : 1,
+          },
+        });
+      };
+      if (scenario !== "live") complete();
+      window.__agenticHarness = { scenario, theme, workbench, complete };
+    </script>
+  </body>
+</html>
