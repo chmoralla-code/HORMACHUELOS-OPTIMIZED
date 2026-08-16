@@ -57,6 +57,7 @@ test("Director phase classifier and one-writer worker invariant are deterministi
   assert.match(source, /JoinSet::new\(\)/);
   assert.match(source, /Semaphore::new\(MAX_AGENTIC_WORKERS\)/);
   assert.match(source, /wait_cancelled/);
+  assert.match(source, /result = execution => Some\(result\)/);
   assert.match(source, /specs\.truncate\(MAX_AGENTIC_WORKERS\)/);
   assert.match(source, /is_transient_provider_error/);
   assert.match(source, /retrying affected workers serially/i);
@@ -81,6 +82,8 @@ test("native and Cursor workers preserve selected provider/model and parent owne
   assert.match(cursor, /suppress_reasoning/);
   assert.match(agent, /run_cursor_agentic_workers/);
   assert.match(agent, /CursorAgenticMetrics::default/);
+  assert.match(agent, /phase_for_tool_preview/);
+  assert.match(agent, /Running the final Director verification pass/);
   assert.match(agent, /completion_payload/);
 });
 
