@@ -902,7 +902,7 @@ export class ModelBar {
       const caps = CAPABILITIES[mode];
       const cap = caps.find((c) => c.id === this.capabilityId) || caps[0];
       const capWrap = el("div", { class: "chip-wrap" });
-      const agentic = mode === "adaptive" || mode === "build" || mode === "multi_agent";
+      const agentic = mode === "adaptive" || mode === "agentic" || mode === "build" || mode === "multi_agent";
       const capBtn = this.chipBtn(
         cap.label,
         cap.title,
