@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const VERSION = "1.2.14";
+const VERSION = "1.2.15";
 const RELEASE_BASE =
   `https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v${VERSION}`;
 const BASE_URL = process.env.HORMACHUELOS_WEBSITE_TEST_URL || "http://127.0.0.1:5174";
@@ -30,7 +30,8 @@ for (const viewport of [
     const card = page.locator("#optimized-download");
     await expect(card).toBeVisible();
     await expect(card.locator("h3")).toHaveText(`Hormachuelos Optimized v${VERSION}`);
-    await expect(card.locator("li")).toHaveCount(3);
+    await expect(card.locator("li")).toHaveCount(4);
+    await expect(card).toContainText("Clearline AI replies");
     await expect(card).toContainText("Mission Control");
     await expect(card).toContainText("Workspace Time Machine");
     await expect(card).toContainText("Test & Fix Everything");

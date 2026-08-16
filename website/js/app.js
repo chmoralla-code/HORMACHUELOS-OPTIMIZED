@@ -41,19 +41,19 @@ const DESKTOP_DOWNLOADS = {
 
 /** Independent FPS-focused edition with Adaptive Director and maximized modes. */
 const OPTIMIZED_DOWNLOAD_BASE =
-  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.14";
+  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.2.15";
 
 const OPTIMIZED_DOWNLOADS = {
-  version: "1.2.14",
-  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.2.14",
+  version: "1.2.15",
+  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.2.15",
   windows: {
     msi: {
       label: "Optimized installer (MSI)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.14_x64.msi`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.15_x64.msi`,
     },
     setup: {
       label: "Optimized setup (EXE)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.14_x64-setup.exe`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.2.15_x64-setup.exe`,
     },
   },
 };
@@ -2772,8 +2772,9 @@ function renderDownload() {
       <div class="card" id="optimized-download" style="margin:20px 0;border-color:var(--primary)">
         <div class="eyebrow" style="margin-bottom:10px"><span class="dot"></span> New optimized release</div>
         <h3 style="margin-top:0">Hormachuelos Optimized v${optimized.version}</h3>
-        <p class="muted small">The mission-driven release for longer, safer autonomous work. Installs independently from the standard edition.</p>
+        <p class="muted small">The mission-driven release for longer, safer autonomous work, now with a calmer and more readable AI response layout. Installs independently from the standard edition.</p>
         <ul class="small" style="margin:14px 0 0;padding-left:20px">
+          <li><strong>Clearline AI replies</strong> — quiet section dividers, stronger bold hierarchy, true nested lists, refined code and file chips, and visible reply actions.</li>
           <li><strong>Mission Control</strong> — durable goals, boundaries, approval policy, execution depth, and measurable finish lines.</li>
           <li><strong>Workspace Time Machine</strong> — protected run history, action evidence, Undo Last, and conflict-aware rollback.</li>
           <li><strong>Test &amp; Fix Everything</strong> — a closed inspect, test, repair, and retest loop with honest proof states.</li>

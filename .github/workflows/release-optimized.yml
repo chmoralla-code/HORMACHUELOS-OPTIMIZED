@@ -93,99 +93,36 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Desktop mode
+          releaseName: Hormachuelos Optimized v__VERSION__ · Clearline AI replies
           releaseBody: |
             Independent FPS-focused Windows edition.
 
-            This release (1.2.13):
-            - Adds Adaptive Director, a stronger orchestrated mode that selects the best workflow while keeping one coherent final answer
-            - Maximizes Auto routing across Ask, Plan, Research, Multi-Agent, Adaptive Director, and Build intents
-            - Tightens Ask mode for direct, high-quality answers without accidental workspace mutation
-            - Keeps Plan mode read-only until Apply while producing clearer, implementation-ready plans
-            - Strengthens Research mode with evidence-first inspection and structured findings
-            - Improves Multi-Agent delegation, synthesis, and user-visible progress without leaking internal chatter
-            - Makes Build mode more decisive about implementing, validating, and finishing requested changes
-            - Cleans up AI reply typography, headings, lists, tables, code blocks, spacing, and long-session rendering
-            - Improves mode persistence, tool permissions, read-only project inspection, and failure recovery
+            Clearline AI replies in 1.2.15:
+            - adds quiet horizontal dividers before major sections and preserves author-written Markdown rules
+            - promotes standalone bold section labels into a stronger, consistent heading hierarchy
+            - keeps ordered and unordered sub-points genuinely nested instead of flattening them
+            - automatically bolds short lead labels such as Standard view: and Verification:
+            - restores compact, safe visual chips for inline code and shortened project filenames
+            - adds refined code-language headers, readable callouts, calmer paragraph rhythm, and stronger tables
+            - keeps Copy reply visible in a subtle footer separated from the answer by a final hairline
+            - maintains safe HTML escaping, responsive overflow protection, and the optimized 20-FPS streaming paint limit
 
-            Also included:
-            - The agent can list and inspect a folder you name under your user profile (Music, Documents, Desktop, Downloads)
-            - Excel, CSV, Word, PowerPoint, PDF, images, audio, and video show up in listings; read_file extracts Office/CSV/PDF text; write_file can create .xlsx; open_path opens the default Windows app
-            - An empty project folder such as EXCELS still surfaces sibling workbooks in the parent directory
-            - Cloud placeholder files are listed; AppData, .ssh, and Windows system folders stay blocked
-            - Debug no longer sticks on Edge's localhost refused page or a black unstyled window
-            - Computer Use uses a pointing-hand cursor instead of the CSS arrow
+            Remote release gates:
+            - reply formatting and transcript stitching regression suite
+            - Playwright screenshots and geometry checks at desktop, narrow, and mobile widths
+            - dark and light appearance coverage, nested-list indentation, bold weight, divider, file-chip, code, callout, and Copy action checks
+            - TypeScript, production Vite build, FPS guards, Ask-mode guards, Computer Use guards, Rust formatting, native tests, and Windows installer build
 
-            Gemini 3.7 Flash:
-            - Gemini 3.7 Flash is in the model picker; Command Code Studio keys (user_…) call google/gemini-3.7-flash
+            Also included from 1.2.14:
+            - Mission Control with persistent objective, audience, boundaries, approval policy, execution depth, and definition of done
+            - Workspace Time Machine with bounded action evidence, Undo Last, and conflict-aware run rollback
+            - Test & Fix Everything with inspect, test, repair, and retest proof states
+            - Adaptive Director improvements, maximized mode routing, Gemini CLI support, Client Success tools, and Desktop mode
 
-            Ask mode:
-            - Ask mode can start the local website with start_dev_server and open Preview
+            Windows note:
+            - installers are not Authenticode-signed yet, so Windows may show Unknown publisher
 
-            Plan mode:
-            - File writes, edits, commands, and other mutations stay locked until the user confirms Apply
-            - The model must present a plan and ask questions first, including Apply vs keep planning
-            - Stack or scope answers such as React + Vite do not unlock implementation
-            - A new request starts planning again; only Apply, implement the plan, or go ahead unlocks writes
-
-            Visible answers:
-            - If a model finishes with only reasoning and empty content, that reasoning is promoted to the visible reply instead of a blank Thought for card
-
-            Native Preview sandwich:
-            - Opening the Preview hamburger keeps the native localhost WebView from painting over the menu
-
-            Preview QA extras:
-            - Save as test, wait_for, upload fixtures, device frames, a11y pN refs, visual snapshot on check failure, Watch me / Replay
-
-            Desktop mode:
-            - Preview sandwich (hamburger) → Desktop mode is a separate opt-in from Preview Computer Use
-            - can drive ordinary Windows apps, including Windows Settings brightness, with the native cursor
-            - uses an allowed-apps list, or all ordinary windows when the list is empty
-            - blocks password managers, Windows Security, terminals, Run, ChatGPT, Codex, and Hormachuelos
-            - shares Ctrl+Alt+Esc with Preview Computer Use as the emergency stop
-            - keeps Preview Computer Use Preview-only
-            - shows a click-through cinematic AI cursor overlay on the target Windows app (hover frame, shockwaves, scroll cues)
-            - chains adjacent Desktop steps in one turn (for example Ctrl+L, type, Enter) instead of thinking between each key
-            - computer_type_text can submit=true to type a search and press Enter in one call
-            - caps Ultra to High on simple Desktop search/click/open tasks so DeepSeek does not use max reasoning for every tiny action
-
-            Monochrome active Preview frame:
-            - animates a box-aligned black-to-white edge glow only while Computer Use is actively engaged
-            - slowly fades the glow in and out, matching the preview rectangle instead of an oval vignette
-            - clears the perimeter, AI cursor, target frame, status badge, and particles when the AI finishes, is cancelled, errors, or the user presses Stop
-            - keeps the border allocation stable, pauses while backgrounded, honors reduced motion, and uses no blur or backdrop filtering
-
-            Cinematic, readable AI cursor:
-            - adds a crisp cyan-violet target frame to every hovered or clicked Preview feature
-            - shows approach, hover, press, click, type, key, scroll, drag, success, and boundary states
-            - adds bounded motion beads, press compression, concentric click shockwaves, and scroll-direction cues
-            - separates the AI action label from the pointer and makes the cursor clearer at 52px
-            - yields immediately to trusted human mouse, wheel, or keyboard input, then clears all overlays
-            - uses only bounded transform/opacity effects, honors reduced motion, and never leaves the active Preview
-
-            Faster Computer Use:
-            - removes cosmetic movement delays from typing, keyboard, and native value actions
-            - skips zero-distance motion and uses distance-adaptive 45–120ms cursor travel
-            - verifies scrolling immediately, with at most two animation frames when the page updates asynchronously
-            - keeps scans, semantic content, trail particles, and transient effects under hard FPS-friendly caps
-            - returns compact action and check evidence to reduce model/tool round trips
-
-            Smarter end-to-end Preview QA:
-            - observes bounded visible headings, labels, alerts, dialogs, table cells, and status text without starving action refs
-            - adds set_value for native date, time, datetime-local, number, range, color, select, text, and contenteditable controls
-            - reports native field validity and validation messages instead of abandoning date-picker workflows
-            - adds check actions for visible, enabled, checked, text, value, URL, and title evidence
-            - a failed check fails the batch, so the model cannot claim a test passed from dispatch alone
-            - batches deterministic steps, re-observes only after navigation/layout changes, and avoids blind identical retries
-            - Auto recognizes clear Playwright, QA, audit, UI-debug, form, dashboard, game, mouse, and keyboard requests
-
-            Proven Preview control:
-            - keeps native open_tab, navigate, and activate_tab support plus reliable page/nested scrolling
-            - both project iframes and native Preview Browser run the same native-control, checking, scrolling, and visual behavior tests
-            - Computer Use remains auto-approved only inside the active Preview tab; it cannot control the Windows desktop
-            - CAPTCHAs, operating-system dialogs, credential-bearing navigation, and other security boundaries remain blocked
-
-            Download page: https://chmoralla-code.github.io/HORMACHUELOS-OPTIMIZED/
+            Download page: https://hormachuelos.vercel.app/#/download
           releaseDraft: false
           prerelease: ${{ steps.release_channel.outputs.prerelease }}
           releaseAssetNamePattern: Hormachuelos_Optimized_[version]_x64[setup][ext]
@@ -194,5 +131,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: Adaptive Director, smarter automatic mode switching, maximized Ask/Plan/Research/Multi-Agent/Build behavior, and a cleaner AI reply layout.
+          UPDATE_WHATS_NEW: Clearline AI replies with section dividers, stronger bold hierarchy, true nested lists, refined code and file chips, responsive visual QA, plus Mission Control, Time Machine, and Test & Fix Everything.
         run: node scripts/publish-update-manifest.mjs --push-pages
