@@ -5892,6 +5892,34 @@ export class Chat {
           type: "run_start",
           permissionMode: normalizeSessionPermissionMode(e.payload?.permission_mode),
           executionProfile: e.payload?.execution_profile,
+          runId: e.session_id,
+          at,
+        });
+        break;
+      case "agentic_plan":
+        this.messages.push({
+          type: "agentic_plan",
+          runId: e.payload.run_id,
+          phases: e.payload.phases,
+          maxWorkers: e.payload.max_workers,
+          at,
+        });
+        break;
+      case "agentic_phase":
+        this.messages.push({
+          type: "agentic_phase",
+          runId: e.payload.run_id,
+          phase: e.payload.phase,
+          state: e.payload.state,
+          detail: e.payload.detail,
+          at,
+        });
+        break;
+      case "agentic_agent":
+        this.messages.push({
+          type: "agentic_agent",
+          runId: e.payload.run_id,
+          agent: e.payload.agent,
           at,
         });
         break;
@@ -5899,9 +5927,13 @@ export class Chat {
         appendMultiAgentBatchSnapshot(this.messages, e.payload?.tools, at);
         break;
       }
-      case "thinking": appendThinkingTranscriptEvent(this.messages, e.payload.iteration, at); break;
+      case "thinking":
+        if (!this.agenticRun) appendThinkingTranscriptEvent(this.messages, e.payload.iteration, at);
+        break;
       case "reasoning":
-        appendThinkingReasoningChunk(this.messages, e.payload.text, e.payload.iteration ?? 0, at);
+        if (!this.agenticRun) {
+          appendThinkingReasoningChunk(this.messages, e.payload.text, e.payload.iteration ?? 0, at);
+        }
         break;
       case "text":
         return appendAssistantTranscriptChunk(
@@ -5910,13 +5942,34 @@ export class Chat {
           at,
           e.payload.continuation === true,
         );
-      case "tool_call": this.messages.push({ type: "tool_call", id: e.payload.id, name: e.payload.name, arguments: redactToolArguments(e.payload.name, e.payload.arguments), at }); break;
+      case "tool_call":
+        this.messages.push({
+          type: "tool_call",
+          id: e.payload.id,
+          name: e.payload.name,
+          arguments: redactToolArguments(e.payload.name, e.payload.arguments),
+          runId: e.payload.run_id,
+          agentId: e.payload.agent_id,
+          phase: e.payload.phase,
+          at,
+        });
+        break;
       case "tool_result": {
         const qIdx = this.messages.findIndex((m) => m.type === "question" && m.id === e.payload.id);
         if (qIdx >= 0) {
           (this.messages[qIdx] as any).answer = e.payload.content;
         }
-        this.messages.push({ type: "tool_result", id: e.payload.id, name: e.payload.name, ok: e.payload.ok, content: e.payload.content, at });
+        this.messages.push({
+          type: "tool_result",
+          id: e.payload.id,
+          name: e.payload.name,
+          ok: e.payload.ok,
+          content: e.payload.content,
+          runId: e.payload.run_id,
+          agentId: e.payload.agent_id,
+          phase: e.payload.phase,
+          at,
+        });
         break;
       }
       case "done":
@@ -5929,6 +5982,7 @@ export class Chat {
           tech: e.payload.tech,
           features: e.payload.features,
           kind: e.payload.kind,
+          agentic: e.payload.agentic,
           at,
           workMs: this.currentWorkMs(at) ?? undefined,
         });
