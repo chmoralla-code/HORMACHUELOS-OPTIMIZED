@@ -15,7 +15,7 @@ test("AGENTIC is an opt-in public mode while Adaptive remains the default", asyn
   assert.match(ipc, /"adaptive"\s*\|\s*"agentic"/);
   assert.match(ipc, /export type AgenticPhase\s*=/);
   assert.match(ipc, /export type AgenticPhaseState\s*=/);
-  assert.match(ipc, /export interface AgenticAgent/);
+  assert.match(ipc, /export (?:type|interface) AgenticAgent/);
   assert.match(modelbar, /value:\s*"agentic"/);
   assert.match(modelbar, /label:\s*"AGENTIC"/);
   assert.ok(modelbar.indexOf('value: "adaptive"') < modelbar.indexOf('value: "agentic"'));
@@ -107,9 +107,8 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
     read("tests/agentic-layout.spec.mjs"),
   ]);
 
-  for (const lane of ["progress", "tools", "agents"]) {
-    assert.ok(component.includes(`data-lane="${lane}"`) || component.includes(`agentic-lane-${lane}`));
-  }
+  assert.match(component, /const LANES: Lane\\[\\] = \\["progress", "tools", "agents"\\]/);
+  assert.match(component, /agentic-lane-\\$\\{lane\\}/);
   for (const phase of ["ask", "plan", "research", "multi_agent", "build"]) {
     assert.ok(component.includes(`"${phase}"`), `missing phase ${phase}`);
   }
