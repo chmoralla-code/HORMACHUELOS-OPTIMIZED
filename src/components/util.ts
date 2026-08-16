@@ -394,8 +394,7 @@ function normalizePlainAssistantMarkdown(src: string): string {
   const withoutToolMarkup = src
     .replace(/<\s*(?:tool_call|function_call|tool_use)\b[^>]*>[\s\S]*?<\/\s*(?:tool_call|function_call|tool_use)\s*>/gi, "")
     .replace(/^\s*<\/?\s*(?:tool_call|function_call|tool_use)\b[^>]*>\s*$/gim, "");
-  const repaired = promoteStandaloneBoldHeadings(repairGluedProse(withoutToolMarkup))
-    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, "");
+  const repaired = promoteReadableSections(repairGluedProse(withoutToolMarkup));
   const lines = repairFragmentedPaths(repaired.split("\n"));
   return normalizeCompletionBlock(lines).join("\n");
 }
@@ -545,11 +544,16 @@ export function mergeReasoningStream(existing: string, chunk: string): string {
   return dedupeLoopedReasoning(repairGluedProse(joinStreamChunks(String(existing || ""), String(chunk || ""))));
 }
 
-function promoteStandaloneBoldHeadings(src: string): string {
-  return String(src || "").replace(
-    /^(?:\*\*|__)([^\n*.]{2,56}?)(?:-)?(?:\*\*|__)\s*-{0,3}\s*$/gm,
-    "### $1",
-  );
+function promoteReadableSections(src: string): string {
+  return String(src || "")
+    .replace(
+      /^(?:\*\*|__)([^\n*]{2,72}?)(?:-)?(?:\*\*|__)\s*-{0,3}\s*$/gm,
+      "## $1",
+    )
+    .replace(
+      /^([A-Z][A-Za-z0-9/&+,'’() -]{2,44}):\s*$/gm,
+      "### $1",
+    );
 }
 
 function dropOrphanContinuations(text: string, dropLowercase = false): string {
@@ -815,6 +819,120 @@ export function normalizeAssistantMarkdown(src: string): string {
     .trim();
 }
 
+
+type MarkdownListKind = "ul" | "ol";
+type MarkdownListLine = {
+  indent: number;
+  kind: MarkdownListKind;
+  number: number | null;
+  content: string;
+};
+
+function parseMarkdownListLine(line: string): MarkdownListLine | null {
+  const match = line.match(/^([ \t]*)([-*+]|\d+[.)])\s+(.+)$/);
+  if (!match) return null;
+  const ordered = /^\d/.test(match[2]);
+  return {
+    indent: match[1].replace(/\t/g, "    ").length,
+    kind: ordered ? "ol" : "ul",
+    number: ordered ? Number.parseInt(match[2], 10) : null,
+    content: match[3].trim(),
+  };
+}
+
+function openMarkdownList(item: MarkdownListLine, depth: number): string {
+  const start = item.kind === "ol" && item.number && item.number !== 1
+    ? ` start="${item.number}"`
+    : "";
+  return `<${item.kind} class="md-list md-list-depth-${Math.min(depth, 4)}"${start}>`;
+}
+
+function renderMarkdownListBlock(items: MarkdownListLine[]): string {
+  const html: string[] = [];
+  const stack: { indent: number; kind: MarkdownListKind }[] = [];
+
+  for (const item of items) {
+    while (stack.length && item.indent < stack[stack.length - 1].indent) {
+      const closing = stack.pop()!;
+      html.push(`</li></${closing.kind}>`);
+    }
+
+    const current = stack[stack.length - 1];
+    if (!current || item.indent > current.indent) {
+      html.push(openMarkdownList(item, stack.length));
+      stack.push({ indent: item.indent, kind: item.kind });
+      html.push(`<li>${item.content}`);
+      continue;
+    }
+
+    if (item.kind !== current.kind) {
+      html.push(`</li></${current.kind}>`);
+      stack.pop();
+      html.push(openMarkdownList(item, stack.length));
+      stack.push({ indent: item.indent, kind: item.kind });
+      html.push(`<li>${item.content}`);
+      continue;
+    }
+
+    html.push(`</li><li>${item.content}`);
+  }
+
+  while (stack.length) {
+    const closing = stack.pop()!;
+    html.push(`</li></${closing.kind}>`);
+  }
+  return html.join("");
+}
+
+function renderMarkdownLists(text: string): string {
+  const source = text.replace(
+    /(^[ \t]*(?:[-*+]|\d+[.)])\s+.+)\n(?:[ \t]*\n)+(?=[ \t]*(?:[-*+]|\d+[.)])\s+)/gm,
+    "$1\n",
+  );
+  const lines = source.split("\n");
+  const output: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const first = parseMarkdownListLine(lines[index]);
+    if (!first) {
+      output.push(lines[index]);
+      continue;
+    }
+
+    const items: MarkdownListLine[] = [first];
+    let cursor = index + 1;
+    while (cursor < lines.length) {
+      const next = parseMarkdownListLine(lines[cursor]);
+      if (!next) break;
+      items.push(next);
+      cursor += 1;
+    }
+
+    output.push("", renderMarkdownListBlock(items), "");
+    index = cursor - 1;
+  }
+
+  return output.join("\n");
+}
+
+function emphasizeMarkdownLeadLabels(text: string): string {
+  return text.replace(
+    /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?)((?:[A-Z][A-Za-z0-9/&+()'’ -]{1,36}):)(?=\s+\S)/gm,
+    '$1<strong class="md-lead">$2</strong>',
+  );
+}
+
+function renderMarkdownBlockquotes(text: string): string {
+  return text.replace(/(?:^&gt;\s?.+(?:\n|$))+/gm, (block) => {
+    const content = block
+      .trim()
+      .split("\n")
+      .map((line) => line.replace(/^&gt;\s?/, "").trim())
+      .join("<br>");
+    return `<blockquote class="md-callout">${content}</blockquote>\n`;
+  });
+}
+
 /**
  * Safe subset markdown → HTML.
  * Escapes all HTML first, then applies only controlled substitutions (no raw HTML passthrough).
@@ -827,7 +945,8 @@ export function renderMarkdown(src: string): string {
   let text = src.replace(/```([\w-]*)\r?\n?([\s\S]*?)```/g, (_m, lang: string, code: string) => {
     const i = fences.length;
     const cls = lang ? ` class="lang-${escapeHtml(lang)}"` : "";
-    fences.push(`<pre class="md-code"><code${cls}>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
+    const language = lang ? ` data-language="${escapeHtml(lang)}"` : "";
+    fences.push(`<pre class="md-code"${language}><code${cls}>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
     return `\u0000FENCE${i}\u0000`;
   });
 
@@ -851,6 +970,7 @@ export function renderMarkdown(src: string): string {
   text = text.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
   text = text.replace(/__([^_]+)__/g, "<strong>$1</strong>");
   text = text.replace(/(?<!_)_([^_\n]+)_(?!_)/g, "<em>$1</em>");
+  text = emphasizeMarkdownLeadLabels(text);
 
   // Headings
   text = text.replace(/^######\s+(.+)$/gm, "<h6>$1</h6>");
@@ -860,36 +980,14 @@ export function renderMarkdown(src: string): string {
   text = text.replace(/^##\s+(.+)$/gm, "<h2>$1</h2>");
   text = text.replace(/^#\s+(.+)$/gm, "<h1>$1</h1>");
 
-  // Models commonly put a blank line between Markdown list items. Collapse
-  // only gaps whose next non-empty line is another marker of the same kind so
-  // one semantic list renders with continuous bullets/numbers.
-  text = text
-    .replace(/(^[-*+] .+)\n[\t ]*\n(?=[-*+] )/gm, "$1\n")
-    .replace(/(^\d+\. .+)\n[\t ]*\n(?=\d+\. )/gm, "$1\n");
-
-  // Unordered lists (consecutive lines)
-  text = text.replace(/(?:^[-*+] .+(?:\n|$))+/gm, (block) => {
-    const items = block
-      .trim()
-      .split("\n")
-      .map((line) => line.replace(/^[-*+] /, "").trim())
-      .filter(Boolean)
-      .map((item) => `<li>${item}</li>`)
-      .join("");
-    return `<ul class="md-list">${items}</ul>\n`;
-  });
-
-  // Ordered lists
-  text = text.replace(/(?:^\d+\. .+(?:\n|$))+/gm, (block) => {
-    const items = block
-      .trim()
-      .split("\n")
-      .map((line) => line.replace(/^\d+\. /, "").trim())
-      .filter(Boolean)
-      .map((item) => `<li>${item}</li>`)
-      .join("");
-    return `<ol class="md-list">${items}</ol>\n`;
-  });
+  // Preserve author-written separators and render nested lists as real nested
+  // HTML instead of flattening every marker into one level.
+  text = text.replace(
+    /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm,
+    '<hr class="md-divider" aria-hidden="true">',
+  );
+  text = renderMarkdownLists(text);
+  text = renderMarkdownBlockquotes(text);
 
   // Links [text](https://...)
   text = text.replace(
@@ -912,7 +1010,7 @@ export function renderMarkdown(src: string): string {
     .map((block) => {
       const t = block.trim();
       if (!t) return "";
-      if (/^<(h[1-6]|ul|ol|pre|blockquote|div|table)/.test(t)) return t;
+      if (/^<(h[1-6]|ul|ol|pre|blockquote|div|table|hr)/.test(t)) return t;
       return `<p>${t.replace(/\n/g, "<br>")}</p>`;
     })
     .join("\n");

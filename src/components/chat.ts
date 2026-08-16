@@ -491,9 +491,10 @@ export class Chat {
     const btn = el("button", {
       class: "msg-copy",
       type: "button",
-      title: "Copy",
-      "aria-label": "Copy message",
-      html: `${icon("copy", 11)}<span class="msg-copy-label sr-only">Copy</span>`,
+      title: "Copy reply",
+      "aria-label": "Copy reply",
+      "data-reply-action": "copy",
+      html: `${icon("copy", 11)}<span class="msg-copy-label">Copy reply</span>`,
     }) as HTMLButtonElement;
     btn.addEventListener("click", async (e) => {
       e.preventDefault();
@@ -522,8 +523,8 @@ export class Chat {
       if (label) label.textContent = "Copied";
       window.setTimeout(() => {
         btn.classList.remove("copied");
-        btn.title = "Copy";
-        if (label) label.textContent = "Copy";
+        btn.title = "Copy reply";
+        if (label) label.textContent = "Copy reply";
       }, 1200);
     });
     return btn;
@@ -1953,7 +1954,7 @@ export class Chat {
         case "assistant": {
           this.hideThinking();
           const m = div("msg assistant");
-          const body = el("div", { class: "msg-body md" });
+          const body = el("div", { class: "msg-body md", role: "document", "aria-label": "AI response" });
           (body as any).__raw = msg.text;
           (body as any).__sourceRaw = msg.text;
           body.innerHTML = renderMarkdown(msg.text);
@@ -4525,7 +4526,7 @@ export class Chat {
     this.clearRunningIndicator();
     if (!this.pendingAssistant) {
       const msg = div("msg assistant msg-enter");
-      const body = el("div", { class: "msg-body md" });
+      const body = el("div", { class: "msg-body md", role: "document", "aria-label": "AI response" });
       msg.appendChild(body);
       this.decorateAssistantMsg(msg);
       // Hide date/time until the agent finishes this reply

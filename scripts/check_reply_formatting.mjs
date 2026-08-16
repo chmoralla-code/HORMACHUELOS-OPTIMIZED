@@ -352,7 +352,52 @@ assert.equal(
 );
 assert.match(
   normalizeAssistantMarkdown("**Tech stack-**\n\nNext.js 15 and React 19."),
-  /^### Tech stack/m,
+  /^## Tech stack/m,
+);
+
+
+const editorialReply = [
+  "The review is complete and the important changes are easy to scan.",
+  "",
+  "**Key Improvements & Features Added**",
+  "",
+  "1. **Roomier reply layout**",
+  "   - **Standard view:** focused and compact.",
+  "   - **Maximized view:** wider with calmer reading rhythm.",
+  "2. **Clear completion details**",
+  "   - Files stay compact.",
+  "   - Verification remains visible.",
+  "",
+  "---",
+  "",
+  "## Files Updated",
+  "",
+  "- \`src/components/util.ts\` — semantic Markdown renderer.",
+  "- \`src/app.css\` — editorial reply styling.",
+  "",
+  "> **Good to know:** The renderer still escapes raw HTML.",
+  "",
+  "\`\`\`ts",
+  "const ready = true;",
+  "\`\`\`",
+].join("\n");
+
+const normalizedEditorial = normalizeAssistantMarkdown(editorialReply);
+assert.match(normalizedEditorial, /^## Key Improvements & Features Added$/m);
+assert.match(normalizedEditorial, /^---$/m);
+
+const renderedEditorial = renderMarkdown(editorialReply);
+assert.match(renderedEditorial, /<h2>Key Improvements &amp; Features Added<\/h2>/);
+assert.match(renderedEditorial, /<hr class="md-divider" aria-hidden="true">/);
+assert.match(renderedEditorial, /<ol class="md-list md-list-depth-0">/);
+assert.match(renderedEditorial, /<ul class="md-list md-list-depth-1">/);
+assert.match(renderedEditorial, /<strong class="md-lead">Standard view:<\/strong>/);
+assert.match(renderedEditorial, /<span class="md-file"[^>]*>util\.ts<\/span>/);
+assert.match(renderedEditorial, /<blockquote class="md-callout">/);
+assert.match(renderedEditorial, /<pre class="md-code" data-language="ts">/);
+assert.ok(
+  renderedEditorial.indexOf("md-list-depth-1") > renderedEditorial.indexOf("md-list-depth-0"),
+  "nested details should stay inside their parent list",
 );
 
 const oversizedTranscript = [
@@ -494,6 +539,8 @@ for (const requiredReplyStitch of [
   "insertionPointAfterCurrentTools",
   "Multi-Agent activity",
   "structured-reply",
+  'data-reply-action": "copy"',
+  '"aria-label": "AI response"',
 ]) {
   assert.ok(chatSource.includes(requiredReplyStitch), `missing live reply-layout guard: ${requiredReplyStitch}`);
 }
@@ -503,7 +550,10 @@ assert.match(appCss, /#chat > \.msg\.history-virtualized\s*\{/);
 assert.doesNotMatch(appCss, /#chat > \.msg,\s*\n#chat > \.thinking-wrap/);
 assert.match(appCss, /font-size:\s*14\.25px/);
 assert.match(appCss, /\.msg\.assistant\.structured-reply/);
-assert.match(appCss, /width:\s*fit-content/);
+assert.match(appCss, /hr\.md-divider/);
+assert.match(appCss, /border-top:\s*1px solid var\(--line-subtle\)/);
+assert.match(appCss, /\.md-list \.md-list/);
+assert.match(appCss, /\.msg\.assistant \.msg-copy-label\s*\{\s*display:\s*inline/);
 assert.match(appCss, /\.tool-batch-head\s*\{[^}]*color:\s*var\(--text-muted\)/s);
 assert.doesNotMatch(appCss, /\.tool-batch-wrap\.collapsed\s*~\s*\.tool-card-wrap/);
 assert.match(appCss, /\.multi-agent-batch:not\(\.is-open\) \.multi-agent-tool:not\(\.working\):not\(\.failed\)/);
