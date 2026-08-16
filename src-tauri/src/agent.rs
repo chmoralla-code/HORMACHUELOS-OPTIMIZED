@@ -2955,6 +2955,7 @@ Describe each image briefly in the visible reply. Do not mention vision provider
     let is_agentic = agentic_plan.is_some();
     let agentic_started = Instant::now();
     let mut agentic_workers: Vec<crate::agentic::AgenticWorkerResult> = Vec::new();
+    let mut agentic_orchestration_tokens = 0_u64;
     let mut adaptive_route = None;
     let mut permission_mode = if task_profile.is_design_edit() {
         if requested_mode == "adaptive" {
@@ -3183,7 +3184,7 @@ Describe each image briefly in the visible reply. Do not mention vision provider
                 let mut agentic_evidence = String::new();
                 if let Some(plan) = agentic_plan.as_ref() {
                     if plan.multi_agent {
-                        agentic_workers = crate::cursor_bridge::run_cursor_agentic_workers(
+                        let batch = crate::cursor_bridge::run_cursor_agentic_workers(
                             app.clone(),
                             &project_root,
                             &user_request,
@@ -3196,6 +3197,9 @@ Describe each image briefly in the visible reply. Do not mention vision provider
                             &plan.workers,
                         )
                         .await;
+                        agentic_orchestration_tokens = agentic_orchestration_tokens
+                            .saturating_add(batch.orchestration_tokens);
+                        agentic_workers = batch.workers;
                         agentic_evidence = crate::agentic::evidence_context(&agentic_workers);
                         if run.cancel.load(Ordering::SeqCst) {
                             crate::agentic::emit_phase(
@@ -3321,7 +3325,9 @@ Current user request:\n{prompt}",
                                 assignment: "Own scope, permissions, integration, writes, verification, and delivery.".into(),
                                 status: "completed".into(),
                                 tool_count: metrics.tool_count,
-                                total_tokens: metrics.total_tokens,
+                                total_tokens: metrics
+                                    .total_tokens
+                                    .saturating_add(agentic_orchestration_tokens),
                                 result_summary: summary.clone(),
                                 error: None,
                             },
@@ -3333,7 +3339,9 @@ Current user request:\n{prompt}",
                             &metrics.changed_files,
                             &[],
                             &metrics.verification,
-                            metrics.total_tokens,
+                            metrics
+                                .total_tokens
+                                .saturating_add(agentic_orchestration_tokens),
                             metrics.tool_count,
                             agentic_started.elapsed().as_millis() as u64,
                         );
@@ -3464,7 +3472,7 @@ Current user request:\n{prompt}",
     };
 
     if let Some(plan) = agentic_plan.as_ref().filter(|plan| plan.multi_agent) {
-        agentic_workers = crate::agentic::run_native_workers(
+        let batch = crate::agentic::run_native_workers(
             app.clone(),
             &session_id,
             root,
@@ -3482,6 +3490,9 @@ Current user request:\n{prompt}",
             plan,
         )
         .await;
+        agentic_orchestration_tokens = agentic_orchestration_tokens
+            .saturating_add(batch.orchestration_tokens);
+        agentic_workers = batch.workers;
         prompt.push_str(&crate::agentic::evidence_context(&agentic_workers));
         if run.cancel.load(Ordering::SeqCst) {
             crate::agentic::emit_phase(
@@ -4607,7 +4618,8 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                         assignment: "Own scope, permissions, integration, writes, verification, and delivery.".into(),
                         status: "completed".into(),
                         tool_count: agentic_director_tool_count,
-                        total_tokens,
+                        total_tokens: total_tokens
+                            .saturating_add(agentic_orchestration_tokens),
                         result_summary: terminal_summary.clone(),
                         error: None,
                     },
@@ -4619,7 +4631,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                     &[],
                     &[],
                     &agentic_verification,
-                    total_tokens,
+                    total_tokens.saturating_add(agentic_orchestration_tokens),
                     agentic_director_tool_count,
                     agentic_started.elapsed().as_millis() as u64,
                 );
@@ -5312,7 +5324,7 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                         &files,
                         &features,
                         &agentic_verification,
-                        total_tokens,
+                        total_tokens.saturating_add(agentic_orchestration_tokens),
                         agentic_director_tool_count,
                         agentic_started.elapsed().as_millis() as u64,
                     );
