@@ -1233,29 +1233,31 @@ pub async fn run_cursor_turn(
     let mut smart_agent = SmartAgentRun::for_job(director_job, smart_agent_enabled, fast_execution);
     let smart_agent_active = smart_agent.is_enabled();
     let computer_use_active = computer_use_enabled && !crate::computer_use::is_paused();
-    emit(
-        &app,
-        session_id,
-        "start",
-        json!({
-            "prompt": prompt,
-            "provider": "OpenAI",
-            "model": model,
-            "permission_mode": permission_mode,
-            "requested_permission_mode": requested_permission_mode,
-            "adaptive_reason": adaptive_reason,
-            "adaptive_complexity": adaptive_complexity,
-            "adaptive_risk": adaptive_risk,
-            "permission_enforcement": cursor_permission_enforcement(permission_mode),
-            "host_approval_callbacks": false,
-            "computer_use": computer_use_active,
-            "smart_agent_enabled": smart_agent_active,
-            "flavour_enabled": flavour.is_enabled(),
-            "task_profile": task_profile,
-            "execution_profile": execution_profile,
-            "checkpoint_id": run.checkpoint().map(|checkpoint| checkpoint.id()),
-        }),
-    );
+    if !requested_permission_mode.eq_ignore_ascii_case("agentic") {
+        emit(
+            &app,
+            session_id,
+            "start",
+            json!({
+                "prompt": prompt,
+                "provider": "OpenAI",
+                "model": model,
+                "permission_mode": permission_mode,
+                "requested_permission_mode": requested_permission_mode,
+                "adaptive_reason": adaptive_reason,
+                "adaptive_complexity": adaptive_complexity,
+                "adaptive_risk": adaptive_risk,
+                "permission_enforcement": cursor_permission_enforcement(permission_mode),
+                "host_approval_callbacks": false,
+                "computer_use": computer_use_active,
+                "smart_agent_enabled": smart_agent_active,
+                "flavour_enabled": flavour.is_enabled(),
+                "task_profile": task_profile,
+                "execution_profile": execution_profile,
+                "checkpoint_id": run.checkpoint().map(|checkpoint| checkpoint.id()),
+            }),
+        );
+    }
     if flavour.is_enabled() {
         emit(
             &app,
