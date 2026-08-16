@@ -110,6 +110,8 @@ test("AGENTIC persistence excludes public reasoning and retains scoped evidence"
   assert.match(chat, /startAgenticWorkbench/);
   assert.match(chat, /completeAgenticWorkbench/);
   assert.match(chat, /msg\.agenticState/);
+  assert.match(chat, /recordAgentEvent\(this\.messages/);
+  assert.match(session, /atOverride \?\? Date\.now\(\)/);
 });
 
 test("Execution Workbench and Delivery Board meet the responsive accessibility contract", async () => {
