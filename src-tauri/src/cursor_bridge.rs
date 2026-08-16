@@ -821,72 +821,96 @@ fn handle_event(
     activity: &mut CursorPassActivity,
     flavour: &mut FlavourRun,
     model: &str,
+    scope: Option<&CursorAgenticScope>,
+    suppress_reasoning: bool,
 ) -> bool {
     match event.kind.as_str() {
         "thinking" => {
-            emit(app, session_id, "thinking", json!({ "iteration": 0 }));
+            if !suppress_reasoning {
+                emit(app, session_id, "thinking", json!({ "iteration": 0 }));
+            }
         }
         "reasoning" => {
-            if let Some(text) = event.text.filter(|t| !t.is_empty()) {
-                emit(
-                    app,
-                    session_id,
-                    "reasoning",
-                    json!({ "text": text, "iteration": 0 }),
-                );
+            if !suppress_reasoning {
+                if let Some(text) = event.text.filter(|t| !t.is_empty()) {
+                    emit(
+                        app,
+                        session_id,
+                        "reasoning",
+                        json!({ "text": text, "iteration": 0 }),
+                    );
+                }
             }
         }
         "text" => {
             if let Some(text) = event.text.filter(|t| !t.trim().is_empty()) {
                 *answer_text_seen = true;
-                emit(app, session_id, "text", json!({ "text": text }));
+                if scope.is_some() {
+                    if activity.answer_text.len() < 12_000 {
+                        activity.answer_text.push_str(&text);
+                    }
+                } else {
+                    emit(app, session_id, "text", json!({ "text": text }));
+                }
             }
         }
         "tool_call" => {
             let name = event.name.unwrap_or_else(|| "tool".into());
             let id = event.id.unwrap_or_else(|| name.clone());
             let arguments = event.arguments.unwrap_or_else(|| json!({}));
-            if flavour.record_tool_call(&id, &name, &arguments) {
-                emit(
-                    app,
-                    session_id,
-                    "status",
-                    json!({ "message": "Flavour · updating working memory…" }),
-                );
+            if scope.is_none() {
+                if flavour.record_tool_call(&id, &name, &arguments) {
+                    emit(
+                        app,
+                        session_id,
+                        "status",
+                        json!({ "message": "Flavour · updating working memory…" }),
+                    );
+                }
+                smart_agent.on_tool_call(app, session_id, &id, &name, &arguments);
             }
-            smart_agent.on_tool_call(app, session_id, &id, &name, &arguments);
             activity.record_tool_call(&id, &name);
-            emit(
-                app,
-                session_id,
-                "tool_call",
-                json!({
-                    "id": id,
-                    "name": name,
-                    "arguments": arguments,
-                }),
-            );
+            let public_id = scope
+                .map(|scope| format!("{}:{id}", scope.agent_id))
+                .unwrap_or_else(|| id.clone());
+            let mut payload = json!({
+                "id": public_id,
+                "name": name,
+                "arguments": arguments,
+            });
+            if let Some(scope) = scope {
+                payload["run_id"] = Value::String(scope.run_id.clone());
+                payload["agent_id"] = Value::String(scope.agent_id.clone());
+                payload["phase"] = Value::String("multi_agent".into());
+            }
+            emit(app, session_id, "tool_call", payload);
         }
         "tool_result" => {
             let name = event.name.unwrap_or_else(|| "tool".into());
             let id = event.id.unwrap_or_else(|| name.clone());
             let ok = event.ok.unwrap_or(true);
             let content = event.content.unwrap_or_default();
-            smart_agent.on_tool_result(app, session_id, &id, &name, ok);
+            if scope.is_none() {
+                smart_agent.on_tool_result(app, session_id, &id, &name, ok);
+                flavour.record_tool_result(&id, &name, &json!({}), ok, &content);
+            }
             activity.record_tool_result(&id, &name, ok);
-            flavour.record_tool_result(&id, &name, &json!({}), ok, &content);
-            emit(
-                app,
-                session_id,
-                "tool_result",
-                json!({
-                    "id": id,
-                    "name": name,
-                    "ok": ok,
-                    "content": content,
-                    "streamed": false,
-                }),
-            );
+            let public_id = scope
+                .map(|scope| format!("{}:{id}", scope.agent_id))
+                .unwrap_or_else(|| id.clone());
+            let mut payload = json!({
+                "id": public_id,
+                "name": name,
+                "ok": ok,
+                "content": content,
+                "streamed": false,
+            });
+            if let Some(scope) = scope {
+                payload["run_id"] = Value::String(scope.run_id.clone());
+                payload["agent_id"] = Value::String(scope.agent_id.clone());
+                payload["phase"] = Value::String("multi_agent".into());
+            }
+            emit(app, session_id, "tool_result", payload);
         }
         "checkpoint" | "done" => {
             if let Some(id) = event.agent_id.filter(|s| !s.is_empty()) {
