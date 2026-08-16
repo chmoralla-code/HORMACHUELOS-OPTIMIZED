@@ -1,4 +1,5 @@
 pub mod agent;
+mod agentic;
 pub mod app_updater;
 pub mod checkpoint;
 pub mod computer_fx;
