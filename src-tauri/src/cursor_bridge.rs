@@ -88,6 +88,7 @@ struct CursorTurnOutcome {
 pub struct CursorAgenticMetrics {
     pub tool_count: usize,
     pub total_tokens: u64,
+    pub answer_text: String,
     pub verification: Vec<crate::agentic::AgenticVerificationEvidence>,
     pub changed_files: Vec<String>,
 }
@@ -96,6 +97,9 @@ impl CursorAgenticMetrics {
     fn absorb(&mut self, outcome: &CursorTurnOutcome) {
         self.tool_count = self.tool_count.saturating_add(outcome.tool_count);
         self.total_tokens = self.total_tokens.saturating_add(outcome.total_tokens);
+        if !outcome.answer_text.trim().is_empty() {
+            self.answer_text.push_str(&outcome.answer_text);
+        }
         self.verification.extend(outcome.verification.iter().cloned());
         let mut known = self.changed_files.iter().cloned().collect::<HashSet<_>>();
         for path in &outcome.changed_files {
@@ -922,11 +926,10 @@ fn handle_event(
         "text" => {
             if let Some(text) = event.text.filter(|t| !t.trim().is_empty()) {
                 *answer_text_seen = true;
-                if scope.is_some() {
-                    if activity.answer_text.len() < 12_000 {
-                        activity.answer_text.push_str(&text);
-                    }
-                } else {
+                if activity.answer_text.len() < 12_000 {
+                    activity.answer_text.push_str(&text);
+                }
+                if scope.is_none() {
                     emit(app, session_id, "text", json!({ "text": text }));
                 }
             }
