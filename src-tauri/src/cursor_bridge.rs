@@ -1395,12 +1395,14 @@ pub async fn run_cursor_turn(
                 continue;
             }
             smart_agent.complete(&app, session_id);
-            emit(
-                &app,
-                session_id,
-                "end",
-                json!({ "reason": "completed", "iteration": continuation_pass }),
-            );
+            if !requested_permission_mode.eq_ignore_ascii_case("agentic") {
+                emit(
+                    &app,
+                    session_id,
+                    "end",
+                    json!({ "reason": "completed", "iteration": continuation_pass }),
+                );
+            }
             return Ok(current_agent_id);
         }
 
@@ -1411,12 +1413,14 @@ pub async fn run_cursor_turn(
             // A regular Cursor reply is not an explicit task-completion
             // handshake. Keep its terminal reason distinct so the frontend
             // never announces it as "done working".
-            emit(
-                &app,
-                session_id,
-                "end",
-                json!({ "reason": "no_tool_calls", "iteration": continuation_pass }),
-            );
+            if !requested_permission_mode.eq_ignore_ascii_case("agentic") {
+                emit(
+                    &app,
+                    session_id,
+                    "end",
+                    json!({ "reason": "no_tool_calls", "iteration": continuation_pass }),
+                );
+            }
             return Ok(current_agent_id);
         }
 
