@@ -9,13 +9,21 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tauri::{AppHandle, Emitter};
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 pub const MAX_AGENTIC_WORKERS: usize = 3;
 const MAX_WORKER_ROUNDS: usize = 5;
 const MAX_WORKER_TOOLS: usize = 14;
+static AGENTIC_WORKER_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn worker_semaphore() -> Arc<Semaphore> {
+    AGENTIC_WORKER_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(MAX_AGENTIC_WORKERS)))
+        .clone()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,11 +131,40 @@ pub struct AgenticPlan {
 
 impl AgenticPlan {
     pub fn classify(request: &str) -> Self {
-        let input = request
-            .to_ascii_lowercase()
+        let raw = request.trim().to_ascii_lowercase();
+        let asked_as_question = raw.ends_with('?');
+        let input = raw
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || character == '\'' || character == '-' {
+                    character
+                } else {
+                    ' '
+                }
+            })
+            .collect::<String>()
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        let explicit_plan = has_any(
+            &input,
+            &["create a plan", "make a plan", "plan for", "plan this"],
+        );
+        let plan_requests_build = has_any(
+            &input,
+            &[
+                "then implement",
+                "and implement",
+                "also implement",
+                "execute the plan",
+                "apply the plan",
+                "then fix",
+                "and fix",
+                "then update",
+                "and update",
+                "make the changes",
+            ],
+        );
         let plan_only = has_any(
             &input,
             &[
@@ -141,8 +178,54 @@ impl AgenticPlan {
                 "research only",
                 "read-only",
             ],
+        ) || (explicit_plan && !plan_requests_build);
+        let explicit_mutation_request = has_any(
+            &format!(" {input} "),
+            &[
+                " can you implement ",
+                " can you fix ",
+                " can you add ",
+                " can you build ",
+                " can you create ",
+                " can you change ",
+                " can you update ",
+                " can you improve ",
+                " can you refactor ",
+                " can you remove ",
+                " can you delete ",
+                " can you apply ",
+                " could you implement ",
+                " could you fix ",
+                " could you add ",
+                " could you update ",
+                " please implement ",
+                " please fix ",
+                " please add ",
+                " please update ",
+                " please improve ",
+            ],
         );
+        let explanatory_question = !explicit_mutation_request
+            && (asked_as_question
+                || starts_with_any(
+                    &input,
+                    &[
+                        "what ",
+                        "how ",
+                        "why ",
+                        "where ",
+                        "when ",
+                        "which ",
+                        "who ",
+                        "explain ",
+                        "describe ",
+                        "tell me how ",
+                        "should i ",
+                        "should we ",
+                    ],
+                ));
         let mutation = !plan_only
+            && !explanatory_question
             && has_any(
                 &format!(" {input} "),
                 &[
@@ -156,6 +239,15 @@ impl AgenticPlan {
                     " improve ",
                     " refactor ",
                     " remove ",
+                    " delete ",
+                    " rename ",
+                    " move ",
+                    " replace ",
+                    " install ",
+                    " deploy ",
+                    " release ",
+                    " publish ",
+                    " write ",
                     " apply ",
                     " tweak ",
                 ],
@@ -173,14 +265,10 @@ impl AgenticPlan {
                 "assess",
             ],
         );
-        let explicit_plan = has_any(
-            &input,
-            &["create a plan", "make a plan", "plan for", "plan this"],
-        );
         let simple = !mutation
             && !investigation
             && !explicit_plan
-            && (input.ends_with('?')
+            && (explanatory_question
                 || has_any(
                     &input,
                     &[
@@ -517,7 +605,33 @@ async fn run_worker(
     run: Arc<SessionRun>,
     spec: AgenticWorkerSpec,
 ) -> AgenticWorkerResult {
-    let mut worker = AgenticWorkerResult::new(&spec, "running");
+    let mut worker = AgenticWorkerResult::new(&spec, "queued");
+    let permit = tokio::select! {
+        result = worker_semaphore().acquire_owned() => result,
+        _ = wait_cancelled(run.cancel.clone()) => {
+            worker.status = "cancelled".into();
+            worker.result_summary = "Cancelled with the parent run.".into();
+            emit_agent(&app, session_id, &worker);
+            return worker;
+        }
+    };
+    let _permit = match permit {
+        Ok(permit) => permit,
+        Err(error) => {
+            worker.status = "failed".into();
+            worker.error = Some(error.to_string());
+            worker.result_summary = "The shared worker gate was unavailable.".into();
+            emit_agent(&app, session_id, &worker);
+            return worker;
+        }
+    };
+    if run.cancel.load(Ordering::SeqCst) {
+        worker.status = "cancelled".into();
+        worker.result_summary = "Cancelled with the parent run.".into();
+        emit_agent(&app, session_id, &worker);
+        return worker;
+    }
+    worker.status = "running".into();
     emit_agent(&app, session_id, &worker);
     let provider = match llm::build_provider_with_effort(
         &config.provider,
@@ -571,8 +685,12 @@ async fn run_worker(
             match worker_chat(provider.as_ref(), &messages, &schemas, run.cancel.clone()).await {
                 Ok(response) => response,
                 Err(error) => {
-                    worker.status = "failed".into();
-                    worker.error = Some(error.to_string());
+                    if run.cancel.load(Ordering::SeqCst) {
+                        worker.status = "cancelled".into();
+                    } else {
+                        worker.status = "failed".into();
+                        worker.error = Some(error.to_string());
+                    }
                     break;
                 }
             };
@@ -686,14 +804,27 @@ async fn worker_chat(
         if cancel.load(Ordering::SeqCst) {
             return Err(anyhow!("Worker cancelled."));
         }
-        match provider.chat(messages, schemas, None, None, None).await {
+        let response = tokio::select! {
+            response = provider.chat(messages, schemas, None, None, None) => response,
+            _ = wait_cancelled(cancel.clone()) => return Err(anyhow!("Worker cancelled.")),
+        };
+        match response {
             Ok(response) => return Ok(response),
             Err(error) if !retried && llm::is_transient_provider_error(&error) => {
                 retried = true;
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                    _ = wait_cancelled(cancel.clone()) => return Err(anyhow!("Worker cancelled.")),
+                }
             }
             Err(error) => return Err(error),
         }
+    }
+}
+
+async fn wait_cancelled(cancel: Arc<std::sync::atomic::AtomicBool>) {
+    while !cancel.load(Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 }
 
@@ -1035,6 +1166,10 @@ fn cancelled_workers(
 
 fn has_any(value: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| value.contains(needle))
+}
+
+fn starts_with_any(value: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| value.starts_with(prefix))
 }
 
 fn is_concurrency_error(error: &str) -> bool {
