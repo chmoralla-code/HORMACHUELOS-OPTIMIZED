@@ -74,9 +74,18 @@ struct CursorTurnOutcome {
     agent_id: Option<String>,
     completion_marker_seen: bool,
     answer_text_seen: bool,
+    answer_text: String,
+    total_tokens: u64,
+    tool_count: usize,
     terminal: bool,
     made_concrete_progress: bool,
     recoverable_interruption: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CursorAgenticScope {
+    run_id: String,
+    agent_id: String,
 }
 
 impl CursorTurnOutcome {
@@ -85,6 +94,9 @@ impl CursorTurnOutcome {
             agent_id,
             completion_marker_seen: false,
             answer_text_seen: false,
+            answer_text: String::new(),
+            total_tokens: 0,
+            tool_count: 0,
             terminal: true,
             made_concrete_progress: false,
             recoverable_interruption: None,
@@ -103,11 +115,15 @@ fn is_verified_cursor_completion(
 struct CursorPassActivity {
     made_concrete_progress: bool,
     open_tools: HashMap<String, String>,
+    answer_text: String,
+    total_tokens: u64,
+    tool_count: usize,
 }
 
 impl CursorPassActivity {
     fn record_tool_call(&mut self, id: &str, name: &str) {
         self.open_tools.insert(id.to_string(), name.to_string());
+        self.tool_count = self.tool_count.saturating_add(1);
     }
 
     fn record_tool_result(&mut self, id: &str, result_name: &str, ok: bool) {
