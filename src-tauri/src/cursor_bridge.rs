@@ -1406,7 +1406,9 @@ async fn run_cursor_attempt(
     loop {
         if cancel.load(Ordering::SeqCst) {
             let _ = child.start_kill();
-            emit(&app, session_id, "cancelled", json!({ "iteration": 0 }));
+            if scope.is_none() {
+                emit(&app, session_id, "cancelled", json!({ "iteration": 0 }));
+            }
             *run.active_pid.lock().unwrap() = None;
             let _ = stderr_task.await;
             return Ok(CursorTurnOutcome::terminal(agent_id_out));
@@ -1415,18 +1417,20 @@ async fn run_cursor_attempt(
         if !saw_bridge_event && started.elapsed() > CURSOR_FIRST_EVENT_TIMEOUT {
             let _ = child.start_kill();
             let msg = "Cursor SDK took too long to start. Check your Cursor API key and network, then try again.";
-            emit(
-                &app,
-                session_id,
-                "text",
-                json!({ "text": format!("Error: {msg}") }),
-            );
-            emit(
-                &app,
-                session_id,
-                "end",
-                json!({ "reason": "timeout", "iteration": 0 }),
-            );
+            if scope.is_none() {
+                emit(
+                    &app,
+                    session_id,
+                    "text",
+                    json!({ "text": format!("Error: {msg}") }),
+                );
+                emit(
+                    &app,
+                    session_id,
+                    "end",
+                    json!({ "reason": "timeout", "iteration": 0 }),
+                );
+            }
             *run.active_pid.lock().unwrap() = None;
             let _ = stderr_task.await;
             return Err(anyhow!(msg));
@@ -1435,7 +1439,9 @@ async fn run_cursor_attempt(
         if last_bridge_event.elapsed() > CURSOR_IDLE_TIMEOUT {
             let _ = child.start_kill();
             let msg = "Cursor SDK stopped reporting progress for 12 minutes; resuming from its saved checkpoint.";
-            emit(&app, session_id, "status", json!({ "message": msg }));
+            if scope.is_none() {
+                emit(&app, session_id, "status", json!({ "message": msg }));
+            }
             recoverable_interruption = Some(msg.into());
             break;
         }
@@ -1657,13 +1663,15 @@ async fn run_cursor_attempt(
     }
 
     if let Some(err) = saw_error {
-        emit(&app, session_id, "error", json!({ "message": err.clone() }));
-        emit(
-            &app,
-            session_id,
-            "end",
-            json!({ "reason": "error", "iteration": 0 }),
-        );
+        if scope.is_none() {
+            emit(&app, session_id, "error", json!({ "message": err.clone() }));
+            emit(
+                &app,
+                session_id,
+                "end",
+                json!({ "reason": "error", "iteration": 0 }),
+            );
+        }
         return Err(anyhow!(err));
     }
 
