@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "check": "tsc --noEmit",
     "stage:cursor-runtime": "node scripts/stage-cursor-runtime.mjs",
-    "test": "npm run check && node --test scripts/cursor-completion.test.mjs scripts/cursor-bridge-lifecycle.test.mjs && cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "test": "npm run check && npm run test:agentic && node --test scripts/cursor-completion.test.mjs scripts/cursor-bridge-lifecycle.test.mjs && cargo test --locked --manifest-path src-tauri/Cargo.toml",
     "test:providers": "node --test website/tests/providers.test.mjs website/tests/secret-box.test.mjs website/tests/releases.test.mjs website/tests/hosted-route.test.mjs",
     "test:payments": "node --test website/tests/payments.test.mjs",
     "test:reply-formatting": "node scripts/check_reply_formatting.mjs",
