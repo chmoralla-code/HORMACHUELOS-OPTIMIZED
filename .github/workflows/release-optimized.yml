@@ -93,31 +93,28 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Clearline AI replies
+          releaseName: Hormachuelos Optimized v__VERSION__ · Safe chat rollback
           releaseBody: |
             Independent FPS-focused Windows edition.
 
-            Clearline AI replies in 1.2.15:
-            - adds quiet horizontal dividers before major sections and preserves author-written Markdown rules
-            - promotes standalone bold section labels into a stronger, consistent heading hierarchy
-            - keeps ordered and unordered sub-points genuinely nested instead of flattening them
-            - automatically bolds short lead labels such as Standard view: and Verification:
-            - restores compact, safe visual chips for inline code and shortened project filenames
-            - adds refined code-language headers, readable callouts, calmer paragraph rhythm, and stronger tables
-            - keeps Copy reply visible in a subtle footer separated from the answer by a final hairline
-            - maintains safe HTML escaping, responsive overflow protection, and the optimized 20-FPS streaming paint limit
+            Safe chat rollback in 1.2.16:
+            - typing rollback, roll back, revert, or undo now opens the protected Time Machine restoration flow
+            - deterministic host routing performs the rollback without calling a model or consuming AI usage
+            - Ask mode remains read-only for every ordinary edit; only explicit restoration commands use this path
+            - the existing confirmation dialog runs before files are restored
+            - newer user edits remain protected as conflicts instead of being overwritten
+            - chat reports complete, partial, cancelled, busy, unavailable, and error outcomes clearly
+            - Adaptive recognizes rollback as a guarded change request instead of falling back to an unable Ask reply
 
             Remote release gates:
-            - reply formatting and transcript stitching regression suite
-            - Playwright screenshots and geometry checks at desktop, narrow, and mobile widths
-            - dark and light appearance coverage, nested-list indentation, bold weight, divider, file-chip, code, callout, and Copy action checks
-            - TypeScript, production Vite build, FPS guards, Ask-mode guards, Computer Use guards, Rust formatting, native tests, and Windows installer build
+            - rollback intent tests cover direct commands, polite commands, undo scope, how-to questions, negation, and ambiguous file-scoped requests
+            - TypeScript, production Vite build, Ask-mode guards, reply-formatting guards, and Rust formatting
+            - Playwright desktop, narrow, and mobile reply-layout coverage plus the v1.2.16 website card
+            - Windows native compilation and installer build
 
-            Also included from 1.2.14:
-            - Mission Control with persistent objective, audience, boundaries, approval policy, execution depth, and definition of done
-            - Workspace Time Machine with bounded action evidence, Undo Last, and conflict-aware run rollback
-            - Test & Fix Everything with inspect, test, repair, and retest proof states
-            - Adaptive Director improvements, maximized mode routing, Gemini CLI support, Client Success tools, and Desktop mode
+            Also included from 1.2.15:
+            - Clearline AI replies with section dividers, stronger bold hierarchy, true nested lists, refined code and file chips, and visible reply actions
+            - Mission Control, Workspace Time Machine, Test & Fix Everything, Adaptive Director improvements, Gemini CLI support, and Desktop mode
 
             Windows note:
             - installers are not Authenticode-signed yet, so Windows may show Unknown publisher
@@ -131,5 +128,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: Clearline AI replies with section dividers, stronger bold hierarchy, true nested lists, refined code and file chips, responsive visual QA, plus Mission Control, Time Machine, and Test & Fix Everything.
+          UPDATE_WHATS_NEW: Type rollback or undo in chat to restore the latest protected AI change through Time Machine without model usage; Ask stays read-only, confirmations remain required, and newer user edits are preserved as conflicts. Includes Clearline AI replies, Mission Control, and Test & Fix Everything.
         run: node scripts/publish-update-manifest.mjs --push-pages
