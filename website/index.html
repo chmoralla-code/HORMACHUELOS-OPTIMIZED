@@ -8,9 +8,25 @@
   <link rel="stylesheet" href="css/styles.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Space+Grotesk:wght@300;400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
 </head>
 <body>
+  <!-- Background particle network -->
+  <canvas id="bg" aria-hidden="true"></canvas>
+
+  <!-- Custom cursor -->
+  <div class="cursor-dot" id="cursorDot" aria-hidden="true"></div>
+  <div class="cursor-ring" id="cursorRing" aria-hidden="true"></div>
+
+  <!-- Boot overlay -->
+  <div class="boot" id="boot">
+    <div class="boot-inner">
+      <div class="boot-logo">H</div>
+      <div class="boot-bar"><span></span></div>
+      <div class="boot-text" id="bootText">INITIALIZING HORMACHUELOS SYSTEMS...</div>
+    </div>
+  </div>
+
   <a class="skip-link" href="#main">Skip to content</a>
 
   <header class="site-header" id="site-header">
@@ -70,6 +86,7 @@
     </div>
     <div class="container footer-bottom">
       <span class="muted small">© <span id="year"></span> Hormachuelos · PH</span>
+      <span class="footer-status small"><span class="dot"></span> SYSTEM ONLINE</span>
       <span class="pay-badges" title="Payment methods">
         <span class="pay-badge">GCash</span>
         <span class="pay-badge">Receipt review</span>
@@ -79,6 +96,7 @@
   </footer>
 
   <div id="toast" class="toast" hidden role="status"></div>
+  <script src="js/design.js"></script>
   <script src="js/app.js" type="module"></script>
 </body>
 </html>

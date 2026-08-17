@@ -613,6 +613,11 @@ function renderHome() {
       <p class="lead ix-reveal" data-delay="1" data-ix-hover-words>
         PinoyMade ARTIFICIAL INTELLIGENCE (GUI) software and a website that is easy to use and built for vibe coders that don't have bank accounts.
       </p>
+      <div class="hero-hud ix-reveal" data-delay="1" aria-hidden="true">
+        <div class="hud-item"><span class="hud-label">STATUS</span><span class="hud-val ok">OPERATIONAL</span></div>
+        <div class="hud-item"><span class="hud-label">PAYMENT</span><span class="hud-val">GCASH READY</span></div>
+        <div class="hud-item"><span class="hud-label">MODULE</span><span class="hud-val">AI-07</span></div>
+      </div>
       <div class="hero-cta ix-reveal" data-delay="2">
         <a class="btn btn-primary btn-lg" href="#/pricing">View pricing</a>
         ${renderDownloadButton("btn-lg")}
@@ -649,7 +654,9 @@ function renderHome() {
     <section class="section">
       <div class="container">
         <div class="section-head center ix-reveal">
+          <span class="section-num mono">01</span>
           <h2 data-ix-split>Them vs us</h2>
+          <span class="section-line"></span>
           <p>Temporary comparison — prices illustrative. Click a row.</p>
         </div>
         <div class="compare ix-reveal">
@@ -687,7 +694,9 @@ function renderFeatures() {
     <section class="section" style="border-top:0;padding-top:48px">
       <div class="container">
         <div class="section-head ix-reveal">
+          <span class="section-num mono">02</span>
           <h2 data-ix-split>Features</h2>
+          <span class="section-line"></span>
           <p data-ix-hover-words>Everything you need to ship client work and side projects without fighting payment walls. Hover any line.</p>
         </div>
         <div class="grid-3">
@@ -733,7 +742,9 @@ function renderPricing() {
     <section class="section" style="border-top:0;padding-top:48px">
       <div class="container">
         <div class="section-head center ix-reveal">
+          <span class="section-num mono">03</span>
           <h2 data-ix-split>Pricing</h2>
+          <span class="section-line"></span>
           <p data-ix-hover-words>Pay-as-you-go in ₱ PHP. Pick a plan, load GCash when you need more.</p>
           <p class="pricing-live mono" id="pricing-live" aria-live="polite"></p>
         </div>
@@ -2880,7 +2891,9 @@ function renderFaq() {
     <section class="section" style="border-top:0;padding-top:48px">
       <div class="container">
         <div class="section-head center ix-reveal">
+          <span class="section-num mono">04</span>
           <h2 data-ix-split>FAQ</h2>
+          <span class="section-line"></span>
           <p data-ix-hover-words>Straight answers — Taglish welcome in support. Open a question to type the answer.</p>
         </div>
         <div class="faq-list" id="faq-list"></div>
