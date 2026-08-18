@@ -1450,10 +1450,8 @@ Return a concise evidence report with concrete file paths, observations, risks, 
         }
         Err(error) => {
             worker.status = "failed".into();
-            let safe = crate::integration_chat::redact_sensitive_text(
-                &error.to_string(),
-                &known_secrets,
-            );
+            let safe =
+                crate::integration_chat::redact_sensitive_text(&error.to_string(), &known_secrets);
             worker.result_summary = bounded_worker_summary(&format!(
                 "Worker could not complete its evidence assignment: {safe}"
             ));

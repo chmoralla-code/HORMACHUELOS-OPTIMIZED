@@ -4692,7 +4692,11 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
         // commands, browser, confirmation, and computer actions never join it.
         let parallel_batch_len = parallel_readonly_batch_len(
             &resp.tool_calls,
-            if is_agentic { "multi_agent" } else { mode.as_str() },
+            if is_agentic {
+                "multi_agent"
+            } else {
+                mode.as_str()
+            },
         );
         let mut parallel_read_results = if parallel_batch_len > 0 {
             let parallel_calls = &resp.tool_calls[..parallel_batch_len];

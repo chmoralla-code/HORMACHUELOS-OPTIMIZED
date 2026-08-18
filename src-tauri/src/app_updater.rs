@@ -38,9 +38,7 @@ fn overall_download_percent(downloaded: u64, known_total: Option<u64>) -> u8 {
     let total = known_total
         .filter(|bytes| *bytes > 0)
         .unwrap_or(FALLBACK_INSTALLER_BYTES);
-    let mut percent = downloaded
-        .saturating_mul(u64::from(DOWNLOAD_PROGRESS_MAX))
-        / total;
+    let mut percent = downloaded.saturating_mul(u64::from(DOWNLOAD_PROGRESS_MAX)) / total;
     if percent > u64::from(DOWNLOAD_PROGRESS_MAX) {
         percent = u64::from(DOWNLOAD_PROGRESS_MAX);
     }
@@ -1221,7 +1219,9 @@ pub async fn install_app_update(
 
 #[cfg(test)]
 mod tests {
-    use super::{overall_download_percent, validate_download_url, validate_sha256, validate_version};
+    use super::{
+        overall_download_percent, validate_download_url, validate_sha256, validate_version,
+    };
 
     #[test]
     fn download_percent_covers_known_and_unknown_sizes() {
