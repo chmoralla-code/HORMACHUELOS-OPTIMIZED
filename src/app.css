@@ -758,207 +758,92 @@
 
 .update-install-progress {
   display: grid;
-  gap: 12px;
-  padding: 16px;
-  overflow: hidden;
-  border: 1px solid rgba(96, 191, 242, 0.26);
-  border-radius: 12px;
-  background:
-    linear-gradient(rgba(97, 205, 250, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(97, 205, 250, 0.025) 1px, transparent 1px),
-    rgba(4, 11, 14, 0.6);
-  background-size: 20px 20px, 20px 20px, auto;
-  animation: updateContentIn 0.3s var(--ease) both;
+  justify-items: center;
+  gap: 10px;
+  padding: 6px 4px 2px;
+  text-align: center;
+  animation: updateContentIn 0.32s var(--ease) both;
 }
 .update-install-progress[hidden] { display: none; }
-.update-install-hero {
-  display: grid;
-  grid-template-columns: 70px minmax(0, 1fr);
-  align-items: center;
-  gap: 14px;
-}
-.update-install-emblem {
-  position: relative;
-  width: 66px;
-  height: 66px;
-  display: grid;
-  place-items: center;
-}
-.update-install-orbit {
-  position: absolute;
-  border: 1px solid rgba(105, 211, 249, 0.18);
-  border-radius: 50%;
-}
-.update-install-orbit.orbit-one {
-  inset: 0;
-  border-top-color: #6ed4f5;
-  border-right-color: rgba(110, 212, 245, 0.58);
-  animation: updateOrbit 2.2s linear infinite;
-}
-.update-install-orbit.orbit-two {
-  inset: 8px;
-  border-bottom-color: #e5a95d;
-  animation: updateOrbit 1.55s linear infinite reverse;
-}
-.update-install-core {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid rgba(113, 211, 246, 0.46);
-  border-radius: 9px;
-  color: #dff8ff;
-  background: rgba(61, 157, 197, 0.12);
-  box-shadow: 0 0 24px rgba(87, 193, 232, 0.18);
+.update-install-percent {
+  color: #e8f7ff;
   font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 800;
+  font-size: clamp(3.2rem, 8vw, 4.5rem);
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.07em;
+  line-height: 0.9;
+  text-shadow: 0 0 34px rgba(97, 205, 250, 0.28);
 }
-.update-install-copy { display: grid; min-width: 0; gap: 4px; }
-.update-install-phase {
-  color: #75cce9;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.11em;
+.update-install-progress:not(.is-error):not(.is-restarting) .update-install-percent {
+  animation: updatePercentPulse 1.8s ease-in-out infinite;
 }
-.update-install-status {
-  overflow-wrap: anywhere;
-  color: #edf8fb;
-  font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 720;
-  line-height: 1.25;
-}
-.update-install-detail {
-  margin: 0;
-  color: #84979c;
-  font-size: 10px;
-  line-height: 1.4;
-}
-.update-install-meter-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  color: #71878e;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-}
-.update-install-percent { color: #bceeff; font-size: 10px; }
 .update-install-meter {
   position: relative;
-  height: 7px;
+  width: 100%;
+  height: 6px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.08);
 }
 .update-install-meter-fill {
   width: 0;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #4ca9d0, #86def5 72%, #f0bc78);
-  box-shadow: 0 0 18px rgba(101, 207, 243, 0.38);
-  transition: width 0.28s var(--ease);
+  background: linear-gradient(90deg, #4ca9d0, #86def5 68%, #f0bc78);
+  box-shadow: 0 0 16px rgba(101, 207, 243, 0.42);
+  transition: width 0.22s var(--ease);
 }
-.update-install-meter.is-indeterminate .update-install-meter-fill {
-  width: 34%;
-  animation: updateMeterScan 1.25s var(--ease) infinite;
+.update-install-status {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  color: #d7eef6;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
 }
-.update-install-stages {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 5px;
+.update-install-hint {
   margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.update-install-stages::before {
-  content: "";
-  position: absolute;
-  top: 11px;
-  left: 10%;
-  right: 10%;
-  height: 1px;
-  background: rgba(255, 255, 255, 0.08);
-}
-.update-install-step {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  justify-items: center;
-  gap: 5px;
-  min-width: 0;
-  color: #66787e;
-}
-.update-install-step-marker {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 50%;
-  background: #11181b;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  font-weight: 700;
-}
-.update-install-step-label {
-  overflow: hidden;
-  max-width: 100%;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  letter-spacing: 0.04em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.update-install-step.is-active { color: #bfefff; }
-.update-install-step.is-active .update-install-step-marker {
-  border-color: rgba(105, 211, 249, 0.68);
-  color: #e3faff;
-  background: rgba(53, 155, 197, 0.22);
-  box-shadow: 0 0 0 4px rgba(74, 178, 218, 0.08), 0 0 18px rgba(74, 178, 218, 0.24);
-}
-.update-install-step.is-complete { color: #91d6ad; }
-.update-install-step.is-complete .update-install-step-marker {
-  border-color: rgba(116, 215, 163, 0.42);
-  color: #b6efcc;
-  background: rgba(62, 135, 94, 0.18);
-}
-.update-install-foot {
-  margin: 0;
-  color: #718289;
-  font-size: 9px;
+  max-width: 36ch;
+  color: #7d9198;
+  font-size: 11px;
   line-height: 1.4;
+}
+.update-dialog-card.is-installing {
+  width: min(420px, 100%);
+  padding: 22px 24px 20px;
+}
+.update-dialog-content.is-installing {
+  align-items: center;
   text-align: center;
 }
-.update-install-progress.is-restarting {
-  border-color: rgba(116, 215, 163, 0.3);
-  background: rgba(18, 55, 38, 0.18);
+.update-dialog-content.is-installing .update-dialog-title {
+  font-size: clamp(1.15rem, 3vw, 1.35rem);
+  letter-spacing: -0.03em;
 }
-.update-install-progress.is-restarting .update-install-core {
-  border-color: rgba(116, 215, 163, 0.5);
-  color: #cbf4da;
-  box-shadow: 0 0 30px rgba(116, 215, 163, 0.2);
+.update-dialog-content.is-installing .update-dialog-subtitle {
+  max-width: 34ch;
+  color: #7f939a;
+  font-size: 12px;
 }
-.update-install-progress.is-error {
-  border-color: rgba(255, 120, 108, 0.28);
-  background: rgba(73, 25, 24, 0.18);
+.update-install-progress.is-restarting .update-install-percent {
+  color: #d4f5e0;
+  text-shadow: 0 0 34px rgba(116, 215, 163, 0.32);
 }
-.update-install-progress.is-error .update-install-orbit { animation-play-state: paused; }
-.update-install-status.is-error,
-.update-install-progress.is-error .update-install-percent { color: #ffc5c5; }
-.update-install-step.is-error .update-install-step-marker {
-  border-color: rgba(255, 120, 108, 0.5);
+.update-install-progress.is-restarting .update-install-meter-fill {
+  background: linear-gradient(90deg, #74d7a3, #c8f0d6);
+  box-shadow: 0 0 16px rgba(116, 215, 163, 0.35);
+}
+.update-install-progress.is-error .update-install-percent,
+.update-install-status.is-error {
   color: #ffc5c5;
-  background: rgba(120, 45, 40, 0.24);
-  box-shadow: 0 0 0 4px rgba(255, 120, 108, 0.06);
+  text-shadow: none;
+  animation: none;
+}
+.update-install-progress.is-error .update-install-meter-fill {
+  background: rgba(255, 120, 108, 0.35);
+  box-shadow: none;
 }
 .update-dialog-card.is-error::before {
   background: linear-gradient(90deg, #ff786c, #e5a95d 58%, transparent 92%);
@@ -967,10 +852,8 @@
   from { opacity: 0; transform: translateY(7px); }
   to { opacity: 1; transform: translateY(0); }
 }
-@keyframes updateOrbit { to { transform: rotate(360deg); } }
-@keyframes updateMeterScan {
-  from { transform: translateX(-115%); }
-  to { transform: translateX(310%); }
+@keyframes updatePercentPulse {
+  50% { opacity: 0.78; }
 }
 @media (max-width: 560px) {
   .update-dialog-card { padding: 19px 17px 17px; }
@@ -980,22 +863,19 @@
   .update-version-value { font-size: 12px; }
   .update-preflight { grid-template-columns: minmax(0, 1fr); }
   .update-dialog-actions { grid-template-columns: minmax(0, 1fr); }
-  .update-install-progress { padding: 13px 11px; }
-  .update-install-hero { grid-template-columns: 56px minmax(0, 1fr); gap: 10px; }
-  .update-install-emblem { width: 54px; height: 54px; }
+  .update-install-percent { font-size: 3rem; }
   .update-install-status { font-size: 13px; }
 }
 @media (max-height: 680px) {
   .update-dialog-card { max-height: calc(100vh - 20px); padding-block: 16px; }
   .update-dialog-content { gap: 9px; }
   .update-dialog-content .update-notes { max-height: 86px; }
-  .update-install-progress { gap: 9px; padding-block: 12px; }
-  .update-install-foot { display: none; }
+  .update-install-percent { font-size: 2.8rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .update-ready-view,
   .update-install-progress,
-  .update-install-orbit,
+  .update-install-percent,
   .update-install-meter-fill { animation: none !important; }
 }
 
@@ -2813,10 +2693,9 @@
   color: var(--text-2);
 }
 
-/* Lightning fade-in/fade-out for tools, confirmations, and agentic summaries. */
+/* Lightning fade-in for chat tools and summaries. AGENTIC workbench cards stay static. */
 .tool-card-wrap.tool-spawn,
 .tool-card.tool-spawn,
-.agentic-tool-card.tool-spawn,
 .tool-confirm-wrap.tool-spawn,
 .tool-confirm.tool-spawn,
 .integration-auth-wrap.tool-spawn,
@@ -2827,6 +2706,11 @@
   will-change: opacity, transform;
   /* Fallback if animation is killed / frozen at 0% (WebView2 + reduced motion) */
   opacity: 1;
+}
+.agentic-workbench .tool-spawn,
+.agentic-tool-card.tool-spawn,
+.agentic-agent-card.tool-spawn {
+  animation: none !important;
 }
 .msg-enter {
   animation: toolSpawn var(--fade-in, 0.9s) ease both;

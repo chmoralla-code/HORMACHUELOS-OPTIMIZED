@@ -1441,7 +1441,7 @@ export function recordAgentEvent(
         type: "agentic_plan",
         runId: e.payload.run_id,
         phases,
-        maxWorkers: Math.max(0, Math.min(3, Number(e.payload.max_workers) || 3)),
+        maxWorkers: Math.max(0, Math.min(6, Number(e.payload.max_workers) || 6)),
         at,
       });
       break;

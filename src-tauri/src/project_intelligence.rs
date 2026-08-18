@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const CACHE_VERSION: u32 = 1;
 const MAX_FINGERPRINT_ENTRIES: usize = 600;
-const MAX_TREE_LINES: usize = 120;
+const MAX_TREE_LINES: usize = 160;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -251,7 +251,11 @@
 }
 
 .agentic-lane-title {
-  margin: 0;
+  margin: 0 0 4px;
+  color: var(--text-muted);
+  font: 600 11px/1.2 var(--font-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .agentic-progress-list,
@@ -386,6 +390,21 @@
   overflow: visible;
 }
 
+.agentic-thinking-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agentic-thinking-stream {
+  margin: 0;
+  padding: 8px 0 4px;
+  color: var(--text-muted);
+  font: 400 12.5px/1.5 inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .agentic-tool-card {
   min-width: 0;
   margin: 0;
@@ -393,12 +412,6 @@
   border-radius: 0;
   background: transparent;
   overflow: visible;
-}
-
-.agentic-tool-card.tool-spawn {
-  animation: lightningToolSpawnBlue var(--fade-in, 0.72s) ease-out both;
-  will-change: opacity, transform;
-  opacity: 1;
 }
 
 .agentic-tool-card[data-state="running"],
@@ -834,6 +847,10 @@
 
   .agentic-lane-tabs {
     display: flex;
+  }
+
+  .agentic-lane-title {
+    display: none;
   }
 
   .agentic-lanes {

@@ -127,7 +127,7 @@ def main() -> None:
         assert page.locator("body").get_attribute("data-installed-sha256") == "b" * 64
         backup = json.loads(page.locator("body").get_attribute("data-update-backup"))
         assert backup["entries"]["ai-forge:test-update-state"] == "preserved"
-        expect(install_overlay.locator(".update-install-status")).to_contain_text("Relaunching Hormachuelos")
+        expect(install_overlay.locator(".update-install-status")).to_contain_text("Restarting")
 
         # A full WebView localStorage previously aborted before the updater
         # could download anything. The live in-memory transcript must now flow
@@ -159,7 +159,7 @@ def main() -> None:
             session for session in backed_up_sessions if session["id"] == "session-memory-only"
         )
         assert memory_session["messages"][0]["text"] == "Keep this unsaved transcript safe."
-        expect(quota_page.locator(".update-install-status")).to_contain_text("Relaunching Hormachuelos")
+        expect(quota_page.locator(".update-install-status")).to_contain_text("Restarting")
         quota_page.close()
 
         # Relaunch recovery merges the fresher backup copy over an existing

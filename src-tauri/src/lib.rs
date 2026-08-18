@@ -1379,6 +1379,11 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+#[tauri::command]
+fn app_is_dev_build() -> bool {
+    cfg!(debug_assertions)
+}
+
 #[derive(serde::Serialize)]
 struct AgentSkill {
     id: String,
@@ -1614,6 +1619,7 @@ pub fn run() {
             active_agent_sessions,
             open_project_in_explorer,
             app_version,
+            app_is_dev_build,
             list_agent_skills,
             list_integrations,
             set_integration_token,

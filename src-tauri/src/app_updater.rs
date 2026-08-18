@@ -31,6 +31,25 @@ fn emit_progress(app: &AppHandle, phase: &'static str, percent: Option<u8>, mess
     );
 }
 
+const DOWNLOAD_PROGRESS_MAX: u8 = 80;
+const FALLBACK_INSTALLER_BYTES: u64 = 40 * 1024 * 1024;
+
+fn overall_download_percent(downloaded: u64, known_total: Option<u64>) -> u8 {
+    let total = known_total
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(FALLBACK_INSTALLER_BYTES);
+    let mut percent = downloaded
+        .saturating_mul(u64::from(DOWNLOAD_PROGRESS_MAX))
+        / total;
+    if percent > u64::from(DOWNLOAD_PROGRESS_MAX) {
+        percent = u64::from(DOWNLOAD_PROGRESS_MAX);
+    }
+    if known_total.is_none() && percent >= u64::from(DOWNLOAD_PROGRESS_MAX) {
+        percent = u64::from(DOWNLOAD_PROGRESS_MAX.saturating_sub(1));
+    }
+    percent.max(1) as u8
+}
+
 fn update_backup_path() -> Result<PathBuf, String> {
     let dirs = directories::ProjectDirs::from("com", "hormachuelos", "Hormachuelos Optimized")
         .ok_or_else(|| "Could not locate the persistent Hormachuelos data folder.".to_string())?;
@@ -287,12 +306,13 @@ async fn download_installer(
     let path = update_cache_path(version, extension)?;
     let pending = path.with_extension(format!("{extension}.part"));
     let client = reqwest::Client::builder()
+        .user_agent("Hormachuelos-Optimized-Updater")
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(20))
         .timeout(std::time::Duration::from_secs(20 * 60))
         .build()
         .map_err(|error| format!("Could not initialize the update download: {error}"))?;
-    emit_progress(app, "downloading", None, "Downloading the update…");
+    emit_progress(app, "downloading", Some(1), "Downloading the update…");
     let mut current_url = url;
     let mut redirects = 0_usize;
     let mut response = loop {
@@ -366,7 +386,13 @@ async fn download_installer(
     {
         return Err("The update server returned a web page instead of an installer.".into());
     }
-    let total = response.content_length();
+    let total = response.content_length().or_else(|| {
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+    });
     if total.is_some_and(|bytes| bytes > MAX_INSTALLER_BYTES) {
         return Err("The update installer is larger than the allowed limit.".into());
     }
@@ -375,7 +401,7 @@ async fn download_installer(
         .await
         .map_err(|error| format!("Could not create the temporary installer: {error}"))?;
     let mut downloaded = 0_u64;
-    let mut last_percent = 0_u8;
+    let mut last_percent = 1_u8;
     let mut digest = Sha256::new();
     while let Some(chunk) = response
         .chunk()
@@ -391,14 +417,18 @@ async fn download_installer(
         file.write_all(&chunk)
             .await
             .map_err(|error| format!("Could not save the update installer: {error}"))?;
-        if let Some(total) = total.filter(|total| *total > 0) {
-            let percent = ((downloaded.saturating_mul(100) / total).min(100)) as u8;
-            if percent >= last_percent.saturating_add(2) {
-                last_percent = percent;
-                emit_progress(app, "downloading", Some(percent), "Downloading update…");
-            }
+        let percent = overall_download_percent(downloaded, total);
+        if percent >= last_percent.saturating_add(1) {
+            last_percent = percent;
+            emit_progress(app, "downloading", Some(percent), "Downloading update…");
         }
     }
+    emit_progress(
+        app,
+        "downloading",
+        Some(DOWNLOAD_PROGRESS_MAX),
+        "Downloading update…",
+    );
     file.flush()
         .await
         .map_err(|error| format!("Could not finalize the update installer: {error}"))?;
@@ -451,6 +481,33 @@ function Write-UpdateLog {
   } catch {}
 }
 
+function Set-InstallStatus {
+  param(
+    $Window,
+    [Parameter(Mandatory = $true)][ValidateRange(0, 100)][int]$Percent,
+    [Parameter(Mandatory = $true)][string]$Headline
+  )
+  if ($null -eq $Window) { return }
+  try {
+    $state = $Window.Tag
+    $state['PercentLabel'].Text = ('{0}%' -f $Percent)
+    $state['Headline'].Text = $Headline
+    $trackWidth = [Math]::Max(8, [int]$state['Track'].ClientSize.Width)
+    $state['Fill'].Width = [Math]::Max(6, [int](($trackWidth * $Percent) / 100))
+    [System.Windows.Forms.Application]::DoEvents()
+  } catch {}
+}
+
+function Close-InstallStatusWindow {
+  param($Window)
+  if ($null -eq $Window) { return }
+  try {
+    $Window.Tag['AllowClose'] = $true
+    $Window.Close()
+    $Window.Dispose()
+  } catch {}
+}
+
 function New-InstallStatusWindow {
   try {
     Add-Type -AssemblyName System.Windows.Forms
@@ -458,9 +515,9 @@ function New-InstallStatusWindow {
     [System.Windows.Forms.Application]::EnableVisualStyles()
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Hormachuelos secure update'
-    $form.AccessibleName = 'Hormachuelos secure update progress'
-    $form.ClientSize = [System.Drawing.Size]::new(520, 300)
+    $form.Text = 'Updating Hormachuelos'
+    $form.AccessibleName = 'Hormachuelos update progress'
+    $form.ClientSize = [System.Drawing.Size]::new(420, 228)
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
     $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
     $form.ShowInTaskbar = $true
@@ -473,112 +530,57 @@ function New-InstallStatusWindow {
 
     $surface = New-Object System.Windows.Forms.Panel
     $surface.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $surface.BackColor = [System.Drawing.Color]::FromArgb(20, 25, 28)
+    $surface.BackColor = [System.Drawing.Color]::FromArgb(12, 16, 18)
     $form.Controls.Add($surface)
 
     $brand = New-Object System.Windows.Forms.Label
     $brand.AutoSize = $false
-    $brand.Location = [System.Drawing.Point]::new(28, 24)
-    $brand.Size = [System.Drawing.Size]::new(220, 18)
-    $brand.ForeColor = [System.Drawing.Color]::FromArgb(224, 234, 236)
+    $brand.Location = [System.Drawing.Point]::new(28, 22)
+    $brand.Size = [System.Drawing.Size]::new(364, 18)
+    $brand.ForeColor = [System.Drawing.Color]::FromArgb(154, 176, 182)
     $brand.Font = [System.Drawing.Font]::new('Bahnschrift', 9, [System.Drawing.FontStyle]::Bold)
-    $brand.Text = 'H O R M A C H U E L O S'
+    $brand.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $brand.Text = 'UPDATING HORMACHUELOS'
     $surface.Controls.Add($brand)
 
-    $channel = New-Object System.Windows.Forms.Label
-    $channel.AutoSize = $false
-    $channel.Location = [System.Drawing.Point]::new(362, 22)
-    $channel.Size = [System.Drawing.Size]::new(128, 22)
-    $channel.ForeColor = [System.Drawing.Color]::FromArgb(139, 220, 179)
-    $channel.BackColor = [System.Drawing.Color]::FromArgb(27, 46, 40)
-    $channel.Font = [System.Drawing.Font]::new('Consolas', 8, [System.Drawing.FontStyle]::Bold)
-    $channel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $channel.Text = '●  SECURE UPDATE'
-    $surface.Controls.Add($channel)
-
-    $core = New-Object System.Windows.Forms.Label
-    $core.AutoSize = $false
-    $core.Location = [System.Drawing.Point]::new(28, 76)
-    $core.Size = [System.Drawing.Size]::new(58, 58)
-    $core.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-    $core.ForeColor = [System.Drawing.Color]::FromArgb(219, 247, 255)
-    $core.BackColor = [System.Drawing.Color]::FromArgb(25, 50, 61)
-    $core.Font = [System.Drawing.Font]::new('Bahnschrift', 17, [System.Drawing.FontStyle]::Bold)
-    $core.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $core.Text = 'H'
-    $surface.Controls.Add($core)
-
-    $phase = New-Object System.Windows.Forms.Label
-    $phase.AutoSize = $false
-    $phase.Location = [System.Drawing.Point]::new(106, 75)
-    $phase.Size = [System.Drawing.Size]::new(380, 18)
-    $phase.ForeColor = [System.Drawing.Color]::FromArgb(104, 203, 236)
-    $phase.Font = [System.Drawing.Font]::new('Consolas', 8, [System.Drawing.FontStyle]::Bold)
-    $phase.Text = 'INSTALL // 03 OF 04'
-    $surface.Controls.Add($phase)
+    $percentLabel = New-Object System.Windows.Forms.Label
+    $percentLabel.AutoSize = $false
+    $percentLabel.Location = [System.Drawing.Point]::new(28, 52)
+    $percentLabel.Size = [System.Drawing.Size]::new(364, 78)
+    $percentLabel.ForeColor = [System.Drawing.Color]::FromArgb(232, 247, 255)
+    $percentLabel.Font = [System.Drawing.Font]::new('Bahnschrift', 42, [System.Drawing.FontStyle]::Bold)
+    $percentLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $percentLabel.Text = '90%'
+    $percentLabel.AccessibleName = 'Update percent'
+    $surface.Controls.Add($percentLabel)
 
     $headline = New-Object System.Windows.Forms.Label
     $headline.AutoSize = $false
-    $headline.Location = [System.Drawing.Point]::new(105, 96)
-    $headline.Size = [System.Drawing.Size]::new(390, 28)
-    $headline.ForeColor = [System.Drawing.Color]::FromArgb(240, 247, 248)
-    $headline.Font = [System.Drawing.Font]::new('Bahnschrift', 15, [System.Drawing.FontStyle]::Bold)
-    $headline.Text = "Installing Hormachuelos v$ExpectedVersion"
+    $headline.Location = [System.Drawing.Point]::new(28, 132)
+    $headline.Size = [System.Drawing.Size]::new(364, 22)
+    $headline.ForeColor = [System.Drawing.Color]::FromArgb(168, 188, 194)
+    $headline.Font = [System.Drawing.Font]::new('Segoe UI', 10)
+    $headline.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $headline.Text = "Installing v$ExpectedVersion"
     $surface.Controls.Add($headline)
 
-    $description = New-Object System.Windows.Forms.Label
-    $description.AutoSize = $false
-    $description.Location = [System.Drawing.Point]::new(106, 126)
-    $description.Size = [System.Drawing.Size]::new(380, 35)
-    $description.ForeColor = [System.Drawing.Color]::FromArgb(139, 155, 160)
-    $description.Font = [System.Drawing.Font]::new('Segoe UI', 8.5)
-    $description.Text = 'Windows is replacing the app safely. It will relaunch automatically.'
-    $surface.Controls.Add($description)
-
-    $sequence = New-Object System.Windows.Forms.Label
-    $sequence.AutoSize = $false
-    $sequence.Location = [System.Drawing.Point]::new(28, 177)
-    $sequence.Size = [System.Drawing.Size]::new(464, 16)
-    $sequence.ForeColor = [System.Drawing.Color]::FromArgb(112, 135, 143)
-    $sequence.Font = [System.Drawing.Font]::new('Consolas', 7.5, [System.Drawing.FontStyle]::Bold)
-    $sequence.Text = 'INSTALL SEQUENCE'
-    $surface.Controls.Add($sequence)
-
     $track = New-Object System.Windows.Forms.Panel
-    $track.Location = [System.Drawing.Point]::new(28, 199)
-    $track.Size = [System.Drawing.Size]::new(464, 7)
-    $track.BackColor = [System.Drawing.Color]::FromArgb(43, 51, 55)
+    $track.Location = [System.Drawing.Point]::new(36, 172)
+    $track.Size = [System.Drawing.Size]::new(348, 8)
+    $track.BackColor = [System.Drawing.Color]::FromArgb(36, 44, 48)
     $surface.Controls.Add($track)
 
     $fill = New-Object System.Windows.Forms.Panel
-    $fill.Location = [System.Drawing.Point]::new(-96, 0)
-    $fill.Size = [System.Drawing.Size]::new(96, 7)
+    $fill.Location = [System.Drawing.Point]::new(0, 0)
+    $fill.Size = [System.Drawing.Size]::new(313, 8)
     $fill.BackColor = [System.Drawing.Color]::FromArgb(107, 211, 243)
     $track.Controls.Add($fill)
-
-    $stages = New-Object System.Windows.Forms.Label
-    $stages.AutoSize = $false
-    $stages.Location = [System.Drawing.Point]::new(28, 220)
-    $stages.Size = [System.Drawing.Size]::new(464, 22)
-    $stages.ForeColor = [System.Drawing.Color]::FromArgb(137, 209, 166)
-    $stages.Font = [System.Drawing.Font]::new('Consolas', 8, [System.Drawing.FontStyle]::Bold)
-    $stages.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $stages.Text = 'DOWNLOAD  ✓      VERIFY  ✓      INSTALL  ●      RELAUNCH  ○'
-    $surface.Controls.Add($stages)
-
-    $safety = New-Object System.Windows.Forms.Label
-    $safety.AutoSize = $false
-    $safety.Location = [System.Drawing.Point]::new(28, 258)
-    $safety.Size = [System.Drawing.Size]::new(464, 18)
-    $safety.ForeColor = [System.Drawing.Color]::FromArgb(125, 150, 153)
-    $safety.Font = [System.Drawing.Font]::new('Segoe UI', 8)
-    $safety.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $safety.Text = 'Your projects, sessions, and settings are protected.'
-    $surface.Controls.Add($safety)
 
     $form.Tag = @{
       Track = $track
       Fill = $fill
+      PercentLabel = $percentLabel
+      Headline = $headline
       AllowClose = $false
     }
     $form.Add_FormClosing({
@@ -602,29 +604,20 @@ function Wait-InstallerWithStatus {
     return [int]$Process.ExitCode
   }
 
-  try {
-    $Window.Show()
-    $Window.Activate()
-    $startedAt = [DateTimeOffset]::Now
-    while (!$Process.HasExited) {
-      $elapsedMs = ([DateTimeOffset]::Now - $startedAt).TotalMilliseconds
-      $track = $Window.Tag['Track']
-      $fill = $Window.Tag['Fill']
-      $travel = $track.ClientSize.Width + $fill.Width
-      $fill.Left = ([int]($elapsedMs / 4) % $travel) - $fill.Width
-      [System.Windows.Forms.Application]::DoEvents()
-      Start-Sleep -Milliseconds 34
-      $Process.Refresh()
-    }
-    $Process.WaitForExit()
-    return [int]$Process.ExitCode
-  } finally {
-    try {
-      $Window.Tag['AllowClose'] = $true
-      $Window.Close()
-      $Window.Dispose()
-    } catch {}
+  $Window.Show()
+  $Window.Activate()
+  Set-InstallStatus -Window $Window -Percent 90 -Headline "Installing v$ExpectedVersion"
+  $startedAt = [DateTimeOffset]::Now
+  while (!$Process.HasExited) {
+    $elapsedMs = ([DateTimeOffset]::Now - $startedAt).TotalMilliseconds
+    $percent = [Math]::Min(99, 90 + [int]($elapsedMs / 900))
+    Set-InstallStatus -Window $Window -Percent $percent -Headline "Installing v$ExpectedVersion"
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Milliseconds 40
+    $Process.Refresh()
   }
+  $Process.WaitForExit()
+  return [int]$Process.ExitCode
 }
 
 function Get-HormachuelosCandidates {
@@ -774,6 +767,7 @@ try {
 }
 
 $exitCode = -1
+$statusWindow = $null
 try {
   $extension = [IO.Path]::GetExtension($InstallerPath).ToLowerInvariant()
   Write-UpdateLog "Installing $extension update silently."
@@ -803,6 +797,8 @@ if ($exitCode -in @(0, 1641, 3010)) {
   $launchPath = Resolve-HormachuelosPath -RequireExpectedVersion $true
   if (![string]::IsNullOrWhiteSpace($launchPath)) {
     try {
+      Set-InstallStatus -Window $statusWindow -Percent 100 -Headline 'Restarting…'
+      Start-Sleep -Milliseconds 280
       # The silent installer never launches the app. Restart it exactly once
       # here so the user only experiences the original app closing and opening.
       $startedProcess = Start-Process -FilePath $launchPath -PassThru
@@ -812,6 +808,7 @@ if ($exitCode -in @(0, 1641, 3010)) {
       }
       Write-UpdateLog "Restarted updated app: $launchPath"
       Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
+      Close-InstallStatusWindow -Window $statusWindow
       Remove-UpdateHelperFiles
       exit 0
     } catch {
@@ -822,6 +819,7 @@ if ($exitCode -in @(0, 1641, 3010)) {
   }
 }
 
+Close-InstallStatusWindow -Window $statusWindow
 Open-PreviousHormachuelos
 Remove-UpdateHelperFiles
 exit 12
@@ -997,10 +995,12 @@ fn installer_requires_administrator_elevation(installer: &Path) -> bool {
 
 #[cfg(windows)]
 async fn launch_install_helper(
+    app: Option<&AppHandle>,
     installer: &Path,
     current_exe: &Path,
     expected_version: &str,
     expected_sha256: &str,
+    installing_message: &'static str,
 ) -> Result<(), String> {
     let cache_directory = installer
         .parent()
@@ -1056,6 +1056,11 @@ async fn launch_install_helper(
     let helper_startup_timeout = if requires_elevation { 120 } else { 30 };
     let deadline =
         tokio::time::Instant::now() + std::time::Duration::from_secs(helper_startup_timeout);
+    let started = tokio::time::Instant::now();
+    let mut last_percent = 90_u8;
+    if let Some(app) = app {
+        emit_progress(app, "installing", Some(90), installing_message);
+    }
     loop {
         if let Ok(value) = std::fs::read_to_string(&ready_path) {
             if value.trim() == expected_ready {
@@ -1106,16 +1111,25 @@ async fn launch_install_helper(
                 log_path.display()
             ));
         }
+        let next_percent = 90 + started.elapsed().as_secs().min(6) as u8;
+        if next_percent > last_percent {
+            last_percent = next_percent;
+            if let Some(app) = app {
+                emit_progress(app, "installing", Some(next_percent), installing_message);
+            }
+        }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
 #[cfg(not(windows))]
 async fn launch_install_helper(
+    _app: Option<&AppHandle>,
     _installer: &Path,
     _current_exe: &Path,
     _expected_version: &str,
     _expected_sha256: &str,
+    _installing_message: &'static str,
 ) -> Result<(), String> {
     Err("Internal updates are currently supported on Windows only.".into())
 }
@@ -1144,7 +1158,7 @@ async fn install_app_update_inner(
     emit_progress(
         app,
         "verifying",
-        None,
+        Some(85),
         "Verifying the downloaded installer…",
     );
     let current_exe = std::env::current_exe()
@@ -1154,16 +1168,24 @@ async fn install_app_update_inner(
     } else {
         "Starting the internal installer…"
     };
-    emit_progress(app, "installing", None, installation_message);
-    launch_install_helper(&installer, &current_exe, &version, &sha256).await?;
+    emit_progress(app, "installing", Some(90), installation_message);
+    launch_install_helper(
+        Some(app),
+        &installer,
+        &current_exe,
+        &version,
+        &sha256,
+        installation_message,
+    )
+    .await?;
     state.stop_all_runs();
     emit_progress(
         app,
         "restarting",
-        None,
+        Some(100),
         "Opening the updated Hormachuelos app…",
     );
-    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(450)).await;
     app.exit(0);
     Ok(())
 }
@@ -1176,6 +1198,11 @@ pub async fn install_app_update(
     version: String,
     sha256: String,
 ) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        return Err(
+            "This is a local debug build. Installing the GitHub release would replace it with the older published app.".into(),
+        );
+    }
     if UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
         return Err("An app update is already running.".into());
     }
@@ -1194,7 +1221,16 @@ pub async fn install_app_update(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_download_url, validate_sha256, validate_version};
+    use super::{overall_download_percent, validate_download_url, validate_sha256, validate_version};
+
+    #[test]
+    fn download_percent_covers_known_and_unknown_sizes() {
+        assert_eq!(overall_download_percent(0, Some(100)), 1);
+        assert_eq!(overall_download_percent(50, Some(100)), 40);
+        assert_eq!(overall_download_percent(100, Some(100)), 80);
+        assert!(overall_download_percent(40 * 1024 * 1024, None) < 80);
+        assert_eq!(overall_download_percent(80 * 1024 * 1024, None), 79);
+    }
 
     #[test]
     fn accepts_plain_semver_and_numeric_revision_builds() {
@@ -1275,8 +1311,12 @@ mod tests {
         assert!(!script.contains("$nativeRestarted"));
         assert!(script.contains("New-InstallStatusWindow"));
         assert!(script.contains("Wait-InstallerWithStatus"));
-        assert!(script.contains("INSTALL // 03 OF 04"));
-        assert!(script.contains("Your projects, sessions, and settings are protected."));
+        assert!(script.contains("Set-InstallStatus"));
+        assert!(script.contains("Close-InstallStatusWindow"));
+        assert!(script.contains("Update percent"));
+        assert!(script.contains("Restarting…"));
+        assert!(!script.contains("INSTALL // 03 OF 04"));
+        assert!(!script.contains("INSTALL SEQUENCE"));
         assert!(script.contains("[System.Windows.Forms.Application]::DoEvents()"));
         assert!(script.contains("Start-Process -FilePath $launchPath"));
         assert_eq!(
@@ -1402,10 +1442,12 @@ mod tests {
         let current_exe = std::env::current_exe().unwrap();
 
         let error = super::launch_install_helper(
+            None,
             &missing_installer,
             &current_exe,
             "9.9.9",
             &"a".repeat(64),
+            "Starting the internal installer…",
         )
         .await
         .unwrap_err();

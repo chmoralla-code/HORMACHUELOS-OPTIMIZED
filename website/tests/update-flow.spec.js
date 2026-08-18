@@ -7,7 +7,7 @@ test.use({
   viewport: { width: 1280, height: 900 },
 });
 
-test("the in-app updater presents every secure installation stage and automatically restarts", async ({ page }) => {
+test("the in-app updater shows percent progress and automatically restarts", async ({ page }) => {
   const consoleErrors = [];
   page.on("pageerror", (error) => consoleErrors.push(error.message));
   page.on("console", (message) => {
@@ -32,14 +32,13 @@ test("the in-app updater presents every secure installation stage and automatica
   await dialog.getByRole("button", { name: "Install v0.1.5" }).click();
   const progress = overlay.locator(".update-install-progress");
   const meter = progress.getByRole("progressbar", { name: "Update installation progress" });
-  const steps = progress.locator(".update-install-step");
 
   await expect(overlay).toHaveClass(/is-installing/);
-  await expect(overlay.getByRole("heading", { name: "Installing v0.1.5" })).toBeVisible();
+  await expect(overlay.getByRole("heading", { name: "Updating to v0.1.5" })).toBeVisible();
   await expect(progress).toBeVisible();
-  await expect(progress.locator(".update-install-status")).toHaveText("Securing your workspace…");
-  await expect(steps).toHaveCount(4);
-  await expect(steps).toHaveText(["1Download", "2Verify", "3Install", "4Relaunch"]);
+  await expect(progress.locator(".update-install-status")).toHaveText("Saving your workspace…");
+  await expect(progress.locator(".update-install-percent")).toHaveText("0%");
+  await expect(meter).toHaveAttribute("aria-valuenow", "0");
 
   await page.evaluate(() => {
     window.__emitInstallProgress({
@@ -49,10 +48,9 @@ test("the in-app updater presents every secure installation stage and automatica
     });
   });
   await expect(progress).toHaveAttribute("data-phase", "downloading");
-  await expect(progress.locator(".update-install-status")).toHaveText("Downloading update 46%…");
+  await expect(progress.locator(".update-install-status")).toHaveText("Downloading… 46%");
   await expect(progress.locator(".update-install-percent")).toHaveText("46%");
   await expect(meter).toHaveAttribute("aria-valuenow", "46");
-  await expect(steps.nth(0)).toHaveClass(/is-active/);
 
   await page.evaluate(() => {
     window.__emitInstallProgress({
@@ -61,9 +59,9 @@ test("the in-app updater presents every secure installation stage and automatica
     });
   });
   await expect(progress).toHaveAttribute("data-phase", "verifying");
-  await expect(progress.locator(".update-install-status")).toHaveText("Verifying secure package…");
-  await expect(steps.nth(0)).toHaveClass(/is-complete/);
-  await expect(steps.nth(1)).toHaveClass(/is-active/);
+  await expect(progress.locator(".update-install-status")).toHaveText("Checking the installer…");
+  await expect(progress.locator(".update-install-percent")).toHaveText("85%");
+  await expect(meter).toHaveAttribute("aria-valuenow", "85");
 
   await page.evaluate(() => {
     window.__emitInstallProgress({
@@ -75,8 +73,7 @@ test("the in-app updater presents every secure installation stage and automatica
   await expect(progress.locator(".update-install-status")).toHaveText(
     "Approve the Windows administrator prompt…",
   );
-  await expect(steps.nth(1)).toHaveClass(/is-complete/);
-  await expect(steps.nth(2)).toHaveClass(/is-active/);
+  await expect(progress.locator(".update-install-percent")).toHaveText("92%");
 
   await page.evaluate(() => window.__finishInstall());
   await expect(page.locator("body")).toHaveAttribute(
@@ -89,11 +86,9 @@ test("the in-app updater presents every secure installation stage and automatica
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   );
   await expect(progress).toHaveAttribute("data-phase", "restarting");
-  await expect(progress.locator(".update-install-status")).toHaveText("Relaunching Hormachuelos…");
+  await expect(progress.locator(".update-install-status")).toHaveText("Restarting…");
   await expect(progress.locator(".update-install-percent")).toHaveText("100%");
   await expect(meter).toHaveAttribute("aria-valuenow", "100");
-  await expect(steps.nth(2)).toHaveClass(/is-complete/);
-  await expect(steps.nth(3)).toHaveClass(/is-active/);
   await expect(overlay).not.toContainText("Installer is ready");
   await expect(page.locator("body")).not.toHaveAttribute("data-opened-url", /.+/);
 
@@ -122,4 +117,34 @@ test("the updater keeps the app open and explains a Windows approval failure", a
   await expect(progress).toContainText("Your current installation is untouched");
   await expect(overlay.getByRole("button", { name: "Try installation again" })).toBeEnabled();
   await expect(page.locator("body")).not.toHaveAttribute("data-installed-version", /.+/);
+});
+
+test("the sidebar Update button starts the download immediately", async ({ page }) => {
+  await page.goto(`${APP}/update-harness.html`, { waitUntil: "networkidle" });
+  await page.evaluate(() => {
+    window.__autoInstall = true;
+    window.__manualInstallProgress = true;
+  });
+
+  await page.getByRole("button", { name: /Update available: v0\.1\.5/i }).click();
+  const overlay = page.locator(".update-dialog-overlay");
+  await expect(overlay.getByRole("heading", { name: "Updating to v0.1.5" })).toBeVisible();
+  await expect(overlay.getByRole("button", { name: "Install v0.1.5" })).toBeHidden();
+  await expect(overlay.locator(".update-install-percent")).toHaveText("0%");
+  await expect(overlay.locator(".update-install-status")).toHaveText("Saving your workspace…");
+
+  await page.evaluate(() => {
+    window.__emitInstallProgress({
+      phase: "downloading",
+      percent: 72,
+      message: "Downloading update",
+    });
+  });
+  await expect(overlay.locator(".update-install-percent")).toHaveText("72%");
+  await expect(overlay.locator(".update-install-status")).toHaveText("Downloading… 72%");
+
+  await page.evaluate(() => window.__finishInstall());
+  await expect(page.locator("body")).toHaveAttribute("data-installed-version", "0.1.5");
+  await expect(overlay.locator(".update-install-percent")).toHaveText("100%");
+  await expect(overlay.locator(".update-install-status")).toHaveText("Restarting…");
 });

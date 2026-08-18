@@ -40,7 +40,7 @@
         { phase: "multi_agent", state: scenario === "simple" ? "skipped" : "active" },
         { phase: "build", state: scenario === "simple" ? "skipped" : "pending" },
       ];
-      workbench.updatePlan({ run_id: runId, phases, max_workers: 3 });
+      workbench.updatePlan({ run_id: runId, phases, max_workers: 6 });
       workbench.updatePhase({
         run_id: runId,
         phase: scenario === "simple" ? "ask" : "multi_agent",

@@ -99,15 +99,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · AGENTIC chat spawn
+          releaseName: Hormachuelos Optimized v__VERSION__ · AGENTIC parallel coordinator
           releaseBody: |
-            AGENTIC now **spawns in the chat stream** like ordinary tool cards.
+            AGENTIC now runs up to **six read-only evidence workers in parallel**, with thinking split from tools.
 
-            Tools appear as compact Cursor-style rows with lightning spawn, a Ran N tools batch header, and expandable arguments and results. After a run finishes or is cancelled, those rows stay visible. Inspect run still restores Progress and Agents. Delivery Board, verification, contributions, and Export Client Pack remain.
+            Large multi-area work can spawn more workers. A focused one-file fix still stays single-writer. Native and Cursor workers overlap through the shared host gate. The Director remains the only writer. The Workbench lanes are Thinking, Tools, and Agents, without spawn animation. Workers inspect the real workspace before concluding.
 
             This release:
-            - keeps spawned tools visible in the transcript
-            - uses the same tool naming as ordinary chat cards
+            - runs parallel read-only evidence workers, up to six
+            - splits Director thinking from tool cards
+            - grounds large builds in inspected files before the Director writes
+            - shows percent progress on the in-app Update button
             - keeps Adaptive as the default; this update is not forced
 
             Remote release gates:
@@ -126,5 +128,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: "AGENTIC now spawns in the chat stream like ordinary tool cards. Spawned tools stay visible after a run finishes or is cancelled. Adaptive remains the default and this update is not forced."
+          UPDATE_WHATS_NEW: "AGENTIC runs up to six read-only workers in parallel, splits Thinking from Tools, and inspects the workspace before the Director writes. The Update button shows percent progress. Adaptive remains the default and this update is not forced."
         run: node scripts/publish-update-manifest.mjs --push-pages

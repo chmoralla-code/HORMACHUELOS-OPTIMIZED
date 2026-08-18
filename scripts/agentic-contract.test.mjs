@@ -27,7 +27,7 @@ test("AGENTIC is an opt-in public mode while Adaptive remains the default", asyn
 test("Director phase classifier and one-writer worker invariant are deterministic", async () => {
   const source = await read("src-tauri/src/agentic.rs");
 
-  assert.match(source, /pub const MAX_AGENTIC_WORKERS:\s*usize\s*=\s*3/);
+  assert.match(source, /pub const MAX_AGENTIC_WORKERS:\s*usize\s*=\s*6/);
   assert.match(source, /AgenticPlan::classify/);
   for (const request of [
     "What does this component do?",
@@ -35,6 +35,7 @@ test("Director phase classifier and one-writer worker invariant are deterministi
     "Audit architecture, security, and tests",
     "Fix this one heading",
     "Improve frontend, backend, and tests",
+    "Build a complete client portal",
   ]) {
     assert.ok(source.includes(request), `missing routing regression for: ${request}`);
   }
@@ -78,6 +79,8 @@ test("native and Cursor workers preserve selected provider/model and parent owne
   assert.match(cursor, /public_events: false/);
   assert.match(cursor, /crate::agentic::parse_specs/);
   assert.match(cursor, /specs\.iter\(\)\.take\(crate::agentic::MAX_AGENTIC_WORKERS\)/);
+  assert.match(cursor, /isolated Cursor evidence workers in parallel/);
+  assert.match(native, /isolated read-only evidence workers in parallel/);
   assert.match(cursor, /worker_tool_allowed\(&scope\.agent_id, &name\)/);
   assert.match(cursor, /payload\["run_id"\]/);
   assert.match(cursor, /payload\["agent_id"\]/);
@@ -107,6 +110,7 @@ test("AGENTIC persistence excludes public reasoning and retains scoped evidence"
   assert.match(session, /sanitizeAgenticAgent/);
   assert.match(chat, /if \(!this\.agenticRun\)[\s\S]{0,120}appendThinkingTranscriptEvent/);
   assert.match(chat, /case "reasoning":[\s\S]{0,120}if \(!this\.agenticRun\)/);
+  assert.match(chat, /agenticWorkbench\?\.appendThinking/);
   assert.match(chat, /startAgenticWorkbench/);
   assert.match(chat, /completeAgenticWorkbench/);
   assert.match(chat, /msg\.agenticState/);
@@ -150,6 +154,9 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
   ]);
 
   assert.match(component, /const LANES: Lane\[\] = \["progress", "tools", "agents"\]/);
+  assert.match(component, /Thinking/);
+  assert.match(component, /appendThinking/);
+  assert.match(component, /agentic-thinking-stream/);
   assert.match(component, /agentic-lane-\$\{lane\}/);
   for (const phase of ["ask", "plan", "research", "multi_agent", "build"]) {
     assert.ok(component.includes(`"${phase}"`), `missing phase ${phase}`);
@@ -162,7 +169,7 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
   assert.match(component, /Delivery Board/);
   assert.match(component, /Verification/);
   assert.match(component, /Agent Contributions/);
-  assert.match(component, /tool-spawn/);
+  assert.doesNotMatch(component, /tool-spawn/);
   assert.match(component, /toolViews/);
   assert.match(css, /@media\s*\(max-width:\s*959px\)/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
@@ -174,7 +181,7 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
   assert.match(spec, /reducedMotion/);
 });
 
-test("v1.3.2 release metadata is synchronized and remains optional", async () => {
+test("v1.3.3 release metadata is synchronized and remains optional", async () => {
   const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest] = await Promise.all([
     read("package.json"),
     read("package-lock.json"),
@@ -182,18 +189,18 @@ test("v1.3.2 release metadata is synchronized and remains optional", async () =>
     read("src-tauri/Cargo.lock"),
     read("src-tauri/tauri.conf.json"),
     read(".github/workflows/release-optimized.yml"),
-    read("release-notes/1.3.2.md"),
+    read("release-notes/1.3.3.md"),
     read("scripts/publish-update-manifest.mjs"),
   ]);
   const pkg = JSON.parse(pkgRaw);
-  assert.equal(pkg.version, "1.3.2");
-  assert.match(lock, /"version": "1\.3\.2"/);
-  assert.match(cargo, /version = "1\.3\.2"/);
-  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.2"/);
-  assert.equal(JSON.parse(tauri).version, "1.3.2");
+  assert.equal(pkg.version, "1.3.3");
+  assert.match(lock, /"version": "1\.3\.3"/);
+  assert.match(cargo, /version = "1\.3\.3"/);
+  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.3"/);
+  assert.equal(JSON.parse(tauri).version, "1.3.3");
   assert.match(workflow, /AGENTIC Workbench/);
   assert.match(workflow, /test:agentic/);
   assert.match(workflow, /playwright\.agentic\.config\.mjs/);
-  assert.match(notes, /Spawned tools stay visible/);
+  assert.match(notes, /Workers inspect before the Director writes/);
   assert.match(manifest, /forceUpdate:\s*false/);
 });

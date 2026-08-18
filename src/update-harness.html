@@ -32,6 +32,7 @@
       window.__updateMode = "available";
       window.__installError = "";
       window.__manualInstallProgress = false;
+      window.__autoInstall = false;
       window.__finishInstall = null;
       window.__restoreUpdateBackup = null;
       window.__restoreUpdateState = restoreUpdateState;
@@ -54,6 +55,7 @@
         },
       };
       api.appVersion = async () => "0.1.4";
+      api.appIsDevBuild = async () => false;
       api.appInstallKind = async () => "msi";
       api.openExternalUrl = async (url) => {
         document.body.dataset.openedUrl = url;
@@ -117,7 +119,10 @@
         onAddAnotherProject: noop,
         onOpenQuickSessions: noop,
         onOpenSettings: noop,
-        onCheckForUpdates: () => document.body.appendChild(showUpdateDialog(updateDialogOptions)),
+        onCheckForUpdates: () => document.body.appendChild(showUpdateDialog({
+          ...updateDialogOptions,
+          autoInstall: Boolean(window.__autoInstall),
+        })),
         onNewSession: noop,
         onSelectSession: noop,
         onDeleteAllSessions: noop,

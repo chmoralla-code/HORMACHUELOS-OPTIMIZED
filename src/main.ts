@@ -2870,6 +2870,7 @@ async function init() {
     onOpenSettings: openSettings,
     onCheckForUpdates: () => document.body.appendChild(showUpdateDialog({
       beforeInstall: prepareForAppUpdate,
+      autoInstall: true,
     })),
     onNewSession: () => void createNewSession(),
     onSelectSession: switchSession,

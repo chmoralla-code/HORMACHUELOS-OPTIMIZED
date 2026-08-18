@@ -38,6 +38,11 @@ const PHASES: { id: AgenticPhase; label: string }[] = [
   { id: "build", label: "Build" },
 ];
 const LANES: Lane[] = ["progress", "tools", "agents"];
+const LANE_LABELS: Record<Lane, string> = {
+  progress: "Thinking",
+  tools: "Tools",
+  agents: "Agents",
+};
 
 function make<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -136,6 +141,8 @@ export class AgenticWorkbench {
   private readonly filterChips = new Map<string, HTMLButtonElement>();
   private readonly panels = new Map<Lane, HTMLElement>();
   private readonly progress = make("ol", "agentic-progress-list");
+  private readonly thinkingStream = make("div", "agentic-thinking-stream");
+  private thinkingText = "";
   private readonly toolsList = make("div", "agentic-tool-list");
   private readonly emptyTools = make("p", "agentic-empty", "Tool evidence will appear here.");
   private readonly batchToggle = make("button", "agentic-tool-batch tool-batch-head");
@@ -201,7 +208,7 @@ export class AgenticWorkbench {
     tablist.setAttribute("role", "tablist");
     tablist.setAttribute("aria-label", "Execution lanes");
     for (const lane of LANES) {
-      const button = make("button", "agentic-lane-tab", label(lane));
+      const button = make("button", "agentic-lane-tab", LANE_LABELS[lane]);
       button.type = "button";
       button.id = `agentic-tab-${runId}-${lane}`;
       button.setAttribute("role", "tab");
@@ -213,7 +220,13 @@ export class AgenticWorkbench {
     }
     this.root.append(tablist);
 
-    this.createPanel(runId, "progress", "Progress", this.progress);
+    this.createPanel(runId, "progress", (() => {
+      const body = make("div", "agentic-thinking-body");
+      this.thinkingStream.hidden = true;
+      this.thinkingStream.setAttribute("aria-label", "Director thinking");
+      body.append(this.thinkingStream, this.progress);
+      return body;
+    })());
     const toolsBody = make("div", "agentic-tools-body");
     this.batchToggle.type = "button";
     this.batchToggle.hidden = true;
@@ -225,8 +238,8 @@ export class AgenticWorkbench {
     this.batchToggle.addEventListener("click", () => this.toggleTools());
     this.toolsList.append(this.emptyTools);
     toolsBody.append(this.batchToggle, this.filter, this.toolsList);
-    this.createPanel(runId, "tools", "Tools", toolsBody);
-    this.createPanel(runId, "agents", "Agents", this.agentsList);
+    this.createPanel(runId, "tools", toolsBody);
+    this.createPanel(runId, "agents", this.agentsList);
     this.root.append(this.lanes);
 
     this.inspect.type = "button";
@@ -349,6 +362,14 @@ export class AgenticWorkbench {
     if (message.trim()) this.addProgress(this.phase, bound(message, 360), "active");
   }
 
+  appendThinking(text: string): void {
+    const chunk = bound(String(text || "").replace(/\s+/g, " ").trim(), 480);
+    if (!chunk) return;
+    this.thinkingText = bound(`${this.thinkingText} ${chunk}`.trim(), 2_400);
+    this.thinkingStream.hidden = false;
+    this.thinkingStream.textContent = this.thinkingText;
+  }
+
   complete(value: AgenticCompletion): void {
     this.terminal = true;
     this.dispose();
@@ -431,13 +452,13 @@ export class AgenticWorkbench {
     });
   }
 
-  private createPanel(runId: string, lane: Lane, title: string, body: HTMLElement): void {
+  private createPanel(runId: string, lane: Lane, body: HTMLElement): void {
     const panel = make("section", `agentic-lane agentic-lane-${lane}`);
     panel.id = `agentic-panel-${runId}-${lane}`;
     panel.dataset.lane = lane;
     panel.setAttribute("role", "tabpanel");
     panel.setAttribute("aria-labelledby", `agentic-tab-${runId}-${lane}`);
-    panel.append(make("h3", "agentic-lane-title agentic-sr-only", title), body);
+    panel.append(make("h3", "agentic-lane-title", LANE_LABELS[lane]), body);
     this.lanes.append(panel);
     this.panels.set(lane, panel);
   }
@@ -509,7 +530,7 @@ export class AgenticWorkbench {
     this.batchToggle.hidden = count === 0;
     this.batchToggle.classList.toggle("is-running", running);
     this.batchToggle.classList.toggle("collapsed", this.toolsCollapsed);
-    setShimmerText(this.batchLabel, labelText, running);
+    setShimmerText(this.batchLabel, labelText, false);
 
     for (const tool of this.tools.values()) {
       let view = this.toolViews.get(tool.id);
@@ -535,7 +556,7 @@ export class AgenticWorkbench {
   }
 
   private createToolCard(tool: ToolItem): ToolCardView {
-    const card = make("details", "agentic-tool-card tool-card tool-spawn");
+    const card = make("details", "agentic-tool-card tool-card");
     const head = make("summary", "agentic-tool-summary tool-card-head");
     const name = make("span", "agentic-tool-name tool-name");
     const chev = make("span", "chev");
@@ -550,9 +571,6 @@ export class AgenticWorkbench {
     result.classList.add("agentic-tool-result");
     body.append(meta, args, result);
     card.append(head, body);
-    card.addEventListener("animationend", (event) => {
-      if (event.target === card) card.classList.remove("tool-spawn");
-    });
     const view: ToolCardView = {
       card,
       name,
@@ -572,7 +590,7 @@ export class AgenticWorkbench {
     view.card.classList.toggle("err", tool.state === "failed");
     view.card.classList.toggle("ok", tool.state === "passed");
     view.card.classList.toggle("cancelled", tool.state === "cancelled");
-    setShimmerText(view.name, toolLine(tool), live);
+    setShimmerText(view.name, toolLine(tool), false);
     view.name.setAttribute("data-tool", tool.name);
     view.state.textContent = label(tool.state);
     view.meta.textContent = `${this.ownerName(tool.agentId)} · ${label(tool.phase)}`;
@@ -625,7 +643,7 @@ export class AgenticWorkbench {
   }
 
   private createAgentCard(agent: AgenticAgent): HTMLDetailsElement {
-    const card = make("details", "agentic-agent-card tool-spawn");
+    const card = make("details", "agentic-agent-card");
     const head = make("summary", "agentic-agent-summary");
     head.append(
       make("strong", "agentic-agent-name"),
@@ -642,9 +660,6 @@ export class AgenticWorkbench {
       make("span", "agentic-agent-result"),
     );
     card.append(head, body);
-    card.addEventListener("animationend", (event) => {
-      if (event.target === card) card.classList.remove("tool-spawn");
-    });
     this.updateAgentCard(card, agent);
     return card;
   }

@@ -1958,7 +1958,7 @@ export class Chat {
               workbench.updatePlan({
                 run_id: runId,
                 phases: msg.agenticState.phases,
-                max_workers: Math.min(3, msg.agenticState.agents.filter(
+                max_workers: Math.min(6, msg.agenticState.agents.filter(
                   (agent) => agent.id !== "director",
                 ).length || 3),
               });
@@ -1996,6 +1996,8 @@ export class Chat {
             this.showThinking(msg.iteration);
             if (msg.text) this.appendThinkingText(msg.text);
             this.markThinkingDone();
+          } else if (msg.text) {
+            this.ensureAgenticWorkbench(undefined, msg.at).appendThinking(msg.text);
           }
           break;
         case "assistant": {
@@ -6067,6 +6069,8 @@ export class Chat {
         if (!this.agenticRun) {
           this.clearIdleActivityTimer();
           this.appendThinkingText(e.payload.text);
+        } else {
+          this.agenticWorkbench?.appendThinking(e.payload.text);
         }
         break;
       case "text":

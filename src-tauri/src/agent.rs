@@ -3201,6 +3201,11 @@ Describe each image briefly in the visible reply. Do not mention vision provider
                             agentic_orchestration_tokens.saturating_add(batch.orchestration_tokens);
                         agentic_workers = batch.workers;
                         agentic_evidence = crate::agentic::evidence_context(&agentic_workers);
+                        if !agentic_evidence.is_empty() {
+                            agentic_evidence.push_str(
+                                "\nAGENTIC DIRECTOR: Workers already inspected in parallel. Re-read every cited path before writing. Issue independent reads in one tool response. Never invent files, APIs, or test results. Verify the whole result before done.\n",
+                            );
+                        }
                         if run.cancel.load(Ordering::SeqCst) {
                             crate::agentic::emit_phase(
                                 &app,
@@ -3497,6 +3502,9 @@ Current user request:\n{prompt}",
             agentic_orchestration_tokens.saturating_add(batch.orchestration_tokens);
         agentic_workers = batch.workers;
         prompt.push_str(&crate::agentic::evidence_context(&agentic_workers));
+        prompt.push_str(
+            "\nAGENTIC DIRECTOR: Workers already inspected in parallel. Re-read every cited path before writing. Issue independent reads in one tool response. Never invent files, APIs, or test results. Verify the whole result before done.\n",
+        );
         if run.cancel.load(Ordering::SeqCst) {
             crate::agentic::emit_phase(
                 &app,
@@ -3766,7 +3774,7 @@ The mode was not recognized. Do not mutate files or systems. Give a direct visib
     let task_profile_policy = task_profile.instructions();
     let execution_profile_policy = execution_profile.instructions();
     let trading_policy = trading_workspace_policy(&prompt);
-    let tool_scheduling_rules = if mode == "multi_agent" {
+    let tool_scheduling_rules = if mode == "multi_agent" || is_agentic {
         "15. MULTI-AGENT SCHEDULING: put independent, local, read-only discovery calls first in one tool response so the host can spawn them together. Use only read_file, list_dir, glob, grep, git_status, and file_info in that parallel pack. Each is a distinct function call with one exact snake_case name and separate arguments. Never parallelize writes, commands, browser actions, approvals, account actions, or computer control."
     } else {
         "15. Work efficiently: group independent local inspection calls (read_file, list_dir, glob, grep, git_status, file_info) in one tool response. The host may run that safe read-only batch together. Never assume results from one tool call while constructing another call in the same batch; keep writes, commands, browser actions, approvals, and computer actions ordered."
@@ -4051,9 +4059,6 @@ The tool entries are historical summaries; use fresh tools for the current works
                 return;
             }
             reasoning_streamed_for_sink.store(true, Ordering::SeqCst);
-            if is_agentic {
-                return;
-            }
             emit(
                 &app_for_reasoning,
                 &sid_for_reasoning,
@@ -4407,7 +4412,7 @@ The tool entries are historical summaries; use fresh tools for the current works
 
         // Providers without streaming support still expose their supplied
         // reasoning after completion; animate that as a compatibility fallback.
-        if !is_agentic && !reasoning_streamed.load(Ordering::SeqCst) {
+        if !reasoning_streamed.load(Ordering::SeqCst) {
             if let Some(reason) = &resp.reasoning_content {
                 let trimmed = reason.trim();
                 if !trimmed.is_empty() {
@@ -4685,7 +4690,10 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
         // original result order below. Multi-Agent mode can safely use an
         // independent read-only prefix before a later ordered action; writes,
         // commands, browser, confirmation, and computer actions never join it.
-        let parallel_batch_len = parallel_readonly_batch_len(&resp.tool_calls, &mode);
+        let parallel_batch_len = parallel_readonly_batch_len(
+            &resp.tool_calls,
+            if is_agentic { "multi_agent" } else { mode.as_str() },
+        );
         let mut parallel_read_results = if parallel_batch_len > 0 {
             let parallel_calls = &resp.tool_calls[..parallel_batch_len];
             for call in parallel_calls {

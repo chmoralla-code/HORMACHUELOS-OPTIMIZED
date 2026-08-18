@@ -30,7 +30,7 @@ test("live three-agent Workbench shows stacked desktop lanes and filtering", asy
   await expect(page.locator(".agentic-lane:visible")).toHaveCount(3);
   await expect(page.locator(".agentic-agent-card")).toHaveCount(4);
   await expect(page.locator(".agentic-tool-card")).toHaveCount(4);
-  await expect(page.locator(".agentic-tool-card.tool-spawn, .agentic-tool-card.tool-card")).toHaveCount(4);
+  await expect(page.locator(".agentic-tool-card.tool-card")).toHaveCount(4);
   await expect(page.getByRole("button", { name: /Ran 4 tools|Running 4 tools/ })).toBeVisible();
   await expect(page.getByRole("document", { name: "AI response" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
@@ -45,7 +45,7 @@ test("narrow Workbench uses accessible tabs and arrow-key navigation", async ({ 
   const tabs = page.getByRole("tab");
   await expect(tabs).toHaveCount(3);
   await expect(page.locator(".agentic-lane:visible")).toHaveCount(1);
-  const progress = page.getByRole("tab", { name: "Progress" });
+  const progress = page.getByRole("tab", { name: "Thinking" });
   await progress.focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Tools" })).toBeFocused();

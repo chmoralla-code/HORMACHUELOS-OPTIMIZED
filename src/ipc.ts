@@ -532,6 +532,8 @@ export const api = {
   ensureProjectDevServer: (projectRoot: string): Promise<string> =>
     invoke("ensure_project_dev_server", { projectRoot }),
   appVersion: (): Promise<string> => invoke("app_version"),
+  /** True for `tauri dev` / debug exe so the GitHub installer is not offered. */
+  appIsDevBuild: (): Promise<boolean> => invoke("app_is_dev_build"),
   /** Match in-app updates to the installer family already present on Windows. */
   appInstallKind: (): Promise<"msi" | "nsis" | "unknown"> => invoke("app_install_kind"),
   /** Persist WebView state outside its cache before an installer replaces the app. */
