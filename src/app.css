@@ -2816,6 +2816,7 @@
 /* Lightning fade-in/fade-out for tools, confirmations, and agentic summaries. */
 .tool-card-wrap.tool-spawn,
 .tool-card.tool-spawn,
+.agentic-tool-card.tool-spawn,
 .tool-confirm-wrap.tool-spawn,
 .tool-confirm.tool-spawn,
 .integration-auth-wrap.tool-spawn,
@@ -5735,6 +5736,7 @@
 @media (prefers-reduced-motion: reduce) {
   .tool-card-wrap.tool-spawn,
   .tool-card.tool-spawn,
+  .agentic-tool-card.tool-spawn,
   .tool-confirm-wrap.tool-spawn,
   .tool-confirm.tool-spawn,
   .integration-auth-wrap.tool-spawn,

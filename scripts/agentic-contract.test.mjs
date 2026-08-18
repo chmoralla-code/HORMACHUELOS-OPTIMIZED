@@ -162,6 +162,8 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
   assert.match(component, /Delivery Board/);
   assert.match(component, /Verification/);
   assert.match(component, /Agent Contributions/);
+  assert.match(component, /tool-spawn/);
+  assert.match(component, /toolViews/);
   assert.match(css, /@media\s*\(max-width:\s*959px\)/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(css, /overflow-x:\s*auto/);
@@ -172,7 +174,7 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
   assert.match(spec, /reducedMotion/);
 });
 
-test("v1.3.1 release metadata is synchronized and remains optional", async () => {
+test("v1.3.2 release metadata is synchronized and remains optional", async () => {
   const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest] = await Promise.all([
     read("package.json"),
     read("package-lock.json"),
@@ -180,18 +182,18 @@ test("v1.3.1 release metadata is synchronized and remains optional", async () =>
     read("src-tauri/Cargo.lock"),
     read("src-tauri/tauri.conf.json"),
     read(".github/workflows/release-optimized.yml"),
-    read("release-notes/1.3.1.md"),
+    read("release-notes/1.3.2.md"),
     read("scripts/publish-update-manifest.mjs"),
   ]);
   const pkg = JSON.parse(pkgRaw);
-  assert.equal(pkg.version, "1.3.1");
-  assert.match(lock, /"version": "1\.3\.1"/);
-  assert.match(cargo, /version = "1\.3\.1"/);
-  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.1"/);
-  assert.equal(JSON.parse(tauri).version, "1.3.1");
+  assert.equal(pkg.version, "1.3.2");
+  assert.match(lock, /"version": "1\.3\.2"/);
+  assert.match(cargo, /version = "1\.3\.2"/);
+  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.2"/);
+  assert.equal(JSON.parse(tauri).version, "1.3.2");
   assert.match(workflow, /AGENTIC Workbench/);
   assert.match(workflow, /test:agentic/);
   assert.match(workflow, /playwright\.agentic\.config\.mjs/);
-  assert.match(notes, /AGENTIC mode can be selected and persisted/);
+  assert.match(notes, /Spawned tools stay visible/);
   assert.match(manifest, /forceUpdate:\s*false/);
 });

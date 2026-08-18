@@ -99,24 +99,20 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · AGENTIC persistence hotfix
+          releaseName: Hormachuelos Optimized v__VERSION__ · AGENTIC chat spawn
           releaseBody: |
-            Hotfix: **AGENTIC mode can now be saved**.
+            AGENTIC now **spawns in the chat stream** like ordinary tool cards.
 
-            v1.3.0 showed AGENTIC in the composer, but the settings validator rejected `agentic`, `orchestrated`, and `thorough`. Selecting AGENTIC failed with "Could not save mode" and rolled back, so the Workbench never started.
+            Tools appear as compact Cursor-style rows with lightning spawn, a Ran N tools batch header, and expandable arguments and results. After a run finishes or is cancelled, those rows stay visible. Inspect run still restores Progress and Agents. Delivery Board, verification, contributions, and Export Client Pack remain.
 
             This release:
-            - persists AGENTIC with Orchestrated or Thorough capability
-            - restores the previous mode and capability if a save fails
-            - shows a short backend reason instead of only "Could not save mode"
+            - keeps spawned tools visible in the transcript
+            - uses the same tool naming as ordinary chat cards
             - keeps Adaptive as the default; this update is not forced
 
             Remote release gates:
-            - native AGENTIC save/reload coverage for orchestrated and thorough
-            - IPC save_settings acceptance of an AGENTIC payload
-            - Playwright composer coverage that the AGENTIC chip persists without a red save error
+            - AGENTIC Workbench Playwright coverage for live, simple, successful, partial, cancelled, and unverified runs
             - TypeScript, production build, FPS, Preview Computer Use, Ask-mode, reply-formatting, Cursor lifecycle, Rust formatting, and Windows native tests
-            - Playwright live/simple/success/partial/cancelled/unverified Workbench coverage at desktop, narrow, and mobile widths
 
             Windows note:
             - installers are not Authenticode-signed yet, so Windows may show Unknown publisher
@@ -130,5 +126,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: "Hotfix: AGENTIC can now be selected and saved. v1.3.0 rejected agentic/orchestrated/thorough in the settings validator, so the composer rolled back with Could not save mode. Adaptive remains the default and this update is not forced."
+          UPDATE_WHATS_NEW: "AGENTIC now spawns in the chat stream like ordinary tool cards. Spawned tools stay visible after a run finishes or is cancelled. Adaptive remains the default and this update is not forced."
         run: node scripts/publish-update-manifest.mjs --push-pages

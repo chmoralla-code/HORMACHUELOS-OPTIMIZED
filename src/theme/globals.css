@@ -202,6 +202,7 @@ select, select option { background: var(--raised); color: var(--text); }
   /* Never leave spawn fade stuck at opacity 0 */
   .tool-card-wrap.tool-spawn,
   .tool-card.tool-spawn,
+  .agentic-tool-card.tool-spawn,
   .tool-confirm-wrap.tool-spawn,
   .tool-confirm.tool-spawn,
   .done-card.tool-spawn,

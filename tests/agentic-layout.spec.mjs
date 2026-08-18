@@ -24,18 +24,20 @@ test.beforeAll(async () => {
   await fs.mkdir(evidence, { recursive: true });
 });
 
-test("live three-agent Workbench shows simultaneous desktop lanes and filtering", async ({ page }) => {
+test("live three-agent Workbench shows stacked desktop lanes and filtering", async ({ page }) => {
   await openScenario(page, "live", { width: 1360, height: 980 });
   await expect(page.getByLabel("AGENTIC execution workbench")).toBeVisible();
   await expect(page.locator(".agentic-lane:visible")).toHaveCount(3);
   await expect(page.locator(".agentic-agent-card")).toHaveCount(4);
   await expect(page.locator(".agentic-tool-card")).toHaveCount(4);
-  await page.getByRole("button", { name: "Worker 1", exact: true }).click();
-  await expect(page.locator(".agentic-tool-card")).toHaveCount(1);
-  await expect(page.locator(".agentic-tool-meta")).toContainText("Worker 1");
+  await expect(page.locator(".agentic-tool-card.tool-spawn, .agentic-tool-card.tool-card")).toHaveCount(4);
+  await expect(page.getByRole("button", { name: /Ran 4 tools|Running 4 tools/ })).toBeVisible();
   await expect(page.getByRole("document", { name: "AI response" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await page.screenshot({ path: path.join(evidence, "agentic-desktop-live.png"), fullPage: true });
+  await page.getByRole("button", { name: "Worker 1", exact: true }).click();
+  await expect(page.locator(".agentic-tool-card:visible")).toHaveCount(1);
+  await expect(page.locator(".agentic-tool-card:visible .agentic-tool-meta")).toContainText("Worker 1");
 });
 
 test("narrow Workbench uses accessible tabs and arrow-key navigation", async ({ page }) => {
@@ -87,6 +89,10 @@ for (const scenario of ["simple", "partial", "cancelled", "unverified"]) {
     }
     if (scenario === "cancelled") {
       await expect(page.locator(".agentic-outcome-status")).toContainText("Cancelled");
+      await page.screenshot({ path: path.join(evidence, "agentic-desktop-cancelled.png"), fullPage: true });
+    }
+    if (scenario !== "simple") {
+      await expect(page.locator(".agentic-tool-card:visible")).toHaveCount(4);
     }
     if (scenario === "unverified") {
       await expect(page.locator('.agentic-verification-item[data-status="not_run"]')).toBeVisible();
@@ -101,8 +107,8 @@ test("Inspect run restores lanes, collapse restores focus, and reply copy remain
   const inspect = page.locator(".agentic-inspect-button");
   await inspect.click();
   await expect(page.locator(".agentic-lanes")).not.toHaveClass(/is-collapsed/);
-  const tool = page.locator(".agentic-tool-card summary").first();
-  await tool.focus();
+  const agent = page.locator(".agentic-agent-card summary").first();
+  await agent.focus();
   await inspect.click();
   await expect(inspect).toBeFocused();
   const copy = page.getByRole("button", { name: "Copy reply" });
