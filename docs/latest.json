@@ -1,11 +1,11 @@
 {
-  "version": "1.3.3",
-  "title": "Hormachuelos Optimized v1.3.3",
-  "whatsNew": "AGENTIC runs up to six read-only workers in parallel, splits Thinking from Tools, and inspects the workspace before the Director writes. The Update button shows percent progress. Adaptive remains the default and this update is not forced.",
-  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.3/Hormachuelos_Optimized_1.3.3_x64.msi",
-  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.3/Hormachuelos_Optimized_1.3.3_x64-setup.exe",
-  "msiSha256": "a767e0811845561bffd905f3951c878b228ea9f7e33c127a9fb1f6e1095d18e0",
-  "exeSha256": "368e809b8cfdaf7b9fa495219d6fc7ab52312db5b6b186d4d1d7ef5ae373f0fe",
+  "version": "1.3.4",
+  "title": "Hormachuelos Optimized v1.3.4",
+  "whatsNew": "Build, Adaptive routed to Build, and Plan Apply now show a chronological Thought, tools, Summary, and Completed stream. Thought rows are public progress, not private chain-of-thought. Adaptive remains the default and this update is not forced.",
+  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.4/Hormachuelos_Optimized_1.3.4_x64.msi",
+  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.4/Hormachuelos_Optimized_1.3.4_x64-setup.exe",
+  "msiSha256": "3b87fa470f70fc71f22f8996654ffdf473524338464d9ecfc411b89adf446a79",
+  "exeSha256": "86077c8ef851fe733361be43b63c362e45fe24baf9d39e4370ebd739517edc4d",
   "forceUpdate": false,
-  "publishedAt": "2026-08-18T13:19:31.009Z"
+  "publishedAt": "2026-08-20T05:20:15.640Z"
 }
