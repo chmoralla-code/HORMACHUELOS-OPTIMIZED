@@ -2308,6 +2308,41 @@
   margin-top: 0;
 }
 
+#chat.chat-build-timeline > .thinking-wrap.is-build-progress {
+  margin: 6px auto 2px;
+}
+#chat.chat-build-timeline > .thinking-wrap.is-build-progress .thinking-simple-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  max-width: min(100%, 720px);
+  color: var(--text-2);
+}
+#chat.chat-build-timeline > .thinking-wrap.is-build-summary .thinking-simple-label {
+  font-weight: 600;
+  color: var(--text);
+}
+#chat.chat-build-timeline > .thinking-wrap.is-build-progress .thinking-panel {
+  max-width: min(100%, 720px);
+}
+#chat.chat-build-timeline > .thinking-wrap.is-build-summary {
+  margin-top: 8px;
+}
+@media (max-width: 430px) {
+  #chat.chat-build-timeline > .thinking-wrap.is-build-progress,
+  #chat.chat-build-timeline > .tool-batch-wrap {
+    max-width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #chat.chat-build-timeline > .thinking-wrap.thinking-enter,
+  #chat.chat-build-timeline > .tool-batch-wrap.tool-spawn {
+    animation: none;
+  }
+}
+
 .thinking-wrap {
   display: flex;
   flex-direction: column;

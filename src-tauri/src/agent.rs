@@ -3978,6 +3978,9 @@ The tool entries are historical summaries; use fresh tools for the current works
         settings.smart_agent_enabled,
         fast_execution,
     );
+    if crate::smart_agent::is_build_timeline_mode(&mode) {
+        smart_agent.enable_build_timeline();
+    }
     if !is_agentic {
         emit(
             &app,
@@ -4036,6 +4039,7 @@ The tool entries are historical summaries; use fresh tools for the current works
             flavour.context_block(flavour_context_budget)
         ));
         compact_active_run_messages(&mut messages, pinned_message_count);
+        smart_agent.set_iteration(iteration);
 
         if !is_agentic {
             emit(
@@ -4044,6 +4048,17 @@ The tool entries are historical summaries; use fresh tools for the current works
                 "thinking",
                 json!({ "iteration": iteration }),
             );
+            if crate::smart_agent::is_build_timeline_mode(&mode) {
+                crate::smart_agent::emit_build_progress(
+                    &app,
+                    &session_id,
+                    iteration,
+                    "working",
+                    "active",
+                    "Working on the requested change.",
+                    false,
+                );
+            }
         }
         let resume_assistant = std::mem::take(&mut resume_assistant_next_iteration);
 
@@ -4052,6 +4067,8 @@ The tool entries are historical summaries; use fresh tools for the current works
         let app_for_reasoning = app.clone();
         let sid_for_reasoning = session_id.clone();
         let secrets_for_reasoning = known_integration_secrets.clone();
+        let hide_reasoning =
+            crate::smart_agent::hide_provider_reasoning(&mode, run.plan_implementation_unlocked());
         let reasoning_sink: ReasoningSink = Arc::new(move |text: &str| {
             let text =
                 integration_chat::redact_sensitive_text(text, secrets_for_reasoning.as_ref());
@@ -4059,6 +4076,9 @@ The tool entries are historical summaries; use fresh tools for the current works
                 return;
             }
             reasoning_streamed_for_sink.store(true, Ordering::SeqCst);
+            if hide_reasoning {
+                return;
+            }
             emit(
                 &app_for_reasoning,
                 &sid_for_reasoning,
@@ -4412,7 +4432,12 @@ The tool entries are historical summaries; use fresh tools for the current works
 
         // Providers without streaming support still expose their supplied
         // reasoning after completion; animate that as a compatibility fallback.
-        if !reasoning_streamed.load(Ordering::SeqCst) {
+        if !reasoning_streamed.load(Ordering::SeqCst)
+            && !crate::smart_agent::hide_provider_reasoning(
+                &mode,
+                run.plan_implementation_unlocked(),
+            )
+        {
             if let Some(reason) = &resp.reasoning_content {
                 let trimmed = reason.trim();
                 if !trimmed.is_empty() {
@@ -4937,6 +4962,22 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                         run.set_plan_implementation_unlocked(true);
                         mode = "build".into();
                         smart_agent.promote_to_change(&app, &session_id);
+                        crate::smart_agent::emit_mode_transition(
+                            &app,
+                            &session_id,
+                            "plan",
+                            "build",
+                            "apply",
+                        );
+                        crate::smart_agent::emit_build_progress(
+                            &app,
+                            &session_id,
+                            iteration,
+                            "implement",
+                            "active",
+                            "Implementing the confirmed plan.",
+                            false,
+                        );
                         response.push_str(
                             "\n\n[System] The user confirmed Apply. Switched to Build. Use one focused owner; you may now write, edit, and run commands to implement and verify the agreed plan.",
                         );
@@ -5222,6 +5263,16 @@ Do not write the options only as markdown. Do not write, edit, or modify files y
                             plan.effective_phase(),
                             crate::agentic::AgenticPhaseState::Active,
                             "Running the final Director verification pass before delivery.",
+                        );
+                    } else if crate::smart_agent::is_build_timeline_mode(&mode) {
+                        crate::smart_agent::emit_build_progress(
+                            &app,
+                            &session_id,
+                            iteration,
+                            "validate",
+                            "active",
+                            "Verifying the workspace before delivery.",
+                            false,
                         );
                     } else {
                         emit(

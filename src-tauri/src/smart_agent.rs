@@ -22,6 +22,77 @@ const CHANGE_STEP_IDS: [&str; 3] = ["inspect", "implement", "validate"];
 const CHANGE_STEP_LABELS: [&str; 3] = ["Inspect", "Patch", "Check"];
 const OPERATE_STEP_IDS: [&str; 3] = ["inspect", "implement", "validate"];
 const OPERATE_STEP_LABELS: [&str; 3] = ["Observe", "Act", "Check"];
+pub const PUBLIC_PROGRESS_MAX: usize = 480;
+
+/// True when the effective permission mode should use the Build activity timeline.
+pub fn is_build_timeline_mode(mode: &str) -> bool {
+    matches!(mode.trim().to_ascii_lowercase().as_str(), "build" | "full")
+}
+
+/// Build (and Plan after Apply) must not stream private provider chain-of-thought.
+pub fn hide_provider_reasoning(mode: &str, plan_implementation_unlocked: bool) -> bool {
+    let mode = mode.trim().to_ascii_lowercase();
+    is_build_timeline_mode(&mode) || (mode == "plan" && plan_implementation_unlocked)
+}
+
+/// Compact host-authored progress so the UI never stores raw model reasoning.
+pub fn bound_public_progress(text: &str) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact = compact.replace('`', "");
+    if compact.chars().count() <= PUBLIC_PROGRESS_MAX {
+        return compact;
+    }
+    let mut out = String::new();
+    for ch in compact.chars() {
+        if out.chars().count() + 1 >= PUBLIC_PROGRESS_MAX {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
+pub fn emit_mode_transition(app: &AppHandle, session_id: &str, from: &str, to: &str, reason: &str) {
+    emit(
+        app,
+        session_id,
+        "mode_transition",
+        json!({
+            "from": from,
+            "to": to,
+            "reason": reason,
+        }),
+    );
+}
+
+pub fn emit_build_progress(
+    app: &AppHandle,
+    session_id: &str,
+    iteration: u32,
+    phase: &str,
+    status: &str,
+    text: &str,
+    final_summary: bool,
+) {
+    let text = bound_public_progress(text);
+    if text.is_empty() {
+        return;
+    }
+    emit(
+        app,
+        session_id,
+        "build_progress",
+        json!({
+            "segment": iteration,
+            "iteration": iteration,
+            "phase": phase,
+            "status": status,
+            "text": text,
+            "final": final_summary,
+        }),
+    );
+}
 
 const ANSWER_DIRECTOR: &str = "\nDIRECTOR JOB: ANSWER\n\
 - This is a question or a simplify/rephrase request. Write a short visible reply now.\n\
@@ -254,6 +325,8 @@ pub struct SmartAgentRun {
     validation_tool_ids: HashSet<String>,
     debug_tool_ids: HashSet<String>,
     change_tool_ids: HashSet<String>,
+    iteration: u32,
+    timeline_enabled: bool,
 }
 
 pub type DirectorRun = SmartAgentRun;
@@ -288,7 +361,17 @@ impl SmartAgentRun {
             validation_tool_ids: HashSet::new(),
             debug_tool_ids: HashSet::new(),
             change_tool_ids: HashSet::new(),
+            iteration: 0,
+            timeline_enabled: false,
         }
+    }
+
+    pub fn set_iteration(&mut self, iteration: u32) {
+        self.iteration = iteration;
+    }
+
+    pub fn enable_build_timeline(&mut self) {
+        self.timeline_enabled = true;
     }
 
     pub const fn is_enabled(&self) -> bool {
@@ -306,11 +389,14 @@ impl SmartAgentRun {
     /// Plan → Apply must be allowed to call `done`, otherwise the Completed
     /// card never appears after implementation.
     pub fn promote_to_change(&mut self, app: &AppHandle, session_id: &str) {
+        let iteration = self.iteration;
         *self = Self::for_job(
             DirectorJob::Change,
             self.settings_enabled,
             self.fast_execution,
         );
+        self.iteration = iteration;
+        self.timeline_enabled = true;
         self.emit_plan(app, session_id);
     }
 
@@ -428,6 +514,17 @@ impl SmartAgentRun {
                 "completed_before": step,
             }),
         );
+        if self.timeline_enabled {
+            emit_build_progress(
+                app,
+                session_id,
+                self.iteration,
+                phase.id(),
+                "active",
+                detail,
+                false,
+            );
+        }
     }
 
     /// A successful check only applies to the exact workspace state that was
@@ -715,6 +812,17 @@ When the requested work is genuinely complete, call done with a concise, evidenc
                 "detail": detail,
             }),
         );
+        if self.timeline_enabled {
+            emit_build_progress(
+                app,
+                session_id,
+                self.iteration,
+                self.phase.id(),
+                "paused",
+                detail,
+                false,
+            );
+        }
     }
 }
 
@@ -849,6 +957,25 @@ mod tests {
         assert!(is_mutating_command("npm install lucide-react"));
         assert!(!is_mutating_command("rg -n status src"));
         assert!(!is_mutating_command("Get-Content src/app.css"));
+    }
+
+    #[test]
+    fn build_timeline_hides_provider_reasoning_and_bounds_progress() {
+        assert!(is_build_timeline_mode("build"));
+        assert!(is_build_timeline_mode("FULL"));
+        assert!(!is_build_timeline_mode("ask"));
+        assert!(hide_provider_reasoning("build", false));
+        assert!(hide_provider_reasoning("plan", true));
+        assert!(!hide_provider_reasoning("plan", false));
+        assert!(!hide_provider_reasoning("ask", false));
+        let long = "Inspecting the workspace. ".repeat(80);
+        let bounded = bound_public_progress(&long);
+        assert!(bounded.chars().count() <= PUBLIC_PROGRESS_MAX);
+        assert!(bounded.ends_with('…'));
+        assert_eq!(
+            bound_public_progress("  Inspecting   the\ncurrent workspace.  "),
+            "Inspecting the current workspace."
+        );
     }
 
     #[test]

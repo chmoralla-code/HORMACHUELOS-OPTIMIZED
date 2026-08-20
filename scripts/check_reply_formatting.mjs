@@ -47,6 +47,11 @@ function loadReplyModules() {
     appendThinkingTranscriptEvent: sessionSandbox.module.exports.appendThinkingTranscriptEvent,
     appendThinkingReasoningChunk: sessionSandbox.module.exports.appendThinkingReasoningChunk,
     appendMultiAgentBatchSnapshot: sessionSandbox.module.exports.appendMultiAgentBatchSnapshot,
+    appendBuildProgressEvent: sessionSandbox.module.exports.appendBuildProgressEvent,
+    appendModeTransitionEvent: sessionSandbox.module.exports.appendModeTransitionEvent,
+    boundBuildProgressText: sessionSandbox.module.exports.boundBuildProgressText,
+    friendlyBuildProgressForTool: sessionSandbox.module.exports.friendlyBuildProgressForTool,
+    latestRunIsBuildTimeline: sessionSandbox.module.exports.latestRunIsBuildTimeline,
     compactSessionMessagesForStorage: sessionSandbox.module.exports.compactSessionMessagesForStorage,
     coalesceSessionTurnLayout: sessionSandbox.module.exports.coalesceSessionTurnLayout,
     normalizeSessionPermissionMode: sessionSandbox.module.exports.normalizeSessionPermissionMode,
@@ -68,6 +73,11 @@ const {
   appendThinkingTranscriptEvent,
   appendThinkingReasoningChunk,
   appendMultiAgentBatchSnapshot,
+  appendBuildProgressEvent,
+  appendModeTransitionEvent,
+  boundBuildProgressText,
+  friendlyBuildProgressForTool,
+  latestRunIsBuildTimeline,
   compactSessionMessagesForStorage,
   coalesceSessionTurnLayout,
   normalizeSessionPermissionMode,
@@ -495,6 +505,49 @@ assert.equal(normalizeSessionPermissionMode("auto"), "build");
 assert.equal(normalizeSessionPermissionMode("full"), "build");
 assert.equal(normalizeSessionPermissionMode("multi_agent"), "multi_agent");
 
+const buildTimeline = [
+  { type: "user", text: "Build the dashboard." },
+  { type: "run_start", permissionMode: "build" },
+];
+appendBuildProgressEvent(buildTimeline, { iteration: 0, text: "Inspecting the current workspace.", status: "active" }, 10);
+appendBuildProgressEvent(buildTimeline, { iteration: 0, text: "Inspecting package scripts.", status: "active" }, 20);
+buildTimeline.push({ type: "tool_call", id: "read-1", name: "read_file", arguments: { path: "package.json" } });
+buildTimeline.push({ type: "tool_result", id: "read-1", name: "read_file", ok: true, content: "{}" });
+appendBuildProgressEvent(buildTimeline, { iteration: 0, text: "Inspecting package scripts.", status: "active" }, 25);
+appendBuildProgressEvent(buildTimeline, { iteration: 1, text: "Applying the requested changes.", status: "active" }, 30);
+buildTimeline.push({ type: "tool_call", id: "write-1", name: "write_file", arguments: { path: "src/app.css" } });
+buildTimeline.push({ type: "tool_result", id: "write-1", name: "write_file", ok: true, content: "ok" });
+buildTimeline.push({ type: "assistant", text: "The heading is updated." });
+buildTimeline.push({ type: "done", summary: "Updated the dashboard heading.", title: "Done", description: "", files: ["src/app.css"], tech: ["css"], features: [] });
+appendThinkingReasoningChunk(buildTimeline, "private chain of thought should not persist", 1, 40);
+const restoredBuild = coalesceSessionTurnLayout(buildTimeline);
+assert.equal(true, latestRunIsBuildTimeline(buildTimeline));
+assert.equal(restoredBuild.filter((message) => message.type === "build_progress").length, 2);
+assert.equal(restoredBuild.filter((message) => message.type === "thinking").length, 0);
+assert.equal(
+  restoredBuild.map((message) => message.type).join(","),
+  "user,run_start,build_progress,tool_call,tool_result,build_progress,tool_call,tool_result,assistant,done",
+);
+assert.match(restoredBuild.find((message) => message.type === "build_progress")?.text || "", /package scripts/);
+assert.equal(friendlyBuildProgressForTool("read_file"), "Inspecting the current workspace.");
+assert.ok(boundBuildProgressText(`${"Inspecting the workspace. ".repeat(80)}`).length <= 480);
+
+const applyTurn = [
+  { type: "user", text: "Plan a dashboard." },
+  { type: "run_start", permissionMode: "plan" },
+  { type: "thinking", iteration: 0, text: "Outline the plan." },
+];
+appendModeTransitionEvent(applyTurn, { from: "plan", to: "build", reason: "apply" }, 50);
+appendBuildProgressEvent(applyTurn, { iteration: 1, text: "Implementing the confirmed plan." }, 60);
+applyTurn.push({ type: "tool_call", id: "write-2", name: "write_file", arguments: { path: "index.html" } });
+applyTurn.push({ type: "tool_result", id: "write-2", name: "write_file", ok: true, content: "ok" });
+applyTurn.push({ type: "assistant", text: "Applied." });
+applyTurn.push({ type: "end", reason: "completed" });
+const restoredApply = coalesceSessionTurnLayout(applyTurn);
+assert.equal(restoredApply.filter((message) => message.type === "thinking").length, 1);
+assert.equal(restoredApply.filter((message) => message.type === "build_progress").length, 1);
+assert.equal(restoredApply.filter((message) => message.type === "mode_transition").length, 1);
+
 assert.equal(
   compactVisibleReply("Let me dig into the app structure and key libraries.\n\nHere's my analysis of your project."),
   "Here's my analysis of your project.",
@@ -513,6 +566,16 @@ const chatSource = readFileSync(new URL("../src/components/chat.ts", import.meta
 assert.ok(chatSource.includes("loadSession(msgs: SessionMessage[], opts?: { running?: boolean })"), "session restore must know when a run is still live");
 assert.doesNotMatch(chatSource, /const reusable = !this\.replaying/);
 assert.doesNotMatch(chatSource, /const existing = !this\.replaying/);
+assert.doesNotMatch(chatSource, /case "build_progress":\s*case "task_progress"/);
+assert.ok(chatSource.includes(".thinking-wrap.is-build-summary"));
+
+const sessionSource = readFileSync(new URL("../src/components/session.ts", import.meta.url), "utf8");
+assert.match(
+  sessionSource,
+  /if \(message\.type === "tool_call" \|\| message\.type === "tool_result" \|\| message\.type === "thinking"\) continue/,
+);
+assert.match(sessionSource, /function compactBuildProgress/);
+assert.match(sessionSource, /lastIndexBySegment/);
 for (const requiredReplyStitch of [
   "const mergedAssistantChunk = !this.replaying && this.recordEvent(e);",
   "private renderEvent(e: AgentEvent, mergedAssistantChunk = false)",
@@ -537,7 +600,15 @@ for (const requiredReplyStitch of [
   "coalesceSessionTurnLayout",
   "resumeOpenRunAfterLoad",
   "coalesceAllTurnsChrome",
+  "appendBuildFinalSummary",
+  "applyBuildProgress",
+  "openBuildThought",
+  "paintBuildThought",
+  "currentBuildProgressWrap",
+  "chat-build-timeline",
   "insertionPointAfterCurrentTools",
+  "Hide build ${noun}",
+  "Build summary",
   "Multi-Agent activity",
   "structured-reply",
   'data-reply-action": "copy"',
@@ -556,6 +627,8 @@ assert.match(appCss, /border-top:\s*1px solid var\(--line-subtle\)/);
 assert.match(appCss, /\.md-list \.md-list/);
 assert.match(appCss, /\.msg\.assistant \.msg-copy-label\s*\{\s*display:\s*inline/);
 assert.match(appCss, /\.tool-batch-head\s*\{[^}]*color:\s*var\(--text-muted\)/s);
+assert.match(appCss, /#chat\.chat-build-timeline > \.thinking-wrap\.is-build-progress/);
+assert.match(appCss, /#chat\.chat-build-timeline > \.thinking-wrap\.is-build-summary/);
 assert.doesNotMatch(appCss, /\.tool-batch-wrap\.collapsed\s*~\s*\.tool-card-wrap/);
 assert.match(appCss, /\.multi-agent-batch:not\(\.is-open\) \.multi-agent-tool:not\(\.working\):not\(\.failed\)/);
 

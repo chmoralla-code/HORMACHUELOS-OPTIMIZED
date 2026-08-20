@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en" data-appearance="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/theme/tokens.css" />
+    <link rel="stylesheet" href="/theme/globals.css" />
+    <link rel="stylesheet" href="/app.css" />
+    <title>Build timeline harness</title>
+    <style>
+      html, body { width: 100%; min-width: 0 !important; min-height: 100%; overflow-x: hidden; }
+      body { display: block; margin: 0; background: var(--canvas); }
+      .build-timeline-shell { width: min(100%, 1040px); margin: 0 auto; padding: clamp(12px, 3vw, 36px); }
+      #chat { position: static; width: 100%; height: auto; min-height: 240px; overflow: visible; padding: 0; }
+      #forge-dock { position: static; margin-top: 24px; }
+    </style>
+  </head>
+  <body class="fps-optimized">
+    <main class="build-timeline-shell">
+      <section id="chat" aria-label="Build timeline preview"></section>
+      <div id="forge-dock"></div>
+    </main>
+    <script type="module">
+      window.__TAURI_INTERNALS__ = {
+        invoke: async () => null,
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { label: "main" },
+        },
+      };
+
+      const { Chat } = await import("/components/chat.ts");
+      const params = new URLSearchParams(location.search);
+      const theme = params.get("theme") || "dark";
+      const scenario = params.get("scenario") || "live";
+      document.documentElement.dataset.appearance = theme;
+
+      const chat = new Chat({
+        onSend: () => {},
+        onStop: () => {},
+        onNeedProject: () => {},
+        onOpenProject: () => {},
+        onNewProject: () => {},
+        onRevealProject: () => {},
+        onOpenSettings: () => {},
+        getSessionId: () => "build-timeline-run",
+      });
+      chat.setReplyProfile({ provider: "cursor", model: "grok-4.5" });
+
+      const sid = "build-timeline-run";
+      const event = (kind, payload) => ({ kind, session_id: sid, payload });
+
+      function playTwoRoundBuild(mode = "build", extraStart = {}) {
+        chat.startSession("Build a client dashboard.");
+        chat.setRunning(true);
+        chat.handleEvent(event("start", { prompt: "Build a client dashboard.", permission_mode: mode, ...extraStart }));
+        chat.handleEvent(event("thinking", { iteration: 0 }));
+        chat.handleEvent(event("build_progress", {
+          segment: 0, iteration: 0, phase: "inspect", status: "active",
+          text: "Inspecting the current workspace.",
+        }));
+        chat.handleEvent(event("tool_call", { id: "read-1", name: "read_file", arguments: { path: "package.json" } }));
+        chat.handleEvent(event("tool_result", { id: "read-1", name: "read_file", ok: true, content: "{}" }));
+        chat.handleEvent(event("build_progress", {
+          segment: 0, iteration: 0, phase: "inspect", status: "active",
+          text: "Inspecting package scripts.",
+        }));
+        chat.handleEvent(event("thinking", { iteration: 1 }));
+        chat.handleEvent(event("build_progress", {
+          segment: 1, iteration: 1, phase: "implement", status: "active",
+          text: "Applying the requested changes.",
+        }));
+        chat.handleEvent(event("tool_call", { id: "write-1", name: "write_file", arguments: { path: "src/app.css" } }));
+        chat.handleEvent(event("tool_result", { id: "write-1", name: "write_file", ok: scenario !== "failed", content: "ok" }));
+        if (scenario === "cancelled") {
+          chat.handleEvent(event("cancelled", { iteration: 1 }));
+          return;
+        }
+        chat.handleEvent(event("text", { text: "The dashboard heading and layout are in place." }));
+        chat.handleEvent(event("done", {
+          summary: "Updated the dashboard heading and verified the layout.",
+          title: "Dashboard ready",
+          description: "The heading now matches the brief.",
+          files: ["src/app.css"],
+          tech: ["css"],
+          features: ["Responsive heading"],
+        }));
+        chat.setRunning(false);
+      }
+
+      if (scenario === "apply") {
+        chat.startSession("Plan a client dashboard.");
+        chat.setRunning(true);
+        chat.handleEvent(event("start", { prompt: "Plan a client dashboard.", permission_mode: "plan" }));
+        chat.handleEvent(event("thinking", { iteration: 0 }));
+        chat.handleEvent(event("reasoning", { text: "I will outline a short plan first." }));
+        chat.handleEvent(event("question", {
+          id: "ask-1",
+          question: "Apply this plan?",
+          options: ["Apply this plan and implement the changes", "Keep planning"],
+          allow_other: true,
+        }));
+        chat.handleEvent(event("mode_transition", { from: "plan", to: "build", reason: "apply" }));
+        chat.handleEvent(event("thinking", { iteration: 1 }));
+        chat.handleEvent(event("build_progress", {
+          segment: 1, iteration: 1, phase: "implement", status: "active",
+          text: "Implementing the confirmed plan.",
+        }));
+        chat.handleEvent(event("tool_call", { id: "write-1", name: "write_file", arguments: { path: "index.html" } }));
+        chat.handleEvent(event("tool_result", { id: "write-1", name: "write_file", ok: true, content: "ok" }));
+        chat.handleEvent(event("done", {
+          summary: "Implemented the confirmed plan.",
+          title: "Plan applied",
+          description: "Files were updated.",
+          files: ["index.html"],
+          tech: ["html"],
+          features: [],
+        }));
+        chat.setRunning(false);
+      } else if (scenario === "failed") {
+        chat.startSession("Build a client dashboard.");
+        chat.setRunning(true);
+        chat.handleEvent(event("start", { prompt: "Build a client dashboard.", permission_mode: "build" }));
+        chat.handleEvent(event("thinking", { iteration: 0 }));
+        chat.handleEvent(event("build_progress", {
+          segment: 0, iteration: 0, phase: "implement", status: "active",
+          text: "Applying the requested changes.",
+        }));
+        chat.handleEvent(event("tool_call", { id: "write-1", name: "write_file", arguments: { path: "src/app.css" } }));
+        chat.handleEvent(event("tool_result", { id: "write-1", name: "write_file", ok: false, content: "write failed" }));
+        chat.handleEvent(event("end", { reason: "error" }));
+        chat.setRunning(false);
+      } else if (scenario === "restore") {
+        playTwoRoundBuild();
+        const messages = chat.getMessages();
+        chat.loadSession(messages);
+      } else if (scenario === "adaptive") {
+        playTwoRoundBuild("build", { adaptive_reason: "focused implementation requested" });
+      } else {
+        playTwoRoundBuild();
+      }
+
+      window.__buildTimelineHarness = { chat, scenario };
+    </script>
+  </body>
+</html>

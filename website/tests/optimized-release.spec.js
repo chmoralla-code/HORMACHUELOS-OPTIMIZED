@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const VERSION = "1.3.3";
+const VERSION = "1.3.4";
 const RELEASE_BASE =
   `https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v${VERSION}`;
 const BASE_URL = process.env.HORMACHUELOS_WEBSITE_TEST_URL || "http://127.0.0.1:5174";

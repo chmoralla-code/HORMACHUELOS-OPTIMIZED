@@ -37,6 +37,23 @@ export type SessionMessage =
   /** Keeps the visual Multi-Agent activity batch with the session it belongs to. */
   | { type: "multi_agent_batch"; tools: SessionMultiAgentTool[]; at?: number }
   | { type: "thinking"; iteration: number; text: string; at?: number }
+  | {
+      type: "mode_transition";
+      from: string;
+      to: "build" | string;
+      reason?: string;
+      at?: number;
+    }
+  | {
+      type: "build_progress";
+      segment: number;
+      iteration: number;
+      phase?: string;
+      status: string;
+      text: string;
+      final?: boolean;
+      at?: number;
+    }
   | { type: "assistant"; text: string; at?: number }
   | { type: "tool_call"; id: string; name: string; arguments: any; runId?: string; agentId?: string; phase?: AgenticPhase; at?: number }
   | { type: "tool_result"; id: string; name: string; ok: boolean; content: string; runId?: string; agentId?: string; phase?: AgenticPhase; at?: number }
@@ -147,6 +164,7 @@ export function appendThinkingTranscriptEvent(
   iteration: number,
   at?: number,
 ): void {
+  if (latestRunIsBuildTimeline(messages) || latestRunIsAgentic(messages)) return;
   if (latestThinkingIndexInRun(messages, messages.length - 1) >= 0) return;
   messages.push({ type: "thinking", iteration, text: "", at });
 }
@@ -158,6 +176,7 @@ export function appendThinkingReasoningChunk(
   iteration = 0,
   at?: number,
 ): void {
+  if (latestRunIsBuildTimeline(messages) || latestRunIsAgentic(messages)) return;
   const safe = redactChatCredentials(String(text || ""));
   if (!safe) return;
   const index = latestThinkingIndexInRun(messages, messages.length - 1);
@@ -168,6 +187,129 @@ export function appendThinkingReasoningChunk(
     return;
   }
   messages.push({ type: "thinking", iteration, text: safe, at });
+}
+
+export const BUILD_PROGRESS_MAX = 480;
+
+export function boundBuildProgressText(text: string): string {
+  const safe = redactChatCredentials(String(text || "")).replace(/\s+/g, " ").trim();
+  if (!safe) return "";
+  return clip(safe, BUILD_PROGRESS_MAX);
+}
+
+export function friendlyBuildProgressForTool(name: string): string {
+  const key = String(name || "")
+    .trim()
+    .replace(/([a-z])([A-Z])/g, "$1_$2")
+    .replace(/[\s.-]+/g, "_")
+    .toLowerCase();
+  if (
+    /^(read_file|read|list_dir|listdir|list_directory|glob|grep|ripgrep|file_info|git_status)$/.test(key)
+  ) {
+    return "Inspecting the current workspace.";
+  }
+  if (
+    /^(write_file|write|edit_file|edit|str_replace|apply_patch|make_dir|mkdir|move_file|copy_file|delete_file|delete)$/.test(
+      key,
+    )
+  ) {
+    return "Applying the requested changes.";
+  }
+  if (/^(run_command|shell|bash|run_terminal_cmd|start_dev_server)$/.test(key)) {
+    return "Running a focused check.";
+  }
+  if (key === "open_path") return "Checking the result in preview.";
+  if (key === "done") return "Reviewing the result before delivery.";
+  return "Working through the requested change.";
+}
+
+export function latestRunIsBuildTimeline(messages: SessionMessage[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.type === "user") break;
+    if (message.type === "mode_transition" && String(message.to || "").toLowerCase() === "build") {
+      return true;
+    }
+    if (message.type === "run_start") return message.permissionMode === "build";
+  }
+  return false;
+}
+
+export function appendModeTransitionEvent(
+  messages: SessionMessage[],
+  payload: { from?: string; to?: string; reason?: string },
+  at?: number,
+): void {
+  const to = String(payload?.to || "").trim().toLowerCase() || "build";
+  messages.push({
+    type: "mode_transition",
+    from: String(payload?.from || "plan"),
+    to,
+    reason: payload?.reason ? clip(redactChatCredentials(payload.reason), 120) : undefined,
+    at,
+  });
+}
+
+export function appendBuildProgressEvent(
+  messages: SessionMessage[],
+  payload: {
+    segment?: number;
+    iteration?: number;
+    phase?: string;
+    status?: string;
+    text?: string;
+    final?: boolean;
+  },
+  at?: number,
+): void {
+  if (!latestRunIsBuildTimeline(messages)) return;
+  const text = boundBuildProgressText(payload?.text || "");
+  if (!text) return;
+  const iteration = Math.max(0, Number(payload?.iteration) || 0);
+  const segment = Math.max(0, Number(payload?.segment) || iteration);
+  const status = String(payload?.status || "active");
+  const phase = payload?.phase ? clip(String(payload.phase), 48) : undefined;
+  const final = payload?.final === true;
+  if (!final) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.type === "user" || message.type === "run_start" || message.type === "mode_transition") break;
+      if (
+        message.type === "assistant"
+        || message.type === "done"
+        || message.type === "end"
+        || message.type === "cancelled"
+        || message.type === "question"
+      ) {
+        break;
+      }
+      if (message.type === "tool_call" || message.type === "tool_result" || message.type === "thinking") continue;
+      if (message.type === "build_progress") {
+        if (message.final) break;
+        if (message.segment !== segment) break;
+        if (message.text === text && message.status === status) {
+          message.at = at;
+          return;
+        }
+        message.text = text;
+        message.status = status;
+        message.phase = phase;
+        message.iteration = iteration;
+        message.at = at;
+        return;
+      }
+    }
+  }
+  messages.push({
+    type: "build_progress",
+    segment,
+    iteration,
+    phase,
+    status,
+    text,
+    final: final || undefined,
+    at,
+  });
 }
 
 function hasTurnTools(turn: SessionMessage[]): boolean {
@@ -203,11 +345,86 @@ function mergeTurnAssistant(turn: SessionMessage[]): Extract<SessionMessage, { t
   return { type: "assistant", text, at: kept[kept.length - 1].at };
 }
 
+function isBuildTimelineTurn(turn: SessionMessage[]): boolean {
+  return turn.some((message) => {
+    if (message.type === "run_start") return message.permissionMode === "build";
+    return message.type === "mode_transition" && String(message.to || "").toLowerCase() === "build";
+  });
+}
+
+function compactBuildProgress(messages: SessionMessage[]): SessionMessage[] {
+  const result: SessionMessage[] = [];
+  const lastIndexBySegment = new Map<number, number>();
+  for (const message of messages) {
+    if (message.type === "build_progress" && !message.final) {
+      const previousIndex = lastIndexBySegment.get(message.segment);
+      if (previousIndex != null) {
+        const previous = result[previousIndex];
+        if (previous?.type === "build_progress" && !previous.final) {
+          previous.text = message.text;
+          previous.status = message.status;
+          previous.phase = message.phase || previous.phase;
+          previous.iteration = message.iteration;
+          previous.at = message.at;
+          continue;
+        }
+      }
+      lastIndexBySegment.set(message.segment, result.length);
+    } else if (message.type === "build_progress" && message.final) {
+      lastIndexBySegment.delete(message.segment);
+    }
+    result.push(message);
+  }
+  return result;
+}
+
+function coalesceBuildTurn(turn: SessionMessage[]): SessionMessage[] {
+  if (!turn.length) return [];
+  const head: SessionMessage[] = [];
+  const body: SessionMessage[] = [];
+  const tail: SessionMessage[] = [];
+  let buildStarted = turn.some(
+    (message) => message.type === "run_start" && message.permissionMode === "build",
+  );
+  const planThoughts: SessionMessage[] = [];
+  for (const message of turn) {
+    if (message.type === "run_start") {
+      if (!head.length) head.push(message);
+      continue;
+    }
+    if (message.type === "mode_transition") {
+      buildStarted = String(message.to || "").toLowerCase() === "build";
+      body.push(message);
+      continue;
+    }
+    if (message.type === "done" || message.type === "end" || message.type === "cancelled") {
+      tail.push(message);
+      continue;
+    }
+    if (message.type === "assistant") continue;
+    if (message.type === "thinking") {
+      if (!buildStarted) planThoughts.push(message);
+      continue;
+    }
+    body.push(message);
+  }
+  const thinking = planThoughts.length ? mergeTurnThinking(planThoughts) : null;
+  const assistant = mergeTurnAssistant(turn);
+  return [
+    ...head,
+    ...(thinking ? [thinking] : []),
+    ...compactBuildProgress(body),
+    ...(assistant ? [assistant] : []),
+    ...tail,
+  ];
+}
+
 function coalesceOneTurn(turn: SessionMessage[]): SessionMessage[] {
   if (!turn.length) return [];
   const agentic = turn.some(
     (message) => message.type === "run_start" && message.permissionMode === "agentic",
   );
+  if (!agentic && isBuildTimelineTurn(turn)) return coalesceBuildTurn(turn);
   const thinking = agentic ? null : mergeTurnThinking(turn);
   const assistant = mergeTurnAssistant(turn);
   const head: SessionMessage[] = [];
@@ -565,6 +782,10 @@ function redactSessionMessage(message: SessionMessage): SessionMessage {
     case "assistant":
     case "thinking":
       return { ...message, text: redactChatCredentials(message.text) };
+    case "build_progress":
+      return { ...message, text: redactChatCredentials(message.text) };
+    case "mode_transition":
+      return { ...message, reason: message.reason ? redactChatCredentials(message.reason) : undefined };
     case "tool_call":
       return {
         ...message,
@@ -662,6 +883,12 @@ function boundStoredActivityMessage(message: SessionMessage): SessionMessage {
       text: boundedStoredText(message.text, SESSION_STORED_THINKING_MAX, "older thinking detail"),
     };
   }
+  if (message.type === "build_progress") {
+    return {
+      ...message,
+      text: boundedStoredText(message.text, BUILD_PROGRESS_MAX, "older build progress"),
+    };
+  }
   if (message.type === "tool_result") {
     return {
       ...message,
@@ -690,6 +917,7 @@ function boundStoredActivityMessage(message: SessionMessage): SessionMessage {
 function isStoredActivityMessage(message: SessionMessage): boolean {
   return (
     message.type === "thinking" ||
+    message.type === "build_progress" ||
     message.type === "tool_call" ||
     message.type === "tool_result" ||
     message.type === "multi_agent_batch"
@@ -1491,16 +1719,33 @@ export function recordAgentEvent(
       break;
     }
     case "thinking":
-      if (!latestRunIsAgentic(messages)) {
+      if (!latestRunIsAgentic(messages) && !latestRunIsBuildTimeline(messages)) {
         appendThinkingTranscriptEvent(messages, e.payload.iteration ?? 0, at);
       }
       break;
     case "reasoning": {
-      if (!latestRunIsAgentic(messages)) {
+      if (!latestRunIsAgentic(messages) && !latestRunIsBuildTimeline(messages)) {
         appendThinkingReasoningChunk(messages, e.payload.text || "", e.payload.iteration ?? 0, at);
       }
       break;
     }
+    case "mode_transition":
+      appendModeTransitionEvent(messages, e.payload || {}, at);
+      break;
+    case "build_progress":
+      appendBuildProgressEvent(
+        messages,
+        {
+          segment: e.payload?.segment ?? e.payload?.iteration,
+          iteration: e.payload?.iteration ?? e.payload?.segment,
+          phase: e.payload?.phase,
+          status: e.payload?.status,
+          text: e.payload?.text,
+          final: e.payload?.final === true,
+        },
+        at,
+      );
+      break;
     case "text": {
       const safeText = redactChatCredentials(e.payload.text || "");
       appendAssistantTranscriptChunk(

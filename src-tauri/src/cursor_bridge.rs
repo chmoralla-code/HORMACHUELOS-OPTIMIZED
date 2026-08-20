@@ -3,7 +3,10 @@
 
 use crate::agent::HistoryTurn;
 use crate::flavour::FlavourRun;
-use crate::smart_agent::{infer_director_job, DirectorJob, SmartAgentRun};
+use crate::smart_agent::{
+    emit_build_progress, emit_mode_transition, hide_provider_reasoning, infer_director_job,
+    is_build_timeline_mode, DirectorJob, SmartAgentRun,
+};
 use crate::state::SessionRun;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -407,6 +410,16 @@ async fn await_cursor_question(
     if response.0 && permission_mode.eq_ignore_ascii_case("plan") {
         if crate::agent::ask_user_confirms_plan_implementation(&response.1, &question) {
             run.set_plan_implementation_unlocked(true);
+            emit_mode_transition(app, session_id, "plan", "build", "apply");
+            emit_build_progress(
+                app,
+                session_id,
+                0,
+                "implement",
+                "active",
+                "Implementing the confirmed plan.",
+                false,
+            );
             response.1.push_str(
                 "\n\n[System] The user confirmed Apply. Switched to implementing. You may now write, edit, and run commands to implement the agreed plan.",
             );
@@ -901,6 +914,7 @@ fn handle_event(
     model: &str,
     scope: Option<&CursorAgenticScope>,
     suppress_reasoning: bool,
+    hide_provider_reasoning: bool,
 ) -> bool {
     match event.kind.as_str() {
         "thinking" => {
@@ -909,7 +923,7 @@ fn handle_event(
             }
         }
         "reasoning" => {
-            if !suppress_reasoning {
+            if !suppress_reasoning && !hide_provider_reasoning {
                 if let Some(text) = event.text.filter(|t| !t.is_empty()) {
                     emit(
                         app,
@@ -1506,6 +1520,9 @@ pub async fn run_cursor_turn(
         fast_execution,
     );
     let mut smart_agent = SmartAgentRun::for_job(director_job, smart_agent_enabled, fast_execution);
+    if is_build_timeline_mode(permission_mode) {
+        smart_agent.enable_build_timeline();
+    }
     let smart_agent_active = smart_agent.is_enabled();
     let computer_use_active = computer_use_enabled && !crate::computer_use::is_paused();
     if !requested_permission_mode.eq_ignore_ascii_case("agentic") {
@@ -1588,15 +1605,28 @@ pub async fn run_cursor_turn(
         ) {
             if smart_agent.request_final_review(&app, session_id) {
                 continuation_pass = continuation_pass.saturating_add(1);
-                emit(
-                    &app,
-                    session_id,
-                    "reasoning",
-                    json!({
-                        "text": "Verifying the workspace before delivery...",
-                        "iteration": continuation_pass,
-                    }),
-                );
+                smart_agent.set_iteration(continuation_pass);
+                if hide_provider_reasoning(permission_mode, run.plan_implementation_unlocked()) {
+                    emit_build_progress(
+                        &app,
+                        session_id,
+                        continuation_pass,
+                        "validate",
+                        "active",
+                        "Verifying the workspace before delivery.",
+                        false,
+                    );
+                } else {
+                    emit(
+                        &app,
+                        session_id,
+                        "reasoning",
+                        json!({
+                            "text": "Verifying the workspace before delivery...",
+                            "iteration": continuation_pass,
+                        }),
+                    );
+                }
                 current_prompt = SmartAgentRun::final_review_instruction().to_string();
                 continue;
             }
@@ -1700,21 +1730,41 @@ pub async fn run_cursor_turn(
         }
 
         continuation_pass = continuation_pass.saturating_add(1);
-        emit(
-            &app,
-            session_id,
-            "reasoning",
-            json!({
-                "text": if empty_reply_recovery {
-                    "The model returned no answer; retrying automatically from its saved checkpoint..."
-                } else if recoverable_interruption.is_some() {
-                    "The Cursor pass stopped responding; resuming automatically from its saved checkpoint..."
-                } else {
-                    "Continuing automatically from the unfinished Cursor task..."
-                },
-                "iteration": continuation_pass,
-            }),
-        );
+        smart_agent.set_iteration(continuation_pass);
+        let continuation_text = if empty_reply_recovery {
+            "The model returned no answer; retrying automatically from its saved checkpoint."
+        } else if recoverable_interruption.is_some() {
+            "The Cursor pass stopped responding; resuming automatically from its saved checkpoint."
+        } else {
+            "Continuing automatically from the unfinished Cursor task."
+        };
+        if hide_provider_reasoning(permission_mode, run.plan_implementation_unlocked()) {
+            emit(
+                &app,
+                session_id,
+                "thinking",
+                json!({ "iteration": continuation_pass }),
+            );
+            emit_build_progress(
+                &app,
+                session_id,
+                continuation_pass,
+                "working",
+                "active",
+                continuation_text,
+                false,
+            );
+        } else {
+            emit(
+                &app,
+                session_id,
+                "reasoning",
+                json!({
+                    "text": continuation_text,
+                    "iteration": continuation_pass,
+                }),
+            );
+        }
         let continuation = if requires_project_completion {
             CURSOR_AUTOMATIC_CONTINUATION_PROMPT
         } else if empty_reply_recovery {
@@ -1782,6 +1832,17 @@ async fn run_cursor_attempt(
 
     if !suppress_reasoning {
         emit(&app, session_id, "thinking", json!({ "iteration": 0 }));
+        if hide_provider_reasoning(permission_mode, run.plan_implementation_unlocked()) {
+            emit_build_progress(
+                &app,
+                session_id,
+                0,
+                "working",
+                "active",
+                "Working on the requested change.",
+                false,
+            );
+        }
     }
 
     let bounded_history = bounded_cursor_history(history);
@@ -2077,6 +2138,10 @@ async fn run_cursor_attempt(
                         continue;
                     }
                     let event_kind = event.kind.clone();
+                    let hide_cot = hide_provider_reasoning(
+                        permission_mode,
+                        run.plan_implementation_unlocked(),
+                    );
                     let usage_blocked = handle_event(
                         &app,
                         session_id,
@@ -2091,6 +2156,7 @@ async fn run_cursor_attempt(
                         model,
                         scope.as_ref(),
                         suppress_reasoning,
+                        hide_cot,
                     );
                     if event_kind == "done" && recoverable_interruption.is_some() {
                         // The bridge has sealed every visible tool card and

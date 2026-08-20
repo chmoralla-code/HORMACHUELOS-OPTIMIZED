@@ -678,6 +678,8 @@ export type AgentEventPayload =
   | { kind: "thinking"; payload: { iteration: number } }
   | { kind: "status"; payload: { message: string; attempt?: number; detail?: string } }
   | { kind: "reasoning"; payload: { text: string; iteration?: number } }
+  | { kind: "mode_transition"; payload: { from: string; to: "build" | string; reason?: string } }
+  | { kind: "build_progress"; payload: { segment?: number; iteration?: number; phase?: string; status?: string; text: string; final?: boolean } }
   | { kind: "text"; payload: { text: string; continuation?: boolean } }
   | { kind: "tool_preview"; payload: { id: string; name: string; arguments_delta?: string; run_id?: string; agent_id?: string; phase?: AgenticPhase } }
   | { kind: "tool_preview_end"; payload: { id: string; name: string; reason: string; run_id?: string; agent_id?: string; phase?: AgenticPhase } }

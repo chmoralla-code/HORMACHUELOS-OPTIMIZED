@@ -99,20 +99,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · AGENTIC parallel coordinator
+          releaseName: Hormachuelos Optimized v__VERSION__ · Build activity timeline
           releaseBody: |
-            AGENTIC now runs up to **six read-only evidence workers in parallel**, with thinking split from tools.
+            Build, Adaptive routed to Build, and Plan Apply now show a chronological **Thought → tools → Thought → tools → Summary → Completed** stream.
 
-            Large multi-area work can spawn more workers. A focused one-file fix still stays single-writer. Native and Cursor workers overlap through the shared host gate. The Director remains the only writer. The Workbench lanes are Thinking, Tools, and Agents, without spawn animation. Workers inspect the real workspace before concluding.
+            Thought rows are short host-authored progress lines, not private provider chain-of-thought. Two tool rounds keep separate batches through live runs and session restore. The final Summary sentence is not repeated on the Completed card.
 
             This release:
-            - runs parallel read-only evidence workers, up to six
-            - splits Director thinking from tool cards
-            - grounds large builds in inspected files before the Director writes
-            - shows percent progress on the in-app Update button
+            - shows public Build progress instead of raw provider reasoning
+            - keeps Thought and tool batches in chronological segment order
+            - finishes with one Summary row and one concise Completed card
+            - reports cancelled and failed Build runs honestly
             - keeps Adaptive as the default; this update is not forced
 
             Remote release gates:
+            - Build timeline Playwright coverage for live, Adaptive, Plan Apply, restore, cancelled, failed, 390px, and reduced-motion runs
             - AGENTIC Workbench Playwright coverage for live, simple, successful, partial, cancelled, and unverified runs
             - TypeScript, production build, FPS, Preview Computer Use, Ask-mode, reply-formatting, Cursor lifecycle, Rust formatting, and Windows native tests
 
@@ -128,5 +129,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: "AGENTIC runs up to six read-only workers in parallel, splits Thinking from Tools, and inspects the workspace before the Director writes. The Update button shows percent progress. Adaptive remains the default and this update is not forced."
+          UPDATE_WHATS_NEW: "Build, Adaptive routed to Build, and Plan Apply now show a chronological Thought, tools, Summary, and Completed stream. Thought rows are public progress, not private chain-of-thought. Adaptive remains the default and this update is not forced."
         run: node scripts/publish-update-manifest.mjs --push-pages

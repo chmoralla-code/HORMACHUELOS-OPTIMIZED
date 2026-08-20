@@ -2571,20 +2571,22 @@ function handleAgentEvent(e: AgentEvent) {
     const s = sessionRegistry.get(sid) || sessions.find((x) => x.id === sid);
     if (s) {
       recordAgentEvent(s.messages, e);
-      if (
-        smartStateChanged ||
-        e.kind === "text" ||
-        e.kind === "tool_result" ||
-        e.kind === "done" ||
-        e.kind === "end" ||
-        e.kind === "cancelled" ||
-        e.kind === "reasoning" ||
-        e.kind === "thinking" ||
-        e.kind === "start" ||
-        e.kind === "multi_agent_batch" ||
-        e.kind === "tool_call" ||
-        e.kind === "question"
-      ) {
+    if (
+      smartStateChanged ||
+      e.kind === "text" ||
+      e.kind === "tool_result" ||
+      e.kind === "done" ||
+      e.kind === "end" ||
+      e.kind === "cancelled" ||
+      e.kind === "reasoning" ||
+      e.kind === "thinking" ||
+      e.kind === "start" ||
+      e.kind === "multi_agent_batch" ||
+      e.kind === "tool_call" ||
+      e.kind === "question" ||
+      e.kind === "build_progress" ||
+      e.kind === "mode_transition"
+    ) {
         if (e.kind === "text" || e.kind === "reasoning") {
           scheduleSessionSave(s);
         } else {
@@ -2665,7 +2667,7 @@ function handleAgentEvent(e: AgentEvent) {
     void maybeOpenBuildPreview(sid, e.kind);
   }
   // Persist session after meaningful events
-  if (smartStateChanged || e.kind === "text" || e.kind === "tool_result" || e.kind === "done" || e.kind === "end" || e.kind === "cancelled" || e.kind === "reasoning" || e.kind === "start" || e.kind === "multi_agent_batch") {
+  if (smartStateChanged || e.kind === "text" || e.kind === "tool_result" || e.kind === "done" || e.kind === "end" || e.kind === "cancelled" || e.kind === "reasoning" || e.kind === "start" || e.kind === "multi_agent_batch" || e.kind === "build_progress" || e.kind === "mode_transition") {
     persistCurrentSession(e.kind === "text" || e.kind === "reasoning");
   }
 }

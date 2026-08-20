@@ -5,8 +5,12 @@ import {
   appendMultiAgentBatchSnapshot,
   appendThinkingReasoningChunk,
   appendThinkingTranscriptEvent,
+  appendBuildProgressEvent,
+  appendModeTransitionEvent,
   assistantReplyLooksOpen,
+  boundBuildProgressText,
   coalesceSessionTurnLayout,
+  friendlyBuildProgressForTool,
   normalizeSessionPermissionMode,
   recordAgentEvent,
   redactToolArguments,
@@ -206,6 +210,12 @@ export class Chat {
   /** Current AGENTIC turn; older terminal workbenches remain in the transcript. */
   private agenticWorkbench: AgenticWorkbench | null = null;
   private agenticRun = false;
+  /** Effective Build timeline: explicit Build, Adaptive → Build, or Plan → Apply. */
+  private buildTimeline = false;
+  /** True once the current Build thought segment has started tools. */
+  private buildSegmentHasTools = false;
+  /** Host iteration/segment currently rendered as a Build Thought row. */
+  private buildSegmentId = -1;
 
   constructor(handlers: {
     onSend: (submission: ChatPromptSubmission) => void;
@@ -1830,6 +1840,7 @@ export class Chat {
     this.toolBatchFailures = 0;
     this.toolBatchResultIds.clear();
     this.toolBatchOpen = false;
+    this.resetBuildTimelineState();
     this.setActivePermissionMode("plan");
     clear(this.node);
     const empty = div("chat-empty");
@@ -1855,6 +1866,7 @@ export class Chat {
     this.toolBatchFailures = 0;
     this.toolBatchResultIds.clear();
     this.toolBatchOpen = false;
+    this.resetBuildTimelineState();
     this.setActivePermissionMode("plan");
     this.pendingAssistant = null;
     this.suppressedAssistantRaw = "";
@@ -1893,6 +1905,10 @@ export class Chat {
     this.runCompleted = false;
     this.finalizeThinking();
     this.flushAssistantPaints();
+    this.sealToolBatch();
+    this.buildSegmentHasTools = false;
+    this.buildTimeline = false;
+    this.buildSegmentId = -1;
     this.pendingAssistant = null;
     this.pendingAssistantMsg = null;
     this.suppressedAssistantRaw = "";
@@ -1926,6 +1942,7 @@ export class Chat {
     this.toolBatchFailures = 0;
     this.toolBatchResultIds.clear();
     this.toolBatchOpen = false;
+    this.resetBuildTimelineState();
     this.setActivePermissionMode("plan");
     this.pendingAssistant = null;
     this.pendingAssistantMsg = null;
@@ -1951,6 +1968,7 @@ export class Chat {
           this.runCompleted = false;
           this.setActivePermissionMode(msg.permissionMode);
           this.agenticRun = msg.permissionMode === "agentic";
+          if (msg.permissionMode === "build") this.activateBuildTimeline();
           if (this.agenticRun) {
             const runId = msg.runId || `replay-${msg.at || this.now()}`;
             const workbench = this.startAgenticWorkbench(runId, msg.at);
@@ -1992,13 +2010,22 @@ export class Chat {
           this.showMultiAgentBatch(msg.tools);
           break;
         case "thinking":
-          if (!this.agenticRun) {
+          if (!this.agenticRun && !this.isBuildTimeline()) {
             this.showThinking(msg.iteration);
             if (msg.text) this.appendThinkingText(msg.text);
             this.markThinkingDone();
-          } else if (msg.text) {
+          } else if (msg.text && this.agenticRun) {
             this.ensureAgenticWorkbench(undefined, msg.at).appendThinking(msg.text);
           }
+          break;
+        case "mode_transition":
+          this.applyModeTransition(msg);
+          break;
+        case "build_progress":
+          this.applyBuildProgress(msg);
+          if (msg.final) break;
+          if (!this.replaying) this.markThinkingDone();
+          else this.sealThoughtBeforeTools();
           break;
         case "assistant": {
           this.hideThinking();
@@ -2056,14 +2083,18 @@ export class Chat {
         case "cancelled":
           this.runCompleted = false;
           this.sealPendingTools("cancelled");
-          if (this.agenticRun) this.ensureAgenticWorkbench(undefined, msg.at).cancel();
-          else this.appendSystemNote("Run cancelled.", msg.at);
+        if (this.agenticRun) this.ensureAgenticWorkbench(undefined, msg.at).cancel();
+        else {
+          if (this.isBuildTimeline()) this.appendBuildFinalSummary(this.deriveBuildTerminalSummary("cancelled"));
+          this.appendSystemNote("Run cancelled.", msg.at);
+        }
           if (msg.workMs != null) this.sealAiTimestamp(msg.at, msg.workMs);
           break;
       }
     }
     this.replaying = false;
     this.coalesceAllTurnsChrome();
+    this.placeTurnChromeInOrder();
     if (opts?.running) this.resumeOpenRunAfterLoad();
     const terminal = [...msgs].reverse().find(
       (m) => m.type === "done" || m.type === "end" || m.type === "cancelled",
@@ -2393,7 +2424,222 @@ export class Chat {
               : "plan";
     this.node.classList.toggle("chat-multi-agent", this.activePermissionMode === "multi_agent");
     this.node.classList.toggle("chat-agentic", this.activePermissionMode === "agentic");
+    this.node.classList.toggle("chat-build-timeline", this.isBuildTimeline());
     if (this.activePermissionMode !== "multi_agent") this.multiAgentToolIds.clear();
+  }
+
+  private isBuildTimeline(): boolean {
+    return this.buildTimeline || this.activePermissionMode === "build";
+  }
+
+  private resetBuildTimelineState() {
+    this.buildTimeline = false;
+    this.buildSegmentHasTools = false;
+    this.buildSegmentId = -1;
+    this.node.classList.remove("chat-build-timeline");
+  }
+
+  private activateBuildTimeline() {
+    this.buildTimeline = true;
+    if (this.activePermissionMode !== "build") this.setActivePermissionMode("build");
+    else this.node.classList.add("chat-build-timeline");
+  }
+
+  private applyModeTransition(payload: { from?: string; to?: string; reason?: string }) {
+    if (String(payload?.to || "").toLowerCase() !== "build") return;
+    this.sealThoughtBeforeTools();
+    this.sealToolBatch();
+    this.thinking = null;
+    this.thinkingBody = null;
+    this.buildSegmentHasTools = false;
+    this.buildSegmentId = -1;
+    this.activateBuildTimeline();
+  }
+
+  private currentBuildProgressWrap(): HTMLElement | null {
+    if (
+      this.thinking?.isConnected
+      && this.thinking.classList.contains("is-build-progress")
+      && !this.thinking.classList.contains("is-build-summary")
+    ) {
+      return this.thinking;
+    }
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let found: HTMLElement | null = null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    while (node) {
+      if (
+        node instanceof HTMLElement
+        && node.classList.contains("thinking-wrap")
+        && node.classList.contains("is-build-progress")
+        && !node.classList.contains("is-build-summary")
+      ) {
+        found = node;
+      }
+      node = node.nextElementSibling;
+    }
+    return found;
+  }
+
+  private syncBuildThoughtToggle(wrap: HTMLElement, open: boolean) {
+    const btn =
+      (wrap.querySelector(".thinking-toggle-row") as HTMLElement | null) ||
+      (wrap.querySelector(".thinking-dots-btn") as HTMLElement | null);
+    if (!btn) return;
+    const summary = wrap.classList.contains("is-build-summary");
+    const noun = summary ? "summary" : "progress";
+    btn.setAttribute("aria-expanded", String(open));
+    btn.setAttribute("aria-label", open ? `Hide build ${noun}` : `Show build ${noun}`);
+    btn.title = open ? `Hide build ${noun}` : `Show build ${noun}`;
+  }
+
+  private paintBuildThought(wrap: HTMLElement, text: string, live: boolean) {
+    wrap.classList.add("is-build-progress");
+    wrap.setAttribute("data-thought", text);
+    wrap.setAttribute("data-build-segment", String(Math.max(0, this.buildSegmentId)));
+    wrap.setAttribute("aria-label", wrap.classList.contains("is-build-summary") ? "Build summary" : "Build progress");
+    wrap.setAttribute("aria-live", live ? "polite" : "off");
+    if (this.thinking === wrap) {
+      this.thinkingText = text;
+      this.setThinkingDetail(text, true, true);
+      this.setThinkingLabel(text);
+      this.syncBuildThoughtToggle(wrap, true);
+      return;
+    }
+    const label = wrap.querySelector(".thinking-simple-label") as HTMLElement | null;
+    if (label && !wrap.classList.contains("is-build-summary")) label.textContent = text;
+    const stream = wrap.querySelector(".thinking-stream") as HTMLElement | null;
+    if (stream) stream.textContent = text;
+    this.syncBuildThoughtToggle(wrap, wrap.classList.contains("expanded"));
+  }
+
+  private applyBuildProgress(payload: {
+    segment?: number;
+    iteration?: number;
+    phase?: string;
+    status?: string;
+    text?: string;
+    final?: boolean;
+  }) {
+    if (this.agenticRun) return;
+    if (!this.isBuildTimeline()) return;
+    const text = boundBuildProgressText(payload?.text || "");
+    if (!text) return;
+    if (payload?.final) {
+      this.appendBuildFinalSummary(text);
+      return;
+    }
+    const segment = Math.max(0, Number(payload?.segment ?? payload?.iteration) || 0);
+    if (this.buildSegmentId === segment) {
+      const existing = this.currentBuildProgressWrap();
+      if (existing) {
+        this.paintBuildThought(
+          existing,
+          text,
+          !this.buildSegmentHasTools && existing === this.thinking,
+        );
+        return;
+      }
+    }
+    if (this.buildSegmentId >= 0 && segment < this.buildSegmentId) return;
+    this.sealThoughtBeforeTools();
+    this.sealToolBatch();
+    this.thinkingBody = null;
+    this.buildSegmentHasTools = false;
+    this.openBuildThought(segment);
+    const wrap = this.thinking;
+    if (!wrap) return;
+    this.paintBuildThought(wrap, text, true);
+  }
+
+  private openBuildThought(iteration: number) {
+    const segment = Math.max(0, Number(iteration) || 0);
+    const live = this.thinking;
+    if (
+      live?.isConnected
+      && !live.classList.contains("thinking-done")
+      && !this.buildSegmentHasTools
+      && (this.buildSegmentId < 0 || this.buildSegmentId === segment)
+    ) {
+      this.buildSegmentId = segment;
+      live.classList.add("is-build-progress");
+      live.setAttribute("data-build-segment", String(segment));
+      live.setAttribute("aria-label", "Build progress");
+      live.setAttribute("aria-live", "polite");
+      return;
+    }
+    if (this.buildSegmentHasTools && this.buildSegmentId === segment) return;
+    if (this.buildSegmentId >= 0 && segment < this.buildSegmentId) return;
+    this.sealThoughtBeforeTools();
+    this.sealToolBatch();
+    this.thinkingBody = null;
+    this.thinkingText = "";
+    this.thinkingTarget = "";
+    this.thinkingRevealed = 0;
+    this.thinkingHasReasoning = false;
+    this.buildSegmentHasTools = false;
+    this.buildSegmentId = segment;
+    this.showThinking(iteration);
+    const wrap = this.thinking;
+    if (!wrap) return;
+    wrap.classList.add("is-build-progress");
+    wrap.setAttribute("data-build-segment", String(segment));
+    wrap.setAttribute("aria-label", "Build progress");
+    wrap.setAttribute("aria-live", "polite");
+  }
+
+  private appendBuildFinalSummary(text: string) {
+    const summary = boundBuildProgressText(text);
+    if (!summary) return;
+    if (this.latestActivityAfterLastUser(".thinking-wrap.is-build-summary")) return;
+    this.sealThoughtBeforeTools();
+    this.sealToolBatch();
+    this.thinkingBody = null;
+    this.buildSegmentHasTools = false;
+    this.showThinking(0);
+    const wrap = this.thinking;
+    if (!wrap) return;
+    wrap.classList.add("is-build-progress", "is-build-summary");
+    this.thinkingText = summary;
+    this.setThinkingDetail(summary, true, true);
+    wrap.setAttribute("data-thought", summary);
+    this.markThinkingDone(0);
+    const toggle = wrap.querySelector(".thinking-toggle-row") as HTMLElement | null;
+    const label = toggle?.querySelector(".thinking-simple-label") as HTMLElement | null;
+    if (label) label.textContent = "Summary";
+    wrap.setAttribute("aria-label", "Build summary");
+    wrap.setAttribute("aria-live", "off");
+    this.setThinkingBodyOpen(true, wrap);
+    this.thinking = null;
+    this.thinkingBody = null;
+    this.placeTurnChromeInOrder();
+  }
+
+  private deriveBuildTerminalSummary(reason?: string): string {
+    const normalized = String(reason || "").trim().toLowerCase();
+    if (normalized === "cancelled" || this.userCancelled) return "Run cancelled.";
+    if (this.toolBatchFailures > 0 || this.node.querySelector(".tool-card.err, .tool-card.error, .tool-card.failed")) {
+      return "Some checks need attention.";
+    }
+    if (normalized && !["completed", "no_tool_calls", "done"].includes(normalized)) {
+      return "The run finished with remaining work.";
+    }
+    if (this.buildSegmentHasTools || this.hasUsedTools) return "The requested change is complete.";
+    return "The requested change is complete.";
+  }
+
+  private ensureBuildThoughtBeforeTools(name: string) {
+    if (!this.isBuildTimeline() || this.agenticRun) return;
+    const existing = (this.thinking?.getAttribute("data-thought") || this.thinkingText || "").trim();
+    if (existing) return;
+    this.applyBuildProgress({
+      segment: Math.max(0, this.buildSegmentId),
+      iteration: Math.max(0, this.buildSegmentId),
+      text: friendlyBuildProgressForTool(name),
+      status: "active",
+      phase: "working",
+    });
   }
 
   private isMultiAgentRun(): boolean {
@@ -2875,7 +3121,7 @@ export class Chat {
       this.placeTurnChromeInOrder();
       return;
     }
-    const existing = this.latestActivityAfterLastUser(".tool-batch-wrap");
+    const existing = this.isBuildTimeline() ? null : this.latestActivityAfterLastUser(".tool-batch-wrap");
     if (existing) {
       this.toolBatchEl = existing;
       this.toolBatchOpen = true;
@@ -2941,6 +3187,41 @@ export class Chat {
   /** One turn: Thought → Ran N → answer. After a Plan chooser, chrome sits under the options. */
   private placeTurnChromeInOrder() {
     if (this.replaying) return;
+    if (this.isBuildTimeline()) {
+      const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+      const lastUser = users[users.length - 1] || null;
+      const answer = this.pendingAssistantMsg?.isConnected
+        ? this.pendingAssistantMsg
+        : this.latestAssistantMsgAfterLastUser();
+      const summaryThought = this.latestActivityAfterLastUser(".thinking-wrap.is-build-summary");
+      const delivery = this.latestActivityAfterLastUser(".done-card, .summary-card");
+      const tail = [answer, summaryThought, delivery].filter(
+        (node): node is HTMLElement => !!node?.isConnected,
+      );
+      if (!tail.length) return;
+      let ref: HTMLElement | null = lastUser;
+      let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+      while (node) {
+        const current = node as HTMLElement;
+        node = node.nextElementSibling;
+        if (tail.includes(current)) continue;
+        if (
+          current.classList.contains("thinking-wrap") ||
+          current.classList.contains("tool-batch-wrap") ||
+          current.classList.contains("tool-card-wrap") ||
+          current.classList.contains("question-card")
+        ) {
+          ref = current;
+        }
+      }
+      for (const item of tail) {
+        if (ref) {
+          if (item.previousElementSibling !== ref) ref.after(item);
+        }
+        ref = item;
+      }
+      return;
+    }
     const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
     const lastUser = users[users.length - 1] || null;
     const thought = this.latestActivityAfterLastUser(".thinking-wrap");
@@ -3063,13 +3344,20 @@ export class Chat {
     const batches: HTMLElement[] = [];
     const answers: HTMLElement[] = [];
     let node: Element | null = start;
+    let buildTimeline = false;
     while (node && node !== end) {
       const current = node as HTMLElement;
       const next = node.nextElementSibling;
       if (current.classList.contains("thinking-wrap")) thoughts.push(current);
       else if (current.classList.contains("tool-batch-wrap")) batches.push(current);
       else if (current.classList.contains("msg") && current.classList.contains("assistant")) answers.push(current);
+      if (current.classList.contains("is-build-progress") || current.classList.contains("chat-build-timeline")) {
+        buildTimeline = true;
+      }
       node = next;
+    }
+    if (buildTimeline || thoughts.some((item) => item.classList.contains("is-build-progress"))) {
+      return;
     }
 
     const primaryThought = thoughts[0] || null;
@@ -3254,9 +3542,23 @@ export class Chat {
   }
 
   private insertionPointAfterCurrentTools(): Element | null {
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    let last: Element | null = null;
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    while (node) {
+      if (
+        node instanceof HTMLElement
+        && (node.classList.contains("tool-batch-wrap") || node.classList.contains("tool-card-wrap"))
+      ) {
+        last = node;
+      }
+      node = node.nextElementSibling;
+    }
+    if (last) return last;
     const batch = this.toolBatchEl;
     if (!batch?.isConnected) return null;
-    let last: Element = batch;
+    last = batch;
     let sib = batch.nextElementSibling;
     while (sib instanceof HTMLElement && sib.classList.contains("tool-card-wrap")) {
       last = sib;
@@ -3446,6 +3748,13 @@ export class Chat {
       this.showPostChooserActivity("Waiting for your choice");
       return;
     }
+    if (this.isBuildTimeline()) {
+      if (this.thinking && !this.thinking.classList.contains("thinking-done") && this.thinking.isConnected) {
+        this.setThinkingLabel(this.thinkingText.trim() || activity);
+        this.scrollToBottom();
+      }
+      return;
+    }
     if (this.hasAnsweredQuestionThisTurn()) {
       if (this.pendingTools.size > 0) {
         this.placeTurnChromeInOrder();
@@ -3598,8 +3907,12 @@ export class Chat {
       (host.querySelector(".thinking-dots-btn") as HTMLElement | null);
     if (btn) {
       btn.setAttribute("aria-expanded", String(open));
-      btn.title = open ? "Hide what it's thinking" : "Show what it's thinking";
-      btn.setAttribute("aria-label", open ? "Hide thinking" : "Show thinking");
+      if (host.classList.contains("is-build-progress")) {
+        this.syncBuildThoughtToggle(host, open);
+      } else {
+        btn.title = open ? "Hide what it's thinking" : "Show what it's thinking";
+        btn.setAttribute("aria-label", open ? "Hide thinking" : "Show thinking");
+      }
       btn.classList.toggle("is-open", open);
     }
   }
@@ -3959,15 +4272,19 @@ export class Chat {
     wrap.classList.add("thinking-done", "has-detail");
     wrap.classList.remove("thinking-enter", "is-typing", "thinking-wave-live");
     wrap.classList.add("dots-frozen");
+    if (wrap.classList.contains("is-build-progress")) wrap.setAttribute("aria-live", "off");
 
-    // Cursor-style summary row: "Thought briefly" / "Thought for 3s" + chevron
     const toggle =
       (wrap.querySelector(".thinking-toggle-row") as HTMLElement | null) ||
       (wrap.querySelector(".thinking-dots-btn") as HTMLElement | null);
     if (toggle) {
       toggle.classList.add("thinking-toggle-row");
       toggle.classList.remove("thinking-dots-btn", "thinking-simple", "thinking-row");
-      const summary = this.thoughtSummaryLabel(elapsed);
+      const summary = wrap.classList.contains("is-build-summary")
+        ? "Summary"
+        : wrap.classList.contains("is-build-progress")
+          ? sealedText
+          : this.thoughtSummaryLabel(elapsed);
       toggle.innerHTML =
         `<span class="thinking-simple-label">${escapeHtml(summary)}</span>` +
         `<span class="thinking-chev" aria-hidden="true">${icon("chevronDown", 12)}</span>`;
@@ -4288,9 +4605,21 @@ export class Chat {
   showThinking(iteration: number) {
     this.clearIdleActivityTimer();
     this.clearRunningIndicator();
+    if (this.isBuildTimeline() && !this.agenticRun) {
+      if (
+        this.thinking
+        && !this.thinking.classList.contains("thinking-done")
+        && !this.replaying
+        && !this.buildSegmentHasTools
+      ) {
+        this.setThinkingLabel(this.thinkingText.trim() || this.liveThinkingLabel());
+        this.scrollToBottom();
+        return;
+      }
+    }
     // Reuse live panel when possible so detail doesn't flash away
     if (this.thinking && !this.thinking.classList.contains("thinking-done") && !this.replaying) {
-      if (this.hasUsedTools) {
+      if (this.hasUsedTools && !this.isBuildTimeline()) {
         this.sealThoughtBeforeTools();
         return;
       }
@@ -4305,7 +4634,7 @@ export class Chat {
       return;
     }
 
-    const reusable = this.latestActivityAfterLastUser(".thinking-wrap");
+    const reusable = this.isBuildTimeline() ? null : this.latestActivityAfterLastUser(".thinking-wrap");
     if (reusable) {
       this.thinking = reusable;
       this.thinkingBody = reusable.querySelector(".thinking-body") as HTMLElement | null;
@@ -4379,11 +4708,15 @@ export class Chat {
     wrap.appendChild(toggle);
     wrap.appendChild(panel);
     this.decorateThinkingWrap(wrap);
-    const before =
-      this.latestActivityAfterLastUser(".tool-batch-wrap") ||
-      this.pendingAssistantMsg ||
-      this.latestAssistantMsgAfterLastUser();
-    if (before?.isConnected) {
+    const afterTools = this.isBuildTimeline() ? this.insertionPointAfterCurrentTools() : null;
+    const before = afterTools
+      ? null
+      : this.latestActivityAfterLastUser(".tool-batch-wrap") ||
+        this.pendingAssistantMsg ||
+        this.latestAssistantMsgAfterLastUser();
+    if (afterTools instanceof HTMLElement) {
+      afterTools.after(wrap);
+    } else if (before?.isConnected && !this.isBuildTimeline()) {
       this.node.insertBefore(wrap, before);
     } else {
       this.node.appendChild(wrap);
@@ -4457,6 +4790,7 @@ export class Chat {
    */
   private revealThoughtWhenReplyMissing() {
     if (this.replaying) return;
+    if (this.isBuildTimeline()) return;
     const pending = String((this.pendingAssistant as { __raw?: string } | null)?.__raw || "").trim();
     if (pending) return;
     if (this.hasVisibleAssistantReplyAfterLastUser()) return;
@@ -4903,7 +5237,9 @@ export class Chat {
 
     this.hasUsedTools = true;
     this.discardProvisionalAssistantBeforeTools();
+    this.ensureBuildThoughtBeforeTools(name);
     this.sealThoughtBeforeTools();
+    if (this.isBuildTimeline()) this.buildSegmentHasTools = true;
     // Status lives on the tool card — no floating "Running · …" row
     this.clearRunningIndicator();
 
@@ -4949,8 +5285,9 @@ export class Chat {
     this.clearIdleActivityTimer();
     this.hasUsedTools = true;
     this.discardProvisionalAssistantBeforeTools();
-    // Thought process first — seal it before tools spawn
+    this.ensureBuildThoughtBeforeTools(name);
     this.sealThoughtBeforeTools();
+    if (this.isBuildTimeline()) this.buildSegmentHasTools = true;
     this.promoteToolPreview(previewId, id, name, args);
     this.pendingTools.set(id, { id, name, arguments: args });
     // Show the tool card immediately while it runs (result fills in later)
@@ -5451,6 +5788,13 @@ export class Chat {
     this.flushAssistantPaints();
     if (!planReady) this.collapseDeliveryEssayInLatestReply();
     this.compactLatestAssistantTranscript();
+    if (!planReady && this.isBuildTimeline()) {
+      const lead = this.summarySentences(data.summary)[0]
+        || this.summarySentences(data.description)[0]
+        || this.cleanSentence(data.summary)
+        || this.deriveBuildTerminalSummary("completed");
+      this.appendBuildFinalSummary(lead);
+    }
     this.finalizeThinking();
     this.sealPendingTools("done");
     this.clearRecoverableMultiAgentAttention();
@@ -5463,6 +5807,17 @@ export class Chat {
     const title = this.cleanSentence(data.title) || (planReady ? "Plan ready" : "Done");
     const completion = this.buildCompletionSummary(data);
     let primaryText = completion.primary;
+    if (!planReady && this.isBuildTimeline()) {
+      const summaryRow = this.latestActivityAfterLastUser(".thinking-wrap.is-build-summary");
+      const summaryText = (summaryRow?.getAttribute("data-thought") || "").trim().toLowerCase();
+      if (summaryText && primaryText && (
+        primaryText.trim().toLowerCase() === summaryText
+        || summaryText.includes(primaryText.trim().toLowerCase())
+        || primaryText.trim().toLowerCase().includes(summaryText)
+      )) {
+        primaryText = "";
+      }
+    }
     // Don't echo the assistant reply again under Done (Cursor / chat turns)
     const lastAssistant = this.latestAssistantInCurrentRun();
     if (primaryText && lastAssistant?.text) {
@@ -5686,6 +6041,9 @@ export class Chat {
     this.flushAssistantPaints();
     this.finalizeThinking();
     this.ensureVisibleReplyAfterEnd(reason);
+    if (this.isBuildTimeline() && !this.latestActivityAfterLastUser(".thinking-wrap.is-build-summary")) {
+      this.appendBuildFinalSummary(this.deriveBuildTerminalSummary(reason));
+    }
     this.mergeCurrentTurnAssistantBubbles();
     this.placeTurnChromeInOrder();
     this.sealPendingTools(completed ? "done" : "interrupted");
@@ -5928,12 +6286,33 @@ export class Chat {
         break;
       }
       case "thinking":
-        if (!this.agenticRun) appendThinkingTranscriptEvent(this.messages, e.payload.iteration, at);
+        if (!this.agenticRun) {
+          if (!this.isBuildTimeline()) appendThinkingTranscriptEvent(this.messages, e.payload.iteration, at);
+        }
         break;
       case "reasoning":
         if (!this.agenticRun) {
-          appendThinkingReasoningChunk(this.messages, e.payload.text, e.payload.iteration ?? 0, at);
+          if (!this.isBuildTimeline()) {
+            appendThinkingReasoningChunk(this.messages, e.payload.text, e.payload.iteration ?? 0, at);
+          }
         }
+        break;
+      case "mode_transition":
+        appendModeTransitionEvent(this.messages, e.payload, at);
+        break;
+      case "build_progress":
+        appendBuildProgressEvent(
+          this.messages,
+          {
+            segment: e.payload.segment ?? e.payload.iteration,
+            iteration: e.payload.iteration ?? e.payload.segment,
+            phase: e.payload.phase,
+            status: e.payload.status,
+            text: e.payload.text,
+            final: e.payload.final === true,
+          },
+          at,
+        );
         break;
       case "text":
         return appendAssistantTranscriptChunk(
@@ -6013,6 +6392,9 @@ export class Chat {
         this.runCompleted = false;
         this.setActivePermissionMode(e.payload.permission_mode);
         this.agenticRun = normalizeSessionPermissionMode(e.payload.permission_mode) === "agentic";
+        if (normalizeSessionPermissionMode(e.payload.permission_mode) === "build") {
+          this.activateBuildTimeline();
+        }
         if (this.agenticRun) {
           this.startAgenticWorkbench(e.session_id);
         } else {
@@ -6040,7 +6422,8 @@ export class Chat {
         this.agenticWorkbench?.updateAgent(e.payload.agent);
         break;
       case "thinking":
-        if (!this.agenticRun) this.showThinking(e.payload.iteration);
+        if (!this.agenticRun && !this.isBuildTimeline()) this.showThinking(e.payload.iteration);
+        else if (!this.agenticRun && this.isBuildTimeline()) this.openBuildThought(e.payload.iteration);
         break;
       case "status": {
         const message = (e.payload.message || "Reconnecting…").trim() || "Reconnecting…";
@@ -6054,6 +6437,10 @@ export class Chat {
           break;
         }
         this.clearIdleActivityTimer();
+        if (this.isBuildTimeline()) {
+          this.scrollToBottom();
+          break;
+        }
         // Force the live label even if a tool preview is visible — reconnect
         // must stay obvious while the run waits for network.
         if (this.thinking && !this.thinking.classList.contains("thinking-done") && this.thinking.isConnected) {
@@ -6066,12 +6453,21 @@ export class Chat {
         break;
       }
       case "reasoning":
+        if (this.isBuildTimeline() && !this.agenticRun) break;
         if (!this.agenticRun) {
           this.clearIdleActivityTimer();
           this.appendThinkingText(e.payload.text);
         } else {
           this.agenticWorkbench?.appendThinking(e.payload.text);
         }
+        break;
+      case "mode_transition":
+        this.applyModeTransition(e.payload);
+        break;
+      case "build_progress":
+        this.applyBuildProgress(e.payload);
+        break;
+      case "task_progress":
         break;
       case "text":
         this.appendAssistantText(
@@ -6166,7 +6562,10 @@ export class Chat {
         // Cancel = full stop of this turn; drop queued follow-ups so they don't auto-fire
         this.clearPendingQueue();
         if (this.agenticRun) this.agenticWorkbench?.cancel();
-        else this.appendSystemNote("Run cancelled.");
+        else {
+          if (this.isBuildTimeline()) this.appendBuildFinalSummary(this.deriveBuildTerminalSummary("cancelled"));
+          this.appendSystemNote("Run cancelled.");
+        }
         if (this.stopBtn) {
           this.stopBtn.classList.add("stopping");
           this.stopBtn.disabled = true;

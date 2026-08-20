@@ -25,6 +25,7 @@ export default defineConfig({
         replyLayout: "src/reply-layout-harness.html",
         agenticLayout: "src/agentic-layout-harness.html",
         agenticMode: "src/agentic-mode-harness.html",
+        buildTimeline: "src/build-timeline-harness.html",
       },
     },
   },
