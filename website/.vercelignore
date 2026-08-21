@@ -10,5 +10,6 @@ README.md
 **/*.exe
 **/*.zip
 .tmp/**
-!downloads/Hormachuelos_0.1.76_x64_en-US.msi
-!downloads/Hormachuelos_0.1.76_x64-setup.exe
+# Installer files are served from GitHub Releases, not Vercel — uploading the
+# ~78MB whitelisted pair here caused 413/504 upload failures.
+downloads/**

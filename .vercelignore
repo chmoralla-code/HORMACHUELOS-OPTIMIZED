@@ -1,0 +1,18 @@
+# The Vercel project's root directory is "website", so only website/ needs to
+# reach the server. Without this, the CLI sweeps the whole repo — including
+# ~11GB of src-tauri/target build artifacts — into every upload, which blows
+# through the free plan's 5000-files-per-24h upload limit.
+src-tauri/
+node_modules/
+dist/
+src/
+public/
+scripts/
+supabase/
+test-results/
+tests/
+docs/
+release-notes/
+.github/
+.claude/
+.vercel/
