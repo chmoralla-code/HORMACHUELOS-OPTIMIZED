@@ -145,7 +145,7 @@ test("save_settings persists AGENTIC with orchestrated or thorough capability", 
   assert.match(spec, /not\.toContainText\("Could not save mode"\)/);
 });
 
-test("Execution Workbench and Delivery Board meet the responsive accessibility contract", async () => {
+test("Execution Workbench renders one linear THOUGHT → TOOL feed with an honest SUMMARY", async () => {
   const [component, css, harness, spec] = await Promise.all([
     read("src/components/agentic-workbench.ts"),
     read("src/theme/agentic-workbench.css"),
@@ -153,35 +153,34 @@ test("Execution Workbench and Delivery Board meet the responsive accessibility c
     read("tests/agentic-layout.spec.mjs"),
   ]);
 
-  assert.match(component, /const LANES: Lane\[\] = \["progress", "tools", "agents"\]/);
-  assert.match(component, /Thinking/);
+  assert.match(component, /agentic-feed/);
   assert.match(component, /appendThinking/);
-  assert.match(component, /agentic-thinking-stream/);
-  assert.match(component, /agentic-lane-\$\{lane\}/);
+  assert.match(component, /agentic-thought/);
+  assert.match(component, /"THOUGHT"/);
+  assert.match(component, /"TOOL"/);
   for (const phase of ["ask", "plan", "research", "multi_agent", "build"]) {
     assert.ok(component.includes(`"${phase}"`), `missing phase ${phase}`);
   }
-  assert.match(component, /setAttribute\("role", "tablist"\)/);
-  assert.match(component, /aria-controls/);
-  assert.match(component, /ArrowLeft|ArrowRight/);
   assert.match(component, /aria-live/);
-  assert.match(component, /Inspect run/);
-  assert.match(component, /Delivery Board/);
+  assert.match(component, /SUMMARY/);
   assert.match(component, /Verification/);
   assert.match(component, /Agent Contributions/);
   assert.doesNotMatch(component, /tool-spawn/);
   assert.match(component, /toolViews/);
+  assert.doesNotMatch(component, /LANES|role", "tablist"|Inspect run/);
   assert.match(css, /@media\s*\(max-width:\s*959px\)/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(css, /overflow-x:\s*auto/);
+  assert.match(css, /fps-optimized \.agentic-workbench/);
+  assert.doesNotMatch(css, /transition:(?!\s*none)/);
   assert.match(harness, /scenario/);
+  assert.match(harness, /appendThinking/);
   assert.match(spec, /width:\s*390/);
   assert.match(spec, /scrollWidth/);
-  assert.match(spec, /toBeFocused/);
   assert.match(spec, /reducedMotion/);
 });
 
-test("v1.3.4 release metadata is synchronized and remains optional", async () => {
+test("v1.3.5 release metadata is synchronized and remains optional", async () => {
   const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest] = await Promise.all([
     read("package.json"),
     read("package-lock.json"),
@@ -189,18 +188,18 @@ test("v1.3.4 release metadata is synchronized and remains optional", async () =>
     read("src-tauri/Cargo.lock"),
     read("src-tauri/tauri.conf.json"),
     read(".github/workflows/release-optimized.yml"),
-    read("release-notes/1.3.4.md"),
+    read("release-notes/1.3.5.md"),
     read("scripts/publish-update-manifest.mjs"),
   ]);
   const pkg = JSON.parse(pkgRaw);
-  assert.equal(pkg.version, "1.3.4");
-  assert.match(lock, /"version": "1\.3\.4"/);
-  assert.match(cargo, /version = "1\.3\.4"/);
-  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.4"/);
-  assert.equal(JSON.parse(tauri).version, "1.3.4");
+  assert.equal(pkg.version, "1.3.5");
+  assert.match(lock, /"version": "1\.3\.5"/);
+  assert.match(cargo, /version = "1\.3\.5"/);
+  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.5"/);
+  assert.equal(JSON.parse(tauri).version, "1.3.5");
   assert.match(workflow, /AGENTIC Workbench/);
   assert.match(workflow, /test:agentic/);
   assert.match(workflow, /playwright\.agentic\.config\.mjs/);
-  assert.match(notes, /Build progress stays public and bounded/);
+  assert.match(notes, /Reasoning stays public and bounded/);
   assert.match(manifest, /forceUpdate:\s*false/);
 });

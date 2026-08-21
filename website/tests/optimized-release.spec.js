@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const VERSION = "1.3.4";
+const VERSION = "1.3.5";
 const RELEASE_BASE =
   `https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v${VERSION}`;
 const BASE_URL = process.env.HORMACHUELOS_WEBSITE_TEST_URL || "http://127.0.0.1:5174";
@@ -34,7 +34,7 @@ for (const viewport of [
     await expect(card).toContainText("AGENTIC Director");
     await expect(card).toContainText("Real read-only workers");
     await expect(card).toContainText("Execution Workbench");
-    await expect(card).toContainText("Evidence-backed Delivery Board");
+    await expect(card).toContainText("Honest SUMMARY board");
     await expect(card).toContainText("Clearline answers and safety");
 
     await expect(page.locator("#optimized-exe")).toHaveAttribute(

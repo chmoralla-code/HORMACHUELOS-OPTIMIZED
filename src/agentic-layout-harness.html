@@ -55,6 +55,11 @@
         assignment: "Own permissions, all writes, integration, verification, and delivery.",
         status: "running", toolCount: 2, usage: { totalTokens: 1840 },
       };
+      workbench.appendThinking(
+        "The request spans layout, event ownership, and test coverage, so I will fan out three " +
+        "read-only workers. Hypotheses to rule out: duplicated event listeners and a missing " +
+        "cancellation path. Files I will verify first: src/components/chat.ts and src/ipc.ts.",
+      );
       workbench.updateAgent(director);
       if (scenario !== "simple") {
         [
@@ -91,6 +96,12 @@
         });
       }
 
+      workbench.appendThinking(
+        "Worker evidence is consistent: event ownership is single-writer and the cancellation " +
+        "path reaches every worker. Remaining risk is the flaky provider retry, so the Director " +
+        "will re-run the deterministic suite before integrating.",
+      );
+
       const reply = document.createElement("article");
       reply.className = "msg assistant structured-reply";
       const body = document.createElement("div");
@@ -103,7 +114,7 @@
         "## Result",
         "",
         "- **Clear ownership:** workers gathered evidence; only the Director could write.",
-        "- **Readable delivery:** the answer remains full-width below the execution lanes.",
+        "- **Readable delivery:** the answer remains full-width below the thought and tool transcript.",
         "",
         "---",
         "",

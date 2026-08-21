@@ -113,6 +113,15 @@ const OPERATE_DIRECTOR: &str = "\nDIRECTOR JOB: OPERATE\n\
 - Drive Preview or Desktop with observe → act → check. A failed check is not completion.\n\
 - Do not write a delivery essay. Stop when the requested UI evidence exists.\n";
 
+/// Multi-agent runs render as one public THOUGHT → TOOL → THOUGHT transcript.
+/// Deliberate visible reasoning before every tool batch is the anti-hallucination
+/// gate: the model must commit to a plan in words before it spends a tool call.
+pub const MULTI_AGENT_THOUGHT_POLICY: &str = "\nMULTI-AGENT REPLY SHAPE (required):\n\
+- The visible reply must alternate exactly: THOUGHT, then tools, then THOUGHT, then tools, ... then a final SUMMARY. Never stack many tool batches without a THOUGHT between them.\n\
+- THOUGHT is long-form public progress, not private chain-of-thought: state what you know, the exact files and symbols you will verify, the hypotheses you are ruling out, and the risks. Write several sentences before the first tool call of every batch — never open a batch cold.\n\
+- Keep each tool batch small (at most 3 calls) and read-only discovery first. After each batch's results arrive, write the next THOUGHT interpreting them before spawning more tools.\n\
+- Finish with one SUMMARY section that states what changed, what was verified, and what remains. Never end on a tool result.\n";
+
 /// Host-owned job for this run. Answer never uses the build ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirectorJob {

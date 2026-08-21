@@ -2743,8 +2743,7 @@
   opacity: 1;
 }
 .agentic-workbench .tool-spawn,
-.agentic-tool-card.tool-spawn,
-.agentic-agent-card.tool-spawn {
+.agentic-tool-card.tool-spawn {
   animation: none !important;
 }
 .msg-enter {

@@ -99,22 +99,23 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Build activity timeline
+          releaseName: Hormachuelos Optimized v__VERSION__ · Agentic thought feed
           releaseBody: |
-            Build, Adaptive routed to Build, and Plan Apply now show a chronological **Thought → tools → Thought → tools → Summary → Completed** stream.
+            The AGENTIC Execution Workbench is now one linear **Thought → Tool → Thought → Tool → Summary** transcript.
 
-            Thought rows are short host-authored progress lines, not private provider chain-of-thought. Two tool rounds keep separate batches through live runs and session restore. The final Summary sentence is not repeated on the Completed card.
+            Reasoning is shown in full as THOUGHT blocks before and between tool batches. Workers must think first: a first tool batch without at least 200 characters of preceding reasoning is refused once with a host nudge. The Director thinks before each batch, and batches are capped at three tool calls.
 
             This release:
-            - shows public Build progress instead of raw provider reasoning
-            - keeps Thought and tool batches in chronological segment order
-            - finishes with one Summary row and one concise Completed card
-            - reports cancelled and failed Build runs honestly
+            - shows full reasoning as THOUGHT blocks instead of hiding or summarizing it
+            - gates the first tool batch behind a think-first check for every worker
+            - keeps tool rows inspectable with exact arguments and results
+            - closes every run with an honest SUMMARY board, including what was not verified
+            - reports cancelled and unverified runs as such — no invented passes
             - keeps Adaptive as the default; this update is not forced
 
             Remote release gates:
-            - Build timeline Playwright coverage for live, Adaptive, Plan Apply, restore, cancelled, failed, 390px, and reduced-motion runs
-            - AGENTIC Workbench Playwright coverage for live, simple, successful, partial, cancelled, and unverified runs
+            - AGENTIC Workbench Playwright coverage for live, simple, successful, partial, cancelled, unverified, 390px, and reduced-motion runs
+            - deterministic AGENTIC contract guards for routing, permissions, persistence, and release metadata sync
             - TypeScript, production build, FPS, Preview Computer Use, Ask-mode, reply-formatting, Cursor lifecycle, Rust formatting, and Windows native tests
 
             Windows note:
@@ -129,5 +130,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: "Build, Adaptive routed to Build, and Plan Apply now show a chronological Thought, tools, Summary, and Completed stream. Thought rows are public progress, not private chain-of-thought. Adaptive remains the default and this update is not forced."
+          UPDATE_WHATS_NEW: "The AGENTIC Execution Workbench is now one linear Thought, Tool, Thought, Tool, Summary transcript. Reasoning is shown in full before and between tool batches, workers must think first, and every run closes with an honest SUMMARY board. Adaptive remains the default and this update is not forced."
         run: node scripts/publish-update-manifest.mjs --push-pages

@@ -3144,11 +3144,18 @@ Describe each image briefly in the visible reply. Do not mention vision provider
                 );
                 let model_display = display_model_name(&settings.model);
                 let provider_display = display_provider_name(&settings.provider);
-                let smart_agent_policy = crate::smart_agent::SmartAgentRun::job_instructions(
-                    director_job,
-                    settings.smart_agent_enabled,
-                    fast_execution,
-                );
+                let smart_agent_policy = {
+                    let base = crate::smart_agent::SmartAgentRun::job_instructions(
+                        director_job,
+                        settings.smart_agent_enabled,
+                        fast_execution,
+                    );
+                    if permission_mode == "multi_agent" {
+                        format!("{base}{}", crate::smart_agent::MULTI_AGENT_THOUGHT_POLICY)
+                    } else {
+                        base.to_string()
+                    }
+                };
                 let task_profile_policy = task_profile.instructions();
                 let execution_profile_policy = execution_profile.instructions();
                 let trading_policy = trading_workspace_policy(&prompt);
@@ -3766,11 +3773,18 @@ The mode was not recognized. Do not mutate files or systems. Give a direct visib
         )
     );
     let smart_agent_enabled = settings.smart_agent_enabled && director_job.uses_ledger();
-    let smart_agent_policy = crate::smart_agent::SmartAgentRun::job_instructions(
-        director_job,
-        settings.smart_agent_enabled,
-        fast_execution,
-    );
+    let smart_agent_policy = {
+        let base = crate::smart_agent::SmartAgentRun::job_instructions(
+            director_job,
+            settings.smart_agent_enabled,
+            fast_execution,
+        );
+        if mode == "multi_agent" {
+            format!("{base}{}", crate::smart_agent::MULTI_AGENT_THOUGHT_POLICY)
+        } else {
+            base.to_string()
+        }
+    };
     let task_profile_policy = task_profile.instructions();
     let execution_profile_policy = execution_profile.instructions();
     let trading_policy = trading_workspace_policy(&prompt);

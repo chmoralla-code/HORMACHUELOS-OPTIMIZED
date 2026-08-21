@@ -25,6 +25,8 @@ test("treats revision builds as newer than the same three-part version", () => {
   assert.equal(isVersionNewer("1.3.2", "1.3.3"), false);
   assert.equal(isVersionNewer("1.3.4", "1.3.3"), true);
   assert.equal(isVersionNewer("1.3.3", "1.3.4"), false);
+  assert.equal(isVersionNewer("1.3.5", "1.3.4"), true);
+  assert.equal(isVersionNewer("1.3.4", "1.3.5"), false);
   assert.equal(isVersionNewer("1.3.0", "1.2.16"), true);
   assert.equal(isVersionNewer("1.2.16", "1.3.0"), false);
 });

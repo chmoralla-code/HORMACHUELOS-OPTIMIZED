@@ -1,5 +1,4 @@
 import { icon } from "./icons";
-import { setShimmerText } from "./util";
 import type {
   AgenticAgent,
   AgenticCompletion,
@@ -28,7 +27,6 @@ type ToolItem = {
   agentId: string;
   phase: AgenticPhase;
 };
-type Lane = "progress" | "tools" | "agents";
 
 const PHASES: { id: AgenticPhase; label: string }[] = [
   { id: "ask", label: "Ask" },
@@ -37,12 +35,9 @@ const PHASES: { id: AgenticPhase; label: string }[] = [
   { id: "multi_agent", label: "Multi-Agent" },
   { id: "build", label: "Build" },
 ];
-const LANES: Lane[] = ["progress", "tools", "agents"];
-const LANE_LABELS: Record<Lane, string> = {
-  progress: "Thinking",
-  tools: "Tools",
-  agents: "Agents",
-};
+
+/** One thought block holds up to this many characters before it is truncated. */
+const THOUGHT_CHAR_LIMIT = 8_000;
 
 function make<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -129,40 +124,31 @@ type ToolCardView = {
   result: HTMLElement;
 };
 
-/** One host-owned, replayable execution surface for an AGENTIC turn. */
+/**
+ * One linear THOUGHT → TOOL → THOUGHT transcript for an AGENTIC turn.
+ * Everything renders in arrival order inside a single feed: no lanes, no
+ * tabs, no filters, no animation — just the plain reasoning/tool rhythm.
+ */
 export class AgenticWorkbench {
   readonly root = make("section", "agentic-workbench");
   private readonly startedAt: number;
-  private readonly phaseNodes = new Map<AgenticPhase, HTMLElement>();
   private readonly agents = new Map<string, AgenticAgent>();
   private readonly tools = new Map<string, ToolItem>();
   private readonly toolViews = new Map<string, ToolCardView>();
-  private readonly agentNodes = new Map<string, HTMLDetailsElement>();
-  private readonly filterChips = new Map<string, HTMLButtonElement>();
-  private readonly panels = new Map<Lane, HTMLElement>();
-  private readonly progress = make("ol", "agentic-progress-list");
-  private readonly thinkingStream = make("div", "agentic-thinking-stream");
-  private thinkingText = "";
-  private readonly toolsList = make("div", "agentic-tool-list");
-  private readonly emptyTools = make("p", "agentic-empty", "Tool evidence will appear here.");
-  private readonly batchToggle = make("button", "agentic-tool-batch tool-batch-head");
-  private readonly batchLabel = make("span", "agentic-tool-batch-label tool-batch-label", "Running 0 tools");
-  private readonly agentsList = make("div", "agentic-agent-list");
-  private readonly filter = make("div", "agentic-tool-filter");
-  private readonly lanes = make("div", "agentic-lanes");
-  private readonly delivery = make("section", "agentic-delivery-board");
-  private readonly inspect = make("button", "agentic-inspect-button", "Inspect run");
+  private readonly agentNodes = new Map<string, HTMLElement>();
+  private readonly feed = make("div", "agentic-feed");
   private readonly currentPhase = make("strong", "agentic-current-phase", "Ask");
   private readonly elapsedFact = make("dd", "", "0s");
   private readonly workersFact = make("dd", "", "0");
   private readonly toolsFact = make("dd", "", "0");
   private readonly statusFact = make("dd", "", "Running");
   private readonly live = make("div", "agentic-live-region");
-  private readonly tabs: HTMLButtonElement[] = [];
+  private readonly delivery = make("section", "agentic-delivery-board");
   private phase: AgenticPhase = "ask";
-  private lane: Lane = "tools";
-  private selectedAgent = "all";
-  private toolsCollapsed = false;
+  private thoughtNode: HTMLElement | null = null;
+  private thoughtBody: HTMLElement | null = null;
+  private thoughtText = "";
+  private thoughtClosed = true;
   private timer: ReturnType<typeof setInterval> | null;
   private terminal = false;
 
@@ -192,76 +178,17 @@ export class AgenticWorkbench {
     header.append(facts);
     this.root.append(header);
 
-    const strip = make("ol", "agentic-phase-strip");
-    strip.setAttribute("aria-label", "AGENTIC phases");
-    for (const item of PHASES) {
-      const phase = make("li", "agentic-phase");
-      phase.dataset.phase = item.id;
-      phase.dataset.state = item.id === "ask" ? "active" : "pending";
-      phase.append(make("span", "agentic-phase-marker"), make("span", "", item.label));
-      strip.append(phase);
-      this.phaseNodes.set(item.id, phase);
-    }
-    this.root.append(strip);
-
-    const tablist = make("div", "agentic-lane-tabs");
-    tablist.setAttribute("role", "tablist");
-    tablist.setAttribute("aria-label", "Execution lanes");
-    for (const lane of LANES) {
-      const button = make("button", "agentic-lane-tab", LANE_LABELS[lane]);
-      button.type = "button";
-      button.id = `agentic-tab-${runId}-${lane}`;
-      button.setAttribute("role", "tab");
-      button.setAttribute("aria-controls", `agentic-panel-${runId}-${lane}`);
-      button.addEventListener("click", () => this.selectLane(lane, true));
-      button.addEventListener("keydown", (event) => this.moveTab(event, lane));
-      tablist.append(button);
-      this.tabs.push(button);
-    }
-    this.root.append(tablist);
-
-    this.createPanel(runId, "progress", (() => {
-      const body = make("div", "agentic-thinking-body");
-      this.thinkingStream.hidden = true;
-      this.thinkingStream.setAttribute("aria-label", "Director thinking");
-      body.append(this.thinkingStream, this.progress);
-      return body;
-    })());
-    const toolsBody = make("div", "agentic-tools-body");
-    this.batchToggle.type = "button";
-    this.batchToggle.hidden = true;
-    this.batchToggle.setAttribute("aria-expanded", "true");
-    this.batchToggle.title = "Show or hide tool activity";
-    const batchChev = make("span", "tool-batch-chev");
-    batchChev.innerHTML = icon("chevronDown", 12);
-    this.batchToggle.append(this.batchLabel, batchChev);
-    this.batchToggle.addEventListener("click", () => this.toggleTools());
-    this.toolsList.append(this.emptyTools);
-    toolsBody.append(this.batchToggle, this.filter, this.toolsList);
-    this.createPanel(runId, "tools", toolsBody);
-    this.createPanel(runId, "agents", this.agentsList);
-    this.root.append(this.lanes);
-
-    this.inspect.type = "button";
-    this.inspect.hidden = true;
-    this.inspect.setAttribute("aria-expanded", "false");
-    this.inspect.addEventListener("click", () => this.toggleInspect());
-    const controls = make("div", "agentic-terminal-controls");
-    controls.append(this.inspect);
-    this.root.append(controls);
+    this.feed.setAttribute("role", "log");
+    this.feed.setAttribute("aria-label", "Thought and tool transcript");
+    this.root.append(this.feed);
 
     this.delivery.hidden = true;
-    this.delivery.setAttribute("aria-label", "AGENTIC Delivery Board");
+    this.delivery.setAttribute("aria-label", "AGENTIC summary");
     this.root.append(this.delivery);
     this.live.setAttribute("aria-live", "polite");
     this.live.setAttribute("aria-atomic", "true");
     this.root.append(this.live);
 
-    this.addProgress("ask", "Director captured the request and permission boundary.", "active");
-    this.selectLane("tools", false);
-    this.paintAgents();
-    this.paintFilter();
-    this.paintTools();
     this.elapsedFact.textContent = elapsed(Date.now() - this.startedAt);
     this.timer = setInterval(() => {
       this.elapsedFact.textContent = elapsed(Date.now() - this.startedAt);
@@ -300,9 +227,7 @@ export class AgenticWorkbench {
     this.workersFact.textContent = String(
       [...this.agents.values()].filter((value) => value.id !== "director").length,
     );
-    this.paintAgents();
-    this.paintFilter();
-    this.refreshToolOwners();
+    this.paintAgent(agent.id);
     this.announce(`${agent.name} ${label(agent.status)}`);
   }
 
@@ -363,11 +288,20 @@ export class AgenticWorkbench {
   }
 
   appendThinking(text: string): void {
-    const chunk = bound(String(text || "").replace(/\s+/g, " ").trim(), 480);
+    const chunk = String(text || "").trim();
     if (!chunk) return;
-    this.thinkingText = bound(`${this.thinkingText} ${chunk}`.trim(), 2_400);
-    this.thinkingStream.hidden = false;
-    this.thinkingStream.textContent = this.thinkingText;
+    if (!this.thoughtNode || this.thoughtClosed) {
+      this.thoughtNode = make("div", "agentic-thought");
+      this.thoughtNode.append(make("span", "agentic-thought-kind", "THOUGHT"));
+      this.thoughtBody = make("div", "agentic-thought-text");
+      this.thoughtNode.append(this.thoughtBody);
+      this.feed.append(this.thoughtNode);
+      this.thoughtText = "";
+      this.thoughtClosed = false;
+    }
+    const merged = this.thoughtText ? `${this.thoughtText}\n${chunk}` : chunk;
+    this.thoughtText = bound(merged, THOUGHT_CHAR_LIMIT);
+    this.thoughtBody!.textContent = this.thoughtText;
   }
 
   complete(value: AgenticCompletion): void {
@@ -376,15 +310,9 @@ export class AgenticWorkbench {
     this.statusFact.textContent = value.status === "needs_attention"
       ? "Needs attention" : label(value.status);
     this.elapsedFact.textContent = elapsed(value.facts?.elapsedMs || Date.now() - this.startedAt);
+    this.closeThought();
     this.renderDelivery(value);
     this.delivery.hidden = false;
-    this.inspect.hidden = false;
-    this.inspect.textContent = "Inspect run";
-    this.inspect.setAttribute("aria-expanded", "false");
-    const restoreFocus = this.root.contains(document.activeElement);
-    this.lanes.classList.add("is-collapsed");
-    this.root.classList.add("is-terminal");
-    if (restoreFocus) this.inspect.focus();
     this.announce(`Run ${label(value.status)}. ${value.outcome}`);
   }
 
@@ -395,8 +323,8 @@ export class AgenticWorkbench {
     this.complete({
       status: successful && failedTools === 0 ? "partial" : "needs_attention",
       outcome: successful
-        ? "The answer finished, but the provider did not return a structured Delivery Board."
-        : `The run ended with ${label(reason)} before structured delivery evidence was available.`,
+        ? "The answer finished, but the provider did not return a structured summary."
+        : `The run ended with ${label(reason)} before structured summary evidence was available.`,
       changes: [],
       verification: [],
       contributions: [...this.agents.values()].map((agent) => ({
@@ -420,17 +348,16 @@ export class AgenticWorkbench {
 
   cancel(): void {
     if (this.terminal) return;
-    for (const { id } of PHASES) {
-      const state = this.phaseNodes.get(id)?.dataset.state;
-      if (state === "active" || state === "pending") this.setPhase(id, "cancelled");
-    }
     for (const tool of this.tools.values()) {
       if (tool.state === "running" || tool.state === "queued") tool.state = "cancelled";
     }
-    this.paintTools();
+    for (const [id, view] of this.toolViews) {
+      const tool = this.tools.get(id);
+      if (tool) this.updateToolCard(view, tool);
+    }
     this.complete({
       status: "cancelled",
-      outcome: "The run was cancelled. Completed evidence remains available under Inspect run.",
+      outcome: "The run was cancelled. Completed evidence remains available in the transcript.",
       changes: [],
       verification: [],
       contributions: [...this.agents.values()].map((agent) => ({
@@ -452,22 +379,12 @@ export class AgenticWorkbench {
     });
   }
 
-  private createPanel(runId: string, lane: Lane, body: HTMLElement): void {
-    const panel = make("section", `agentic-lane agentic-lane-${lane}`);
-    panel.id = `agentic-panel-${runId}-${lane}`;
-    panel.dataset.lane = lane;
-    panel.setAttribute("role", "tabpanel");
-    panel.setAttribute("aria-labelledby", `agentic-tab-${runId}-${lane}`);
-    panel.append(make("h3", "agentic-lane-title", LANE_LABELS[lane]), body);
-    this.lanes.append(panel);
-    this.panels.set(lane, panel);
+  private setPhase(_phase: AgenticPhase, _state: AgenticPhaseState): void {
+    // Phase state is reflected through the header label and progress lines.
   }
 
-  private setPhase(phase: AgenticPhase, state: AgenticPhaseState): void {
-    const node = this.phaseNodes.get(phase);
-    if (!node) return;
-    node.dataset.state = state;
-    node.setAttribute("aria-label", `${label(phase)}: ${label(state)}`);
+  private closeThought(): void {
+    this.thoughtClosed = true;
   }
 
   private addProgress(
@@ -475,26 +392,32 @@ export class AgenticWorkbench {
     detail: string,
     state: AgenticPhaseState | "active",
   ): void {
-    const item = make("li", "agentic-progress-item");
+    this.closeThought();
+    const item = make("div", "agentic-progress-line");
     item.dataset.state = state;
     item.append(
       make("span", "agentic-progress-phase", label(phase)),
       make("span", "agentic-progress-detail", detail),
     );
-    this.progress.append(item);
-    while (this.progress.children.length > 24) this.progress.firstElementChild?.remove();
+    this.feed.append(item);
+    while (this.feed.querySelectorAll(".agentic-progress-line").length > 24) {
+      this.feed.querySelector(".agentic-progress-line")?.remove();
+    }
   }
 
   private syncTools(): void {
+    this.closeThought();
     this.toolsFact.textContent = String(this.tools.size);
-    this.paintTools();
-  }
-
-  private toggleTools(): void {
-    this.toolsCollapsed = !this.toolsCollapsed;
-    this.batchToggle.classList.toggle("collapsed", this.toolsCollapsed);
-    this.batchToggle.setAttribute("aria-expanded", String(!this.toolsCollapsed));
-    this.paintTools();
+    for (const tool of this.tools.values()) {
+      let view = this.toolViews.get(tool.id);
+      if (!view) {
+        view = this.createToolCard(tool);
+        this.toolViews.set(tool.id, view);
+        this.feed.append(view.card);
+      } else {
+        this.updateToolCard(view, tool);
+      }
+    }
   }
 
   private ownerName(agentId: string): string {
@@ -502,67 +425,15 @@ export class AgenticWorkbench {
       || (agentId === "director" ? "Director" : label(agentId));
   }
 
-  private refreshToolOwners(): void {
-    for (const [id, view] of this.toolViews) {
-      const tool = this.tools.get(id);
-      if (!tool) continue;
-      view.meta.textContent = `${this.ownerName(tool.agentId)} · ${label(tool.phase)}`;
-    }
-  }
-
-  private selectAgent(id: string): void {
-    this.selectedAgent = id;
-    this.paintFilter();
-    this.paintAgents();
-    this.paintTools();
-  }
-
-  private paintTools(): void {
-    const count = this.tools.size;
-    const running = [...this.tools.values()].some(
-      (tool) => tool.state === "running" || tool.state === "queued",
-    );
-    const labelText = count === 0
-      ? "Running 0 tools"
-      : running
-        ? `Running ${count} tool${count === 1 ? "" : "s"}`
-        : `Ran ${count} tool${count === 1 ? "" : "s"}`;
-    this.batchToggle.hidden = count === 0;
-    this.batchToggle.classList.toggle("is-running", running);
-    this.batchToggle.classList.toggle("collapsed", this.toolsCollapsed);
-    setShimmerText(this.batchLabel, labelText, false);
-
-    for (const tool of this.tools.values()) {
-      let view = this.toolViews.get(tool.id);
-      if (!view) {
-        view = this.createToolCard(tool);
-        this.toolViews.set(tool.id, view);
-        this.toolsList.append(view.card);
-      } else {
-        this.updateToolCard(view, tool);
-      }
-      const match = this.selectedAgent === "all" || tool.agentId === this.selectedAgent;
-      view.card.hidden = this.toolsCollapsed || !match;
-    }
-
-    const visible = [...this.tools.values()].filter(
-      (tool) => this.selectedAgent === "all" || tool.agentId === this.selectedAgent,
-    );
-    this.emptyTools.hidden = this.toolsCollapsed || visible.length > 0;
-    this.emptyTools.textContent = this.tools.size
-      ? "No tools match this agent filter."
-      : "Tool evidence will appear here.";
-    this.filter.hidden = this.toolsCollapsed || this.agents.size <= 1;
-  }
-
   private createToolCard(tool: ToolItem): ToolCardView {
-    const card = make("details", "agentic-tool-card tool-card");
-    const head = make("summary", "agentic-tool-summary tool-card-head");
-    const name = make("span", "agentic-tool-name tool-name");
+    const card = make("details", "agentic-tool-card");
+    const head = make("summary", "agentic-tool-summary");
+    const kind = make("span", "agentic-tool-kind", "TOOL");
+    const name = make("span", "agentic-tool-name");
     const chev = make("span", "chev");
     chev.innerHTML = icon("chevronDown", 12);
     const state = make("span", "agentic-tool-state agentic-sr-only");
-    head.append(name, chev, state);
+    head.append(kind, name, chev, state);
     const body = make("div", "agentic-tool-body");
     const meta = make("div", "agentic-tool-meta");
     const args = this.toolBlock("Arguments", "");
@@ -590,7 +461,7 @@ export class AgenticWorkbench {
     view.card.classList.toggle("err", tool.state === "failed");
     view.card.classList.toggle("ok", tool.state === "passed");
     view.card.classList.toggle("cancelled", tool.state === "cancelled");
-    setShimmerText(view.name, toolLine(tool), false);
+    view.name.textContent = toolLine(tool);
     view.name.setAttribute("data-tool", tool.name);
     view.state.textContent = label(tool.state);
     view.meta.textContent = `${this.ownerName(tool.agentId)} · ${label(tool.phase)}`;
@@ -613,144 +484,30 @@ export class AgenticWorkbench {
     return block;
   }
 
-  private paintAgents(): void {
-    const values = [...this.agents.values()].sort((left, right) =>
-      left.id === "director" ? -1 : right.id === "director" ? 1 : left.id.localeCompare(right.id));
-    if (!values.length) {
-      this.agentNodes.clear();
-      this.agentsList.replaceChildren(
-        make("p", "agentic-empty", "The Director is preparing assignments."),
+  /** One compact status line per agent, updated in place inside the feed. */
+  private paintAgent(agentId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    this.closeThought();
+    let line = this.agentNodes.get(agentId);
+    if (!line) {
+      line = make("div", "agentic-agent-line");
+      line.append(
+        make("span", "agentic-agent-kind", "AGENT"),
+        make("strong", "agentic-agent-name"),
+        make("span", "agentic-agent-status"),
       );
-      return;
+      this.agentNodes.set(agentId, line);
+      this.feed.append(line);
     }
-    this.agentsList.querySelector(".agentic-empty")?.remove();
-    for (const [id, node] of this.agentNodes) {
-      if (!this.agents.has(id)) {
-        node.remove();
-        this.agentNodes.delete(id);
-      }
-    }
-    for (const agent of values) {
-      let card = this.agentNodes.get(agent.id);
-      if (!card) {
-        card = this.createAgentCard(agent);
-        this.agentNodes.set(agent.id, card);
-      } else {
-        this.updateAgentCard(card, agent);
-      }
-      this.agentsList.append(card);
-    }
-  }
-
-  private createAgentCard(agent: AgenticAgent): HTMLDetailsElement {
-    const card = make("details", "agentic-agent-card");
-    const head = make("summary", "agentic-agent-summary");
-    head.append(
-      make("strong", "agentic-agent-name"),
-      make("span", "agentic-agent-status"),
-    );
-    const chev = make("span", "chev");
-    chev.innerHTML = icon("chevronDown", 12);
-    head.append(chev);
-    const body = make("div", "agentic-agent-body");
-    body.append(
-      make("span", "agentic-agent-role"),
-      make("span", "agentic-agent-assignment"),
-      make("span", "agentic-agent-meta"),
-      make("span", "agentic-agent-result"),
-    );
-    card.append(head, body);
-    this.updateAgentCard(card, agent);
-    return card;
-  }
-
-  private updateAgentCard(card: HTMLDetailsElement, agent: AgenticAgent): void {
-    card.dataset.status = agent.status;
-    card.classList.toggle("is-selected", this.selectedAgent === agent.id);
-    const name = card.querySelector(".agentic-agent-name");
-    const status = card.querySelector(".agentic-agent-status");
-    const role = card.querySelector(".agentic-agent-role");
-    const assignment = card.querySelector(".agentic-agent-assignment");
-    const meta = card.querySelector(".agentic-agent-meta");
-    const result = card.querySelector(".agentic-agent-result") as HTMLElement | null;
-    if (name) name.textContent = agent.name;
-    if (status) status.textContent = label(agent.status);
-    if (role) role.textContent = agent.role;
-    if (assignment) assignment.textContent = agent.assignment;
-    if (meta) {
-      meta.textContent =
-        `${agent.toolCount || 0} tools · ${tokens(agent.usage?.totalTokens || 0)} tokens`;
-    }
-    if (result) {
-      result.hidden = !agent.resultSummary;
-      result.textContent = agent.resultSummary || "";
-    }
-  }
-
-  private paintFilter(): void {
-    const choices = [
-      { id: "all", name: "All tools" },
-      ...[...this.agents.values()].map((agent) => ({ id: agent.id, name: agent.name })),
-    ];
-    this.filter.hidden = this.toolsCollapsed || this.agents.size <= 1;
-    for (const [id, button] of this.filterChips) {
-      if (!choices.some((choice) => choice.id === id)) {
-        button.remove();
-        this.filterChips.delete(id);
-      }
-    }
-    for (const choice of choices) {
-      let button = this.filterChips.get(choice.id);
-      if (!button) {
-        button = make("button", "agentic-filter-chip", choice.name);
-        button.type = "button";
-        button.addEventListener("click", () => this.selectAgent(choice.id));
-        this.filter.append(button);
-        this.filterChips.set(choice.id, button);
-      } else if (button.textContent !== choice.name) {
-        button.textContent = choice.name;
-      }
-      button.classList.toggle("is-selected", choice.id === this.selectedAgent);
-      button.setAttribute("aria-pressed", String(choice.id === this.selectedAgent));
-    }
-  }
-
-  private selectLane(lane: Lane, focus: boolean): void {
-    this.lane = lane;
-    LANES.forEach((value, index) => {
-      const selected = value === lane;
-      this.tabs[index].setAttribute("aria-selected", String(selected));
-      this.tabs[index].tabIndex = selected ? 0 : -1;
-      this.panels.get(value)?.classList.toggle("is-selected", selected);
-      if (selected && focus) this.tabs[index].focus();
-    });
-  }
-
-  private moveTab(event: KeyboardEvent, lane: Lane): void {
-    const index = LANES.indexOf(lane);
-    let next = index;
-    if (event.key === "ArrowRight") next = (index + 1) % LANES.length;
-    else if (event.key === "ArrowLeft") next = (index + LANES.length - 1) % LANES.length;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = LANES.length - 1;
-    else return;
-    event.preventDefault();
-    this.selectLane(LANES[next], true);
-  }
-
-  private toggleInspect(): void {
-    const open = this.lanes.classList.contains("is-collapsed");
-    this.lanes.classList.toggle("is-collapsed", !open);
-    this.inspect.textContent = open ? "Hide run" : "Inspect run";
-    this.inspect.setAttribute("aria-expanded", String(open));
-    const active = document.activeElement;
-    if (
-      !open &&
-      active instanceof HTMLElement &&
-      this.lanes.contains(active) &&
-      !active.closest(".agentic-lane-tools")
-    ) {
-      this.inspect.focus();
+    const name = line.querySelector(".agentic-agent-name");
+    const status = line.querySelector(".agentic-agent-status");
+    if (name) name.textContent = `${agent.name} · ${agent.role}`;
+    if (status) {
+      const bits = [label(agent.status)];
+      if (agent.toolCount) bits.push(`${agent.toolCount} tools`);
+      if (agent.usage?.totalTokens) bits.push(`${tokens(agent.usage.totalTokens)} tokens`);
+      status.textContent = bits.join(" · ");
     }
   }
 
@@ -759,7 +516,7 @@ export class AgenticWorkbench {
     const header = make("header", "agentic-delivery-header");
     const status = make("span", "agentic-outcome-status", label(value.status));
     status.dataset.status = value.status;
-    header.append(status, make("h3", "", "Delivery Board"));
+    header.append(status, make("h3", "", "SUMMARY"));
     this.delivery.append(header, make("p", "agentic-outcome-copy", bound(value.outcome, 900)));
 
     if (value.changes?.length) {

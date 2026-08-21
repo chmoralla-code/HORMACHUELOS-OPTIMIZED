@@ -41,19 +41,19 @@ const DESKTOP_DOWNLOADS = {
 
 /** Independent performance-focused edition with the opt-in AGENTIC Workbench. */
 const OPTIMIZED_DOWNLOAD_BASE =
-  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.4";
+  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.5";
 
 const OPTIMIZED_DOWNLOADS = {
-  version: "1.3.4",
-  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.3.4",
+  version: "1.3.5",
+  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.3.5",
   windows: {
     msi: {
       label: "Optimized installer (MSI)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.4_x64.msi`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.5_x64.msi`,
     },
     setup: {
       label: "Optimized setup (EXE)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.4_x64-setup.exe`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.5_x64-setup.exe`,
     },
   },
 };
@@ -2783,12 +2783,12 @@ function renderDownload() {
       <div class="card" id="optimized-download" style="margin:20px 0;border-color:var(--primary)">
         <div class="eyebrow" style="margin-bottom:10px"><span class="dot"></span> New optimized release</div>
         <h3 style="margin-top:0">Hormachuelos Optimized v${optimized.version}</h3>
-        <p class="muted small">v1.3.4 shows a chronological Build timeline—Thought, tools, Summary, then the Completed card—without exposing private chain-of-thought. Adaptive remains the default, and this edition installs independently from the standard release.</p>
+        <p class="muted small">v1.3.5 turns the AGENTIC workbench into one linear Thought → Tool feed—full reasoning is shown before and between tool batches, and every run closes with an honest SUMMARY board. Adaptive remains the default, and this edition installs independently from the standard release.</p>
         <ul class="small" style="margin:14px 0 0;padding-left:20px">
           <li><strong>AGENTIC Director</strong> — scopes Ask, Plan, Research, Multi-Agent, and Build, then skips phases that do not add value.</li>
           <li><strong>Real read-only workers</strong> — runs up to six isolated workers on the selected model while one Director remains the only writer.</li>
-          <li><strong>Execution Workbench</strong> — separates public Thinking, Tools, and Agents into responsive, keyboard-accessible lanes.</li>
-          <li><strong>Evidence-backed Delivery Board</strong> — reports outcome, changes, verification, contributions, risks, and run facts without inventing passes.</li>
+          <li><strong>Execution Workbench</strong> — streams one linear Thought → Tool transcript so reasoning stays visible before and between every tool batch.</li>
+          <li><strong>Honest SUMMARY board</strong> — reports outcome, changes, verification (including what did not run), contributions, risks, and run facts without inventing passes.</li>
           <li><strong>Clearline answers and safety</strong> — keeps full-width readable replies, Mission Control, Time Machine, rollback, and approval boundaries.</li>
         </ul>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
