@@ -1,11 +1,11 @@
 {
-  "version": "1.3.5",
-  "title": "Hormachuelos Optimized v1.3.5",
-  "whatsNew": "The AGENTIC Execution Workbench is now one linear Thought, Tool, Thought, Tool, Summary transcript. Reasoning is shown in full before and between tool batches, workers must think first, and every run closes with an honest SUMMARY board. Adaptive remains the default and this update is not forced.",
-  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.5/Hormachuelos_Optimized_1.3.5_x64.msi",
-  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.5/Hormachuelos_Optimized_1.3.5_x64-setup.exe",
-  "msiSha256": "202d369a661491ca376e966f1cf78e522e8e1d93a84256ff2bb497ac270ef941",
-  "exeSha256": "f075a95e381b2088d7393158ed111faa66da8ad3dc0e68bc70b12e9189fcede7",
+  "version": "1.3.6",
+  "title": "Hormachuelos Optimized v1.3.6",
+  "whatsNew": "Every step of a run now stays on the record in Ask mode. Status and reasoning steps persist as a compact step log under your message instead of being replaced as work progresses. Adaptive remains the default and this update is not forced.",
+  "msiUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.6/Hormachuelos_Optimized_1.3.6_x64.msi",
+  "exeUrl": "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.6/Hormachuelos_Optimized_1.3.6_x64-setup.exe",
+  "msiSha256": "2c1351764216d9a6bf911bd18c516ebaacae58e1d6537927d3898475bbabc2a6",
+  "exeSha256": "4407e0847aff3c9600da332448f0494d7400d633dcb2c5ee8c4c233448d37cba",
   "forceUpdate": false,
-  "publishedAt": "2026-08-21T02:14:59.441Z"
+  "publishedAt": "2026-08-22T02:24:37.801Z"
 }
