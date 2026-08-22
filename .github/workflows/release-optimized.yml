@@ -99,18 +99,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Hormachuelos Optimized v__VERSION__ · Agentic thought feed
+          releaseName: Hormachuelos Optimized v__VERSION__ · Persistent turn transcript
           releaseBody: |
-            The AGENTIC Execution Workbench is now one linear **Thought → Tool → Thought → Tool → Summary** transcript.
+            Every step of a run now stays on the record in Ask mode.
 
-            Reasoning is shown in full as THOUGHT blocks before and between tool batches. Workers must think first: a first tool batch without at least 200 characters of preceding reasoning is refused once with a host nudge. The Director thinks before each batch, and batches are capped at three tool calls.
+            Status and reasoning steps persist as a compact step log under your message instead of being replaced as work progresses. Status steps render as `› …` rows, streamed reasoning collects into `● …` thought rows, and duplicate consecutive status updates collapse into one row so the log stays readable.
 
             This release:
-            - shows full reasoning as THOUGHT blocks instead of hiding or summarizing it
-            - gates the first tool batch behind a think-first check for every worker
-            - keeps tool rows inspectable with exact arguments and results
-            - closes every run with an honest SUMMARY board, including what was not verified
-            - reports cancelled and unverified runs as such — no invented passes
+            - persists status and reasoning steps for the whole turn in Ask mode
+            - renders statuses as `› …` rows and streamed reasoning as `● …` thought rows
+            - collapses duplicate consecutive status updates into a single row
+            - resets the log with each new message; restored sessions stay unchanged
+            - leaves the Build timeline and AGENTIC Execution Workbench untouched
             - keeps Adaptive as the default; this update is not forced
 
             Remote release gates:
@@ -130,5 +130,5 @@ jobs:
       - name: Publish in-app update feed to GitHub Pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATE_WHATS_NEW: "The AGENTIC Execution Workbench is now one linear Thought, Tool, Thought, Tool, Summary transcript. Reasoning is shown in full before and between tool batches, workers must think first, and every run closes with an honest SUMMARY board. Adaptive remains the default and this update is not forced."
+          UPDATE_WHATS_NEW: "Every step of a run now stays on the record in Ask mode. Status and reasoning steps persist as a compact step log under your message instead of being replaced as work progresses. Adaptive remains the default and this update is not forced."
         run: node scripts/publish-update-manifest.mjs --push-pages

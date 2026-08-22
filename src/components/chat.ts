@@ -216,6 +216,8 @@ export class Chat {
   private buildSegmentHasTools = false;
   /** Host iteration/segment currently rendered as a Build Thought row. */
   private buildSegmentId = -1;
+  /** The user message element the current turn-transcript belongs to. */
+  private transcriptOwner: HTMLElement | null = null;
 
   constructor(handlers: {
     onSend: (submission: ChatPromptSubmission) => void;
@@ -1835,6 +1837,7 @@ export class Chat {
     this.clearPendingQueue();
     this.cancelAssistantPaints();
     this.clearToolStreams();
+    this.transcriptOwner = null;
     this.toolBatchEl = null;
     this.toolBatchCount = 0;
     this.toolBatchFailures = 0;
@@ -1868,6 +1871,7 @@ export class Chat {
     this.toolBatchOpen = false;
     this.resetBuildTimelineState();
     this.setActivePermissionMode("plan");
+    this.transcriptOwner = null;
     this.pendingAssistant = null;
     this.suppressedAssistantRaw = "";
     this.thinking = null;
@@ -2114,6 +2118,8 @@ export class Chat {
     msg.appendChild(body);
     msg.appendChild(this.messageMeta(() => text, at ?? this.now()));
     this.node.appendChild(msg);
+    // A new user message starts a new turn transcript.
+    this.transcriptOwner = msg;
     // Always jump to the message the user just sent
     this.scrollToBottom(true);
   }
@@ -4185,6 +4191,68 @@ export class Chat {
 
     // Stream chunks / full dumps — animate so thoughts type in realtime
     if (this.typewriterId == null) this.startTypewriter();
+  }
+
+  /** One persistent transcript container per user turn (Claude-CLI style). */
+  private turnTranscript(): HTMLElement {
+    const owner = this.transcriptOwner?.isConnected ? this.transcriptOwner : null;
+    if (owner) {
+      let sib = owner.nextElementSibling;
+      while (sib instanceof HTMLElement) {
+        if (sib.classList.contains("turn-transcript")) return sib;
+        sib = sib.nextElementSibling;
+      }
+    }
+    const transcript = div("turn-transcript");
+    // Start at the current bottom of the activity feed so earlier thinking
+    // rows stay above it; later bricks accumulate inside.
+    this.node.appendChild(transcript);
+    return transcript;
+  }
+
+  /** Append one status/step brick (e.g. "Solid picture forming.") — never replaced. */
+  private appendProgressStep(message: string) {
+    if (!message.trim()) return;
+    const transcript = this.turnTranscript();
+    const last = transcript.lastElementChild;
+    if (last?.classList.contains("progress-step") && last.textContent === message) {
+      return; // dedup consecutive identical steps
+    }
+    const step = div("progress-step", "", [
+      el("span", { class: "progress-step-mark" }, ["›"]),
+      el("span", { class: "progress-step-text" }, [message]),
+    ]);
+    transcript.append(step);
+    this.trimTranscript(transcript);
+  }
+
+  /** Append model reasoning as a persistent thought brick. */
+  private appendThoughtStep(text: string) {
+    if (!text) return;
+    const chunk = String(text).trim();
+    if (!chunk) return;
+    const transcript = this.turnTranscript();
+    let step = transcript.lastElementChild?.classList.contains("thought-step")
+      ? (transcript.lastElementChild as HTMLElement)
+      : null;
+    if (step) {
+      const merged = mergeReasoningStream(step.textContent || "", chunk);
+      step.textContent = merged;
+    } else {
+      step = div("thought-step", "", [
+        el("span", { class: "thought-step-mark" }, ["●"]),
+        el("span", { class: "thought-step-text" }, [chunk]),
+      ]);
+      transcript.append(step);
+    }
+    this.trimTranscript(transcript);
+  }
+
+  /** Keep the live transcript bounded so old runs don't leak DOM. */
+  private trimTranscript(transcript: HTMLElement) {
+    while (transcript.childElementCount > 600) {
+      transcript.firstElementChild?.remove();
+    }
   }
 
   /** Append model reasoning — paints live as tokens arrive. */
@@ -6437,28 +6505,18 @@ export class Chat {
           break;
         }
         this.clearIdleActivityTimer();
-        if (this.isBuildTimeline()) {
-          this.scrollToBottom();
-          break;
-        }
-        // Force the live label even if a tool preview is visible — reconnect
-        // must stay obvious while the run waits for network.
-        if (this.thinking && !this.thinking.classList.contains("thinking-done") && this.thinking.isConnected) {
-          this.setThinkingLabel(message);
-        } else {
-          this.showThinking(0);
-          this.setThinkingLabel(message);
-        }
+        // Every status step becomes a persistent brick in the turn transcript
+        // (Claude-CLI style) so earlier lines never disappear mid-run.
+        this.appendProgressStep(message);
         this.scrollToBottom();
         break;
       }
       case "reasoning":
-        if (this.isBuildTimeline() && !this.agenticRun) break;
-        if (!this.agenticRun) {
-          this.clearIdleActivityTimer();
-          this.appendThinkingText(e.payload.text);
-        } else {
+        this.clearIdleActivityTimer();
+        if (this.agenticRun) {
           this.agenticWorkbench?.appendThinking(e.payload.text);
+        } else if (!this.isBuildTimeline()) {
+          this.appendThoughtStep(e.payload.text);
         }
         break;
       case "mode_transition":

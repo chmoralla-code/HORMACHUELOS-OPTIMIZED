@@ -180,7 +180,7 @@ test("Execution Workbench renders one linear THOUGHT → TOOL feed with an hones
   assert.match(spec, /reducedMotion/);
 });
 
-test("v1.3.5 release metadata is synchronized and remains optional", async () => {
+test("v1.3.6 release metadata is synchronized and remains optional", async () => {
   const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest] = await Promise.all([
     read("package.json"),
     read("package-lock.json"),
@@ -188,18 +188,18 @@ test("v1.3.5 release metadata is synchronized and remains optional", async () =>
     read("src-tauri/Cargo.lock"),
     read("src-tauri/tauri.conf.json"),
     read(".github/workflows/release-optimized.yml"),
-    read("release-notes/1.3.5.md"),
+    read("release-notes/1.3.6.md"),
     read("scripts/publish-update-manifest.mjs"),
   ]);
   const pkg = JSON.parse(pkgRaw);
-  assert.equal(pkg.version, "1.3.5");
-  assert.match(lock, /"version": "1\.3\.5"/);
-  assert.match(cargo, /version = "1\.3\.5"/);
-  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.5"/);
-  assert.equal(JSON.parse(tauri).version, "1.3.5");
+  assert.equal(pkg.version, "1.3.6");
+  assert.match(lock, /"version": "1\.3\.6"/);
+  assert.match(cargo, /version = "1\.3\.6"/);
+  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.6"/);
+  assert.equal(JSON.parse(tauri).version, "1.3.6");
   assert.match(workflow, /AGENTIC Workbench/);
   assert.match(workflow, /test:agentic/);
   assert.match(workflow, /playwright\.agentic\.config\.mjs/);
-  assert.match(notes, /Reasoning stays public and bounded/);
+  assert.match(notes, /Steps stay on the record/);
   assert.match(manifest, /forceUpdate:\s*false/);
 });

@@ -41,19 +41,19 @@ const DESKTOP_DOWNLOADS = {
 
 /** Independent performance-focused edition with the opt-in AGENTIC Workbench. */
 const OPTIMIZED_DOWNLOAD_BASE =
-  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.5";
+  "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/download/v1.3.6";
 
 const OPTIMIZED_DOWNLOADS = {
-  version: "1.3.5",
-  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.3.5",
+  version: "1.3.6",
+  releaseNotes: "https://github.com/chmoralla-code/HORMACHUELOS-OPTIMIZED/releases/tag/v1.3.6",
   windows: {
     msi: {
       label: "Optimized installer (MSI)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.5_x64.msi`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.6_x64.msi`,
     },
     setup: {
       label: "Optimized setup (EXE)",
-      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.5_x64-setup.exe`,
+      href: `${OPTIMIZED_DOWNLOAD_BASE}/Hormachuelos_Optimized_1.3.6_x64-setup.exe`,
     },
   },
 };
@@ -2783,7 +2783,7 @@ function renderDownload() {
       <div class="card" id="optimized-download" style="margin:20px 0;border-color:var(--primary)">
         <div class="eyebrow" style="margin-bottom:10px"><span class="dot"></span> New optimized release</div>
         <h3 style="margin-top:0">Hormachuelos Optimized v${optimized.version}</h3>
-        <p class="muted small">v1.3.5 turns the AGENTIC workbench into one linear Thought → Tool feed—full reasoning is shown before and between tool batches, and every run closes with an honest SUMMARY board. Adaptive remains the default, and this edition installs independently from the standard release.</p>
+        <p class="muted small">v1.3.6 keeps every step of a run on the record—status and reasoning steps now persist as a compact step log under your message instead of being replaced as work progresses. Adaptive remains the default, and this edition installs independently from the standard release.</p>
         <ul class="small" style="margin:14px 0 0;padding-left:20px">
           <li><strong>AGENTIC Director</strong> — scopes Ask, Plan, Research, Multi-Agent, and Build, then skips phases that do not add value.</li>
           <li><strong>Real read-only workers</strong> — runs up to six isolated workers on the selected model while one Director remains the only writer.</li>

@@ -2723,6 +2723,44 @@
   0%, 49% { opacity: 1; }
   50%, 100% { opacity: 0; }
 }
+/* Persistent per-turn transcript (Claude-CLI style step log). */
+.turn-transcript {
+  display: grid;
+  gap: 0;
+  width: 100%;
+  max-width: 880px;
+  margin: 4px auto 0;
+}
+.turn-transcript .progress-step,
+.turn-transcript .thought-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  color: var(--text-muted);
+  font: 400 12.5px/1.5 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+.turn-transcript .progress-step-mark {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+.turn-transcript .progress-step-text {
+  min-width: 0;
+}
+.turn-transcript .thought-step {
+  color: var(--text-2);
+}
+.turn-transcript .thought-step-mark {
+  flex: 0 0 auto;
+  color: var(--live-blue-strong);
+}
+.turn-transcript .thought-step-text {
+  min-width: 0;
+  white-space: pre-wrap;
+}
 .thinking-wrap.is-typing .thinking-body,
 .thinking-wrap.is-typing .thinking-stream {
   color: var(--text-2);
