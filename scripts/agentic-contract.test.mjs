@@ -215,26 +215,40 @@ test("Execution Workbench renders one linear THOUGHT → TOOL feed with an hones
   assert.match(spec, /reducedMotion/);
 });
 
-test("v1.3.6 release metadata is synchronized and remains optional", async () => {
-  const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest] = await Promise.all([
+test("v1.3.7 release metadata is synchronized and remains optional", async () => {
+  const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest, latestRaw, websiteApp, websiteIndex] = await Promise.all([
     read("package.json"),
     read("package-lock.json"),
     read("src-tauri/Cargo.toml"),
     read("src-tauri/Cargo.lock"),
     read("src-tauri/tauri.conf.json"),
     read(".github/workflows/release-optimized.yml"),
-    read("release-notes/1.3.6.md"),
+    read("release-notes/1.3.7.md"),
     read("scripts/publish-update-manifest.mjs"),
+    read("docs/latest.json"),
+    read("website/js/app.js"),
+    read("docs/index.html"),
   ]);
   const pkg = JSON.parse(pkgRaw);
-  assert.equal(pkg.version, "1.3.6");
-  assert.match(lock, /"version": "1\.3\.6"/);
-  assert.match(cargo, /version = "1\.3\.6"/);
-  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.6"/);
-  assert.equal(JSON.parse(tauri).version, "1.3.6");
+  const latest = JSON.parse(latestRaw);
+  assert.equal(pkg.version, "1.3.7");
+  assert.match(lock, /"version": "1\.3\.7"/);
+  assert.match(cargo, /version = "1\.3\.7"/);
+  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.7"/);
+  assert.equal(JSON.parse(tauri).version, "1.3.7");
+  assert.equal(JSON.parse(tauri).identifier, "com.hormachuelos.optimized");
+  assert.equal(latest.version, "1.3.7");
+  assert.equal(latest.forceUpdate, false);
+  assert.match(latest.msiUrl, /Hormachuelos_Optimized_1\.3\.7_x64\.msi/);
+  assert.match(latest.exeUrl, /Hormachuelos_Optimized_1\.3\.7_x64-setup\.exe/);
+  assert.match(websiteApp, /OPTIMIZED_RELEASE_VERSION = "1\.3\.7"|version: "1\.3\.7"/);
+  assert.match(websiteIndex, /Hormachuelos_Optimized_1\.3\.7_x64\.msi/);
   assert.match(workflow, /AGENTIC Workbench/);
   assert.match(workflow, /test:agentic/);
   assert.match(workflow, /playwright\.agentic\.config\.mjs/);
-  assert.match(notes, /Steps stay on the record/);
+  assert.match(workflow, /Maximized modes/);
+  assert.doesNotMatch(workflow, /1\.3\.6/);
+  assert.doesNotMatch(workflow, /Persistent turn transcript/);
+  assert.match(notes, /Modes stay distinct/);
   assert.match(manifest, /forceUpdate:\s*false/);
 });
