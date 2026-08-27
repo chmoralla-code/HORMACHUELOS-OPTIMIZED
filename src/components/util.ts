@@ -467,6 +467,16 @@ function isProcessSentence(sentence: string): boolean {
     "i will dig",
     "okay, the user",
     "ok, the user",
+    "great question",
+    "that's a great question",
+    "thats a great question",
+    "happy to help",
+    "i'd be happy to",
+    "i would be happy to",
+    "sure! i",
+    "absolutely!",
+    "of course!",
+    "thanks for asking",
   ].some((prefix) => lower.startsWith(prefix));
 }
 

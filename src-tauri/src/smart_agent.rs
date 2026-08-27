@@ -95,14 +95,14 @@ pub fn emit_build_progress(
 }
 
 const ANSWER_DIRECTOR: &str = "\nDIRECTOR JOB: ANSWER\n\
-- This is a question or a simplify/rephrase request. Write a short visible reply now.\n\
+- This is a question or a simplify/rephrase request. Write a short visible reply now. Lead with the answer.\n\
 - Do not call done. Do not open a delivery card. Do not list the whole project.\n\
 - If the user asked to simplify, rewrite the previous answer in 2-5 short everyday sentences.\n\
-- Never finish with only thinking or \"let me give a simpler version\".\n";
+- Never finish with only thinking or \"let me give a simpler version\". No help-desk filler.\n";
 
 const CHANGE_DIRECTOR: &str = "\nDIRECTOR JOB: CHANGE\n\
 - Apply the smallest coherent patch, run one relevant check, then stop.\n\
-- Do not turn this into a broad audit. Call done only after the patch exists.\n";
+- Visible chat is 1-2 sentences of what shipped. Do not turn this into a broad audit. Call done only after the patch exists.\n";
 
 const SHIP_DIRECTOR: &str = "\nDIRECTOR JOB: SHIP\n\
 - Treat this as one durable task: inspect, implement focused changes, validate, debug failures, then deliver.\n\
@@ -118,8 +118,9 @@ const OPERATE_DIRECTOR: &str = "\nDIRECTOR JOB: OPERATE\n\
 /// gate: the model must commit to a plan in words before it spends a tool call.
 pub const MULTI_AGENT_THOUGHT_POLICY: &str = "\nMULTI-AGENT REPLY SHAPE (required):\n\
 - The visible reply must alternate exactly: THOUGHT, then tools, then THOUGHT, then tools, ... then a final SUMMARY. Never stack many tool batches without a THOUGHT between them.\n\
-- THOUGHT is long-form public progress, not private chain-of-thought: state what you know, the exact files and symbols you will verify, the hypotheses you are ruling out, and the risks. Write several sentences before the first tool call of every batch — never open a batch cold.\n\
+- THOUGHT is long-form public progress, not private chain-of-thought: state what you know, the exact files and symbols you will verify, the hypotheses you are ruling out, and the risks. Write at least ~200 characters before the first tool call of every batch — never open a batch cold.\n\
 - Keep each tool batch small (at most 3 calls) and read-only discovery first. After each batch's results arrive, write the next THOUGHT interpreting them before spawning more tools.\n\
+- Give workstreams distinct jobs. Do not paste duplicate worker chatter into the user bubble.\n\
 - Finish with one SUMMARY section that states what changed, what was verified, and what remains. Never end on a tool result.\n";
 
 /// Host-owned job for this run. Answer never uses the build ledger.

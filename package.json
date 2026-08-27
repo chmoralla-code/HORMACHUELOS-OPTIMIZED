@@ -24,7 +24,7 @@
     "test:update": "node --test scripts/update-version.test.mjs",
     "test:computer-use": "node --test scripts/preview-computer-use.test.mjs scripts/preview-computer-scroll.test.mjs scripts/preview-computer-scroll-runtime.test.mjs scripts/preview-computer-lifecycle.test.mjs",
     "test:ask-mode": "node --test scripts/ask-mode-reliability.test.mjs",
-    "test:agentic": "node --test scripts/agentic-contract.test.mjs"
+    "test:agentic": "node --test scripts/agentic-contract.test.mjs scripts/mode-contract.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.1.0",

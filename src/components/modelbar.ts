@@ -36,7 +36,7 @@ const MODES: {
     chip: "auto",
     label: "Adaptive",
     title:
-      "Adaptive Director (Auto) — routes each turn to Ask, Research, Plan, Build, or Parallel without changing your selection.",
+      "Adaptive Director (Auto) — default. Routes each turn to Ask, Research, Plan, Build, or Parallel. Skip unused phases. Does not write on a question.",
     capability: "Balanced",
   },
   {
@@ -44,7 +44,7 @@ const MODES: {
     chip: "agentic",
     label: "AGENTIC",
     title:
-      "AGENTIC Workbench — an adaptive Director scopes, plans, researches, delegates read-only evidence work, and gives one writer control of implementation and verification.",
+      "AGENTIC Workbench (opt-in) — Director is the only writer; workers stay read-only. Think-first (~200 chars) before tools; batches capped at 3. Orchestrated or Thorough only.",
     capability: "Orchestrated",
   },
   {
@@ -52,7 +52,7 @@ const MODES: {
     chip: "ask",
     label: "Ask",
     title:
-      "Ask — direct, bounded answers with evidence when needed; project writes stay locked.",
+      "Ask — answer first. Read-only except Preview start and host-routed Time Machine. No file writes.",
     capability: "Answer Max",
   },
   {
@@ -60,7 +60,7 @@ const MODES: {
     chip: "research",
     label: "Research",
     title:
-      "Research — deep read-only investigation, source cross-checking, and one synthesized report.",
+      "Research — cite what you found. Read-only evidence report. Do not invent verification or start writing production code.",
     capability: "Investigate",
   },
   {
@@ -68,7 +68,7 @@ const MODES: {
     chip: "plan",
     label: "Plan",
     title:
-      "Plan — clarify scope, tradeoffs, acceptance criteria, and verification; writes stay locked until Apply.",
+      "Plan — a concrete plan the user can act on. Writes stay locked until Apply. Does not start building.",
     capability: "Thinking",
   },
   {
@@ -76,7 +76,7 @@ const MODES: {
     chip: "build",
     label: "Build",
     title:
-      "Build — one focused owner implements, validates, and repairs the requested change; high-risk actions still need approval.",
+      "Build — implement the change, verify what you can, report what shipped. High-risk actions still need approval.",
     capability: "Agent",
   },
   {
@@ -84,7 +84,7 @@ const MODES: {
     chip: "parallel",
     label: "Parallel",
     title:
-      "Parallel (Multi-Agent) — coordinates independent workstreams, keeps dependent edits ordered, and synthesizes one verified delivery.",
+      "Parallel (Multi-Agent) — useful parallel evidence, not duplicate chatter. Independent workstreams, one synthesis.",
     capability: "Autonomous",
   },
 ];
@@ -95,25 +95,25 @@ const CAPABILITIES: Record<
   { id: string; label: string; title: string }[]
 > = {
   adaptive: [
-    { id: "balanced", label: "Director", title: "Score intent, complexity, and risk; choose the safest effective workflow" },
-    { id: "agent", label: "Action", title: "Prefer focused implementation when intent clearly requests a change" },
+    { id: "balanced", label: "Director", title: "Score intent, complexity, and risk; choose the safest useful workflow and skip unused phases" },
+    { id: "agent", label: "Action", title: "Prefer focused implementation when intent clearly requests a change; still never write on a question" },
   ],
   agentic: [
     {
       id: "orchestrated",
       label: "Orchestrated",
-      title: "Adaptive phases, real isolated evidence workers, and one Director-controlled writer",
+      title: "Smallest useful phases, isolated read-only workers only when workstreams differ, one Director writer",
     },
     {
       id: "thorough",
       label: "Thorough",
-      title: "Favor deeper decomposition and verification for broad requests",
+      title: "Deeper unique evidence assignments for broad requests — not extra write permission, not the Thorough execution profile",
     },
   ],
   ask: [    {
       id: "answer_max",
       label: "Answer Max",
-      title: "Reliable, complete answers with bounded evidence and automatic recovery",
+      title: "Lead with the answer; bounded evidence; no file writes",
     },
     {
       id: "brief",
@@ -125,7 +125,7 @@ const CAPABILITIES: Record<
     {
       id: "investigate",
       label: "Deep Research",
-      title: "Broader read-only evidence gathering with cross-checks and a synthesized report",
+      title: "Cite what you found; cross-check; do not invent verification",
     },
     {
       id: "answer_max",
@@ -134,15 +134,15 @@ const CAPABILITIES: Record<
     },
   ],
   plan: [
-    { id: "thinking", label: "Thinking", title: "Plan first, then ask before tools" },
+    { id: "thinking", label: "Thinking", title: "A concrete plan the user can act on; ask before tools; no building until Apply" },
     { id: "guided", label: "Guided", title: "Step-by-step with approvals" },
   ],
   build: [
-    { id: "agent", label: "Agent", title: "Tools on by default; high-risk asks" },
+    { id: "agent", label: "Agent", title: "Implement, verify, report what shipped; high-risk asks" },
     { id: "balanced", label: "Verified", title: "Small coherent patch plus the most relevant verification" },
   ],
   multi_agent: [
-    { id: "autonomous", label: "Coordinated", title: "Parallel independent discovery with ordered changes and one synthesis" },
+    { id: "autonomous", label: "Coordinated", title: "Parallel independent evidence, ordered changes, one synthesis — no duplicate chatter" },
     { id: "max", label: "Maximum", title: "Maximum parallel discovery for broad, separable workstreams" },
   ],
 };

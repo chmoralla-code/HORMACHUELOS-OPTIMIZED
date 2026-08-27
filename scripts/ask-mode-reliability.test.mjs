@@ -8,19 +8,21 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
 
 test("Ask mode defaults to Answer Max and requires a visible response", async () => {
-  const [agent, config, modelbar, settings, tools] = await Promise.all([
+  const [agent, contract, config, modelbar, settings, tools] = await Promise.all([
     read("src-tauri/src/agent.rs"),
+    read("src-tauri/src/mode_contract.rs"),
     read("src-tauri/src/config.rs"),
     read("src/components/modelbar.ts"),
     read("src/components/settings.ts"),
     read("src-tauri/src/tools.rs"),
   ]);
+  const prompts = `${agent}\n${contract}`;
 
   assert.match(agent, /AutomaticContinuationReason::EmptyAnswer/);
   assert.match(agent, /response_has_visible_answer/);
-  assert.match(agent, /direct, bounded answer/i);
-  assert.match(agent, /Every turn must end with a substantive visible answer/i);
-  assert.match(agent, /Never end on thinking only/);
+  assert.match(prompts, /direct, bounded answer/i);
+  assert.match(prompts, /Every turn must end with a substantive visible answer/i);
+  assert.match(prompts, /Never end on thinking only/);
   assert.match(agent, /VISIBLE_REPLY_CONTRACT/);
   assert.match(agent, /last_resort_visible_reply/);
   assert.match(agent, /tokio::task::spawn_blocking/);
@@ -30,15 +32,15 @@ test("Ask mode defaults to Answer Max and requires a visible response", async ()
   assert.match(tools, /google\/gemini-2\.0-flash-001/);
   assert.match(tools, /Describe every attached image/);
   assert.match(tools, /commandcode\/grok/);
-  assert.match(agent, /Keep image answers short/);
-  assert.match(agent, /Do not call done for a description-only/);
-  assert.match(agent, /full path \/ full directory/);
+  assert.match(prompts, /Keep image answers short/);
+  assert.match(prompts, /Do not call done for a description-only/);
+  assert.match(prompts, /full path \/ full directory/);
   assert.match(agent, /asks_for_file_location/);
   assert.match(agent, /asks_to_simplify_or_rephrase/);
-  assert.match(agent, /2-5 short everyday sentences/);
-  assert.match(agent, /host Completed card is the delivery layout/);
-  assert.match(agent, /1-2 short sentences/);
-  assert.match(agent, /absolute filesystem path/);
+  assert.match(prompts, /2-5 short everyday sentences/);
+  assert.match(prompts, /host Completed card is the delivery layout/);
+  assert.match(prompts, /1-2 short sentences/);
+  assert.match(prompts, /absolute filesystem path/);
   assert.doesNotMatch(agent, /You may retry with view_image/);
   assert.match(agent, /fn infer_permission_mode/);
   assert.match(agent, /ask_research_should_synthesize/);
@@ -49,8 +51,10 @@ test("Ask mode defaults to Answer Max and requires a visible response", async ()
   assert.match(modelbar, /showAdaptiveRoute/);
   assert.match(settings, /ask: \["answer_max", "brief"\]/);
   assert.match(settings, /research: \["investigate", "answer_max"\]/);
-  assert.match(agent, /call start_dev_server and open it in Preview/);
+  assert.match(prompts, /call start_dev_server and open it in Preview/);
   assert.match(tools, /pub fn ensure_project_dev_server/);
+  assert.match(prompts, /Time Machine/);
+  assert.doesNotMatch(prompts, /You may use every other tool, including search, browser, computer, and agents/);
 });
 
 test("Cursor bridge reports and recovers blank assistant completions", async () => {
@@ -261,21 +265,25 @@ test("Adaptive Director routes all six workflows without overwriting explicit mo
 });
 
 test("all modes share a visible-reply contract and chat last-resort", async () => {
-  const [agent, director, chat, bridge, util] = await Promise.all([
+  const [agent, contract, director, chat, bridge, util] = await Promise.all([
     read("src-tauri/src/agent.rs"),
+    read("src-tauri/src/mode_contract.rs"),
     read("src-tauri/src/smart_agent.rs"),
     read("src/components/chat.ts"),
     read("scripts/cursor-bridge.mjs"),
     read("src/components/util.ts"),
   ]);
-  assert.match(agent, /VISIBLE REPLY \(all modes\)/);
-  assert.match(agent, /do not paste project paths/);
-  assert.match(agent, /\[Ask mode active\]/);
-  assert.match(agent, /\[Research mode active\]/);
-  assert.match(agent, /\[Plan mode active\]/);
-  assert.match(agent, /\[Build mode active\]/);
-  assert.match(agent, /\[Parallel \/ Multi-Agent mode active\]/);
-  assert.match(agent, /never thinking only/i);
+  const prompts = `${agent}\n${contract}`;
+  assert.match(prompts, /VISIBLE REPLY \(all modes\)/);
+  assert.match(prompts, /do not paste project paths/);
+  assert.match(prompts, /\[Ask mode active\]/);
+  assert.match(prompts, /\[Research mode active\]/);
+  assert.match(prompts, /\[Plan mode active\]/);
+  assert.match(prompts, /\[Build mode active\]/);
+  assert.match(prompts, /\[Parallel \/ Multi-Agent mode active\]/);
+  assert.match(prompts, /never thinking only/i);
+  assert.match(prompts, /\[Adaptive Director\]/);
+  assert.match(prompts, /\[AGENTIC Director\]/);
   assert.match(chat, /visibleAnswerFromThought/);
   assert.match(chat, /latestSealedThoughtAfterLastUser/);
   assert.match(chat, /ensureVisibleReplyAfterEnd/);
