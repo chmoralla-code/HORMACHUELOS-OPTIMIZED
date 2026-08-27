@@ -1547,13 +1547,13 @@ export class SettingsModal {
     body.appendChild(this.field("Permission mode", () => {
       const sel = el("select", { class: "field" }) as HTMLSelectElement;
       for (const [value, label] of [
-        ["adaptive", "Adaptive Director (recommended) — auto-route each turn by intent, complexity, and risk"],
-        ["agentic", "AGENTIC — adaptive phases, isolated read-only workers, one writer"],
-        ["ask", "Ask — direct bounded answer; project writes locked"],
-        ["research", "Research — deep read-only evidence, cross-checking, and synthesis"],
-        ["plan", "Plan — scope, decisions, acceptance criteria, and verification before changes"],
-        ["build", "Build — focused implementation with relevant verification"],
-        ["multi_agent", "Parallel (Multi-Agent) — coordinated independent workstreams and one delivery"],
+        ["adaptive", "Adaptive Director (recommended default) — auto-route each turn; skip unused phases; never write on a question"],
+        ["agentic", "AGENTIC (opt-in) — Director is the only writer; workers read-only; think-first ~200 chars; batches of 3"],
+        ["ask", "Ask — answer first; project writes locked; Time Machine is host-routed"],
+        ["research", "Research — cite evidence; do not invent verification or write production code"],
+        ["plan", "Plan — a concrete plan the user can act on; writes locked until Apply"],
+        ["build", "Build — implement, verify, report what shipped"],
+        ["multi_agent", "Parallel (Multi-Agent) — useful parallel evidence, not duplicate chatter"],
       ] as const) {
         const opt = el("option", { value }, [label]);
         if ((this.settings.permission_mode || "adaptive") === value) opt.setAttribute("selected", "selected");
@@ -1567,7 +1567,7 @@ export class SettingsModal {
       return sel;
     }));
     body.appendChild(el("div", { class: "set-hint", style: "margin-top:-6px;margin-bottom:12px" }, [
-      "Adaptive keeps your selection stable while routing each turn to Ask, Research, Plan, Build, or Parallel. AGENTIC is opt-in and adds a split Execution Workbench, real isolated read-only workers when workstreams are independent, and one Director-controlled writer. Ask is direct and bounded. Research performs deeper read-only evidence gathering. Plan stays locked until Apply. Build uses one focused owner and verifies the requested change. Parallel is for genuinely separable workstreams; dependent edits remain ordered and one Director synthesizes the delivery.",
+      "Adaptive is the default: it keeps your selection stable while routing each turn to Ask, Research, Plan, Build, or Parallel, and it skips unused phases so a question never becomes a write. AGENTIC is opt-in — never forced — and adds a split Execution Workbench, isolated read-only workers when workstreams are independent, think-first (~200 characters) before tools, batches capped at 3, and one Director-controlled writer. Ask answers. Research cites evidence. Plan plans until Apply. Build reports what shipped. Parallel is for genuinely separable workstreams, not duplicate chatter. Execution profiles (Fast/Balanced/Thorough/Safe) change depth and safety, not permission mode. All modes use the session model (shipped default: Cursor SDK grok-4.5).",
     ]));
 
     body.appendChild(this.renderComputerUsePanel());

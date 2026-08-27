@@ -28,6 +28,10 @@ test("Director phase classifier and one-writer worker invariant are deterministi
   const source = await read("src-tauri/src/agentic.rs");
 
   assert.match(source, /pub const MAX_AGENTIC_WORKERS:\s*usize\s*=\s*6/);
+  assert.match(source, /pub const THINK_FIRST_MIN_CHARS:\s*usize\s*=\s*200/);
+  assert.match(source, /pub const MAX_TOOL_BATCH:\s*usize\s*=\s*3/);
+  assert.match(source, /fn thought_satisfies_think_first/);
+  assert.match(source, /fn cap_tool_batch/);
   assert.match(source, /AgenticPlan::classify/);
   for (const request of [
     "What does this component do?",
@@ -145,6 +149,37 @@ test("save_settings persists AGENTIC with orchestrated or thorough capability", 
   assert.match(spec, /not\.toContainText\("Could not save mode"\)/);
 });
 
+test("AGENTIC Director overlay, think-first, and orchestrated/thorough prompts are real contracts", async () => {
+  const [contract, agent, agentic, cursor, modelbar, settings] = await Promise.all([
+    read("src-tauri/src/mode_contract.rs"),
+    read("src-tauri/src/agent.rs"),
+    read("src-tauri/src/agentic.rs"),
+    read("src-tauri/src/cursor_bridge.rs"),
+    read("src/components/modelbar.ts"),
+    read("src/components/settings.ts"),
+  ]);
+
+  assert.match(contract, /AGENTIC DIRECTOR \(opt-in workbench\)/);
+  assert.match(contract, /You are the only writer/);
+  assert.match(contract, /~200 characters of public THOUGHT/);
+  assert.match(contract, /at most 3 tool calls per response/);
+  assert.match(contract, /CAPABILITY: ORCHESTRATED/);
+  assert.match(contract, /CAPABILITY: THOROUGH/);
+  assert.match(contract, /not the Thorough execution profile/);
+  assert.match(contract, /ADAPTIVE DIRECTOR \(default\)/);
+  assert.match(contract, /Never turn Q&A into writes/);
+  assert.match(agent, /mode_contract::runtime_overlays/);
+  assert.match(agent, /thought_satisfies_think_first/);
+  assert.match(agent, /cap_tool_batch/);
+  assert.match(agent, /agentic_think_first_gate/);
+  assert.match(agentic, /THINK_FIRST_MIN_CHARS/);
+  assert.match(agentic, /MAX_TOOL_BATCH/);
+  assert.match(cursor, /THINK FIRST: write at least \{\} characters/);
+  assert.match(modelbar, /opt-in/);
+  assert.match(settings, /AGENTIC is opt-in — never forced/);
+  assert.doesNotMatch(settings, /default[^\n]{0,80}"agentic"/i);
+});
+
 test("Execution Workbench renders one linear THOUGHT → TOOL feed with an honest SUMMARY", async () => {
   const [component, css, harness, spec] = await Promise.all([
     read("src/components/agentic-workbench.ts"),
@@ -180,26 +215,40 @@ test("Execution Workbench renders one linear THOUGHT → TOOL feed with an hones
   assert.match(spec, /reducedMotion/);
 });
 
-test("v1.3.6 release metadata is synchronized and remains optional", async () => {
-  const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest] = await Promise.all([
+test("v1.3.7 release metadata is synchronized and remains optional", async () => {
+  const [pkgRaw, lock, cargo, cargoLock, tauri, workflow, notes, manifest, latestRaw, websiteApp, websiteIndex] = await Promise.all([
     read("package.json"),
     read("package-lock.json"),
     read("src-tauri/Cargo.toml"),
     read("src-tauri/Cargo.lock"),
     read("src-tauri/tauri.conf.json"),
     read(".github/workflows/release-optimized.yml"),
-    read("release-notes/1.3.6.md"),
+    read("release-notes/1.3.7.md"),
     read("scripts/publish-update-manifest.mjs"),
+    read("docs/latest.json"),
+    read("website/js/app.js"),
+    read("docs/index.html"),
   ]);
   const pkg = JSON.parse(pkgRaw);
-  assert.equal(pkg.version, "1.3.6");
-  assert.match(lock, /"version": "1\.3\.6"/);
-  assert.match(cargo, /version = "1\.3\.6"/);
-  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.6"/);
-  assert.equal(JSON.parse(tauri).version, "1.3.6");
+  const latest = JSON.parse(latestRaw);
+  assert.equal(pkg.version, "1.3.7");
+  assert.match(lock, /"version": "1\.3\.7"/);
+  assert.match(cargo, /version = "1\.3\.7"/);
+  assert.match(cargoLock, /name = "hormachuelos-optimized"\s+version = "1\.3\.7"/);
+  assert.equal(JSON.parse(tauri).version, "1.3.7");
+  assert.equal(JSON.parse(tauri).identifier, "com.hormachuelos.optimized");
+  assert.equal(latest.version, "1.3.7");
+  assert.equal(latest.forceUpdate, false);
+  assert.match(latest.msiUrl, /Hormachuelos_Optimized_1\.3\.7_x64\.msi/);
+  assert.match(latest.exeUrl, /Hormachuelos_Optimized_1\.3\.7_x64-setup\.exe/);
+  assert.match(websiteApp, /OPTIMIZED_RELEASE_VERSION = "1\.3\.7"|version: "1\.3\.7"/);
+  assert.match(websiteIndex, /Hormachuelos_Optimized_1\.3\.7_x64\.msi/);
   assert.match(workflow, /AGENTIC Workbench/);
   assert.match(workflow, /test:agentic/);
   assert.match(workflow, /playwright\.agentic\.config\.mjs/);
-  assert.match(notes, /Steps stay on the record/);
+  assert.match(workflow, /Maximized modes/);
+  assert.doesNotMatch(workflow, /1\.3\.6/);
+  assert.doesNotMatch(workflow, /Persistent turn transcript/);
+  assert.match(notes, /Modes stay distinct/);
   assert.match(manifest, /forceUpdate:\s*false/);
 });

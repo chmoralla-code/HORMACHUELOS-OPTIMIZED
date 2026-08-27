@@ -172,27 +172,30 @@ impl ExecutionProfile {
     pub const fn instructions(self) -> &'static str {
         match self {
             Self::Fast => {
-                "\nFAST EXECUTION PROFILE:\n\
+                "\nFAST EXECUTION PROFILE (speed, not extra permission):\n\
+- This does not unlock writes. Permission mode still governs which tools may run.\n\
 - Minimize time-to-result: use supplied source hints and cached project intelligence before broad discovery.\n\
 - Make the smallest coherent change, run the cheapest relevant validator, and finish after one focused repair.\n\
 - Do not add optional refactors, extra review passes, or unrelated improvements.\n"
             }
             Self::Balanced => {
-                "\nBALANCED EXECUTION PROFILE:\n\
+                "\nBALANCED EXECUTION PROFILE (default depth, not extra permission):\n\
+- This does not change Ask/Plan/Research write locks. It only sizes context, effort, and repair budget.\n\
 - Prefer focused discovery and deterministic validation. Escalate investigation only when concrete evidence or a failed check requires it.\n\
 - Reuse the cached project map, prior successful build recipe, and running development server when available.\n"
             }
             Self::Thorough => {
-                "\nTHOROUGH EXECUTION PROFILE:\n\
-- Inspect dependency boundaries and edge cases before changing code, then run the strongest relevant local validation.\n\
-- Use additional review or repair passes only when they can resolve a specific remaining risk.\n\
+                "\nTHOROUGH EXECUTION PROFILE (depth, not AGENTIC Thorough capability):\n\
+- This is not extra write permission and not the AGENTIC Thorough chip. Inspect dependency boundaries and edge cases before changing code, then run the strongest relevant local validation.\n\
+- Use additional review or repair passes only when they can resolve a specific remaining risk. Do not invent verification you did not run.\n\
 - For trading work: inspect the actual strategy, settings, and results before judging a setup, and never invent prices or fills.\n"
             }
             Self::Safe => {
-                "\nSAFE BUILD EXECUTION PROFILE:\n\
+                "\nSAFE BUILD EXECUTION PROFILE (rollback protection, not a permission mode):\n\
 - Keep changes inside the active project whenever possible. Direct file tools and relevant project files changed by shell commands are checkpoint-protected.\n\
 - Avoid external side effects that cannot be rolled back. Explicitly surface deployments, database mutations, account changes, and other non-file effects before performing them.\n\
-- Validate before delivery and preserve the checkpoint until the user chooses to keep or roll back the run.\n"
+- Validate before delivery and preserve the checkpoint until the user chooses to keep or roll back the run.\n\
+- Safe does not itself lock Ask/Plan/Research; those modes already block writes.\n"
             }
         }
     }
@@ -375,5 +378,18 @@ mod tests {
             ExecutionProfile::resolve(Some("auto"), "change the text on this button", None),
             ExecutionProfile::Fast
         );
+    }
+
+    #[test]
+    fn profile_instructions_stay_orthogonal_to_permission_mode() {
+        let fast = ExecutionProfile::Fast.instructions();
+        let balanced = ExecutionProfile::Balanced.instructions();
+        let thorough = ExecutionProfile::Thorough.instructions();
+        let safe = ExecutionProfile::Safe.instructions();
+        assert!(fast.contains("not extra permission"));
+        assert!(balanced.contains("does not change Ask/Plan/Research write locks"));
+        assert!(thorough.contains("not AGENTIC Thorough"));
+        assert!(thorough.contains("Do not invent verification"));
+        assert!(safe.contains("not a permission mode"));
     }
 }

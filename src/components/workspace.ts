@@ -34,11 +34,11 @@ const EXECUTION_PROFILES: {
   label: string;
   description: string;
 }[] = [
-  { id: "auto", label: "Auto", description: "Routes small edits to Fast and risky work to Safe." },
-  { id: "fast", label: "Fast", description: "Smallest context, cheapest check, one focused repair." },
-  { id: "balanced", label: "Balanced", description: "Focused implementation with relevant validation." },
-  { id: "thorough", label: "Thorough", description: "Deeper inspection and stronger verification." },
-  { id: "safe", label: "Safe", description: "Also snapshots relevant project files around commands." },
+  { id: "auto", label: "Auto", description: "Routes small edits to Fast and risky work to Safe. Does not change permission mode." },
+  { id: "fast", label: "Fast", description: "Smallest context, cheapest check, one focused repair. Not extra write permission." },
+  { id: "balanced", label: "Balanced", description: "Focused work with relevant validation. Permission mode still governs tools." },
+  { id: "thorough", label: "Thorough", description: "Deeper inspection and stronger verification. Not the AGENTIC Thorough chip." },
+  { id: "safe", label: "Safe", description: "Checkpoint-protects command changes. Not a substitute for Ask/Plan locks." },
 ];
 
 function loadExecutionProfile(): AgentExecutionProfile {

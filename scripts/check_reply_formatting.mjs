@@ -654,4 +654,13 @@ for (const requiredLifecycleHook of [
   assert.ok(main.includes(requiredLifecycleHook), `missing session-lock lifecycle hook: ${requiredLifecycleHook}`);
 }
 
+assert.equal(
+  compactVisibleReply("Great question. The login form posts to /api/auth."),
+  "The login form posts to /api/auth.",
+);
+assert.equal(
+  compactVisibleReply("I'd be happy to help. Use Plan, then Apply."),
+  "Use Plan, then Apply.",
+);
+
 console.log("reply formatting and session model-lock checks passed");

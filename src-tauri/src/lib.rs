@@ -16,6 +16,7 @@ pub mod integration_chat;
 pub mod integrations;
 pub mod license;
 pub mod llm;
+mod mode_contract;
 pub mod preview_browser;
 pub mod preview_capture;
 pub mod project_intelligence;
