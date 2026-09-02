@@ -435,7 +435,7 @@ pub fn is_plan_locked_tool(name: &str) -> bool {
     is_file_mutating_tool(name)
 }
 
-pub const PLAN_LOCK_MESSAGE: &str = "This mode cannot create, edit, or write files. Use read, search, browser, computer, and question tools. To implement, confirm Apply on a plan or choose Build; reserve Parallel for independent workstreams.";
+pub const PLAN_LOCK_MESSAGE: &str = "This mode cannot create, edit, or write files. Use read, search, browser, computer, and question tools. Workspace Time Machine rollback is host-routed when the user asks to undo. To implement, confirm Apply on a plan or choose Build; reserve Parallel for independent workstreams.";
 
 /// Hide file-write tools in Plan / Ask / Research. Plan Apply and design-edit
 /// pass `plan_unlocked` so the next turn can implement.
