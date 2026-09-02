@@ -134,6 +134,8 @@ const MAX_CONSECUTIVE_STALLED_RECOVERIES: u8 = 4;
 const VISIBLE_REPLY_CONTRACT: &str = "\
 VISIBLE REPLY (all modes): Every turn that does not call a tool MUST end with user-facing reply text. \
 Never finish with only thinking/reasoning, a status line, or an announced next step such as \"let me describe\". \
+ZERO PLACEHOLDERS: Never output `// TODO`, `/* implement here */`, or partial stubs. Every function, component, and query must be complete and functional. \
+INVERTED PYRAMID: Lead directly with the answer or verified result. Follow with concise technical details and verification results when needed. \
 If the user attached an image or asked a question, write the answer in visible text. \
 Keep image answers short: one or two sentences per image, or a few bullets total. \
 Never mention auto-view, view_image, timeouts, HTTP, providers, paste paths, or restating \"the user wants…\" — start with the answer. \

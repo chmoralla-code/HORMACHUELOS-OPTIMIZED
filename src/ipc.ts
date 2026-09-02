@@ -328,42 +328,155 @@ export type LicenseStatus = {
   licenseKey?: string;
 };
 
+export const isTauriEnvironment = (): boolean =>
+  typeof window !== "undefined" &&
+  Boolean(
+    (window as any).__TAURI_INTERNALS__ ||
+      (window as any).__TAURI__ ||
+      (window as any).__TAURI_METADATA__,
+  );
+
 export const api = {
-  getProjectRoot: (): Promise<string | null> => invoke("get_project_root"),
-  setProjectRoot: (path: string): Promise<void> => invoke("set_project_root", { path }),
-  listRecentProjects: (): Promise<string[]> => invoke("list_recent_projects"),
+  getProjectRoot: (): Promise<string | null> =>
+    isTauriEnvironment() ? invoke("get_project_root") : Promise.resolve(null),
+  setProjectRoot: (path: string): Promise<void> =>
+    isTauriEnvironment() ? invoke("set_project_root", { path }) : Promise.resolve(),
+  listRecentProjects: async (): Promise<string[]> => {
+    if (isTauriEnvironment()) return invoke("list_recent_projects");
+    try {
+      const stored = localStorage.getItem("horma:recent_projects");
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  },
   /** Forget one recent project without deleting its folder or files. */
-  removeRecentProject: (path: string): Promise<boolean> => invoke("remove_recent_project", { path }),
-  getSettings: (): Promise<Settings> => invoke("get_settings"),
+  removeRecentProject: (path: string): Promise<boolean> =>
+    isTauriEnvironment() ? invoke("remove_recent_project", { path }) : Promise.resolve(true),
+  getSettings: async (): Promise<Settings> => {
+    if (isTauriEnvironment()) return invoke("get_settings");
+    try {
+      const stored = localStorage.getItem("horma:settings");
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      base_url: "https://api.deepseek.com",
+      max_iterations: 0,
+      command_timeout_secs: 120,
+      auto_approve: true,
+      permission_mode: "adaptive",
+      capability_mode: "balanced",
+      taglish: false,
+      model_effort: "high",
+      computer_use_enabled: false,
+      computer_use_prompt_activation: true,
+      desktop_computer_use_enabled: false,
+      desktop_computer_use_allowed_apps: [],
+      smart_agent_enabled: true,
+      flavour_enabled: true,
+    };
+  },
   /** Copies only provider, model, and effort from the standard app; never credentials. */
   getOriginalModelSelection: (): Promise<OriginalModelSelection | null> =>
-    invoke("get_original_model_selection"),
-  saveSettings: (settings: Settings): Promise<void> => invoke("save_settings", { settings }),
-  getComputerUseStatus: (): Promise<ComputerUseStatus> => invoke("get_computer_use_status"),
+    isTauriEnvironment() ? invoke("get_original_model_selection") : Promise.resolve(null),
+  saveSettings: async (settings: Settings): Promise<void> => {
+    try {
+      localStorage.setItem("horma:settings", JSON.stringify(settings));
+    } catch {}
+    if (isTauriEnvironment()) return invoke("save_settings", { settings });
+  },
+  getComputerUseStatus: (): Promise<ComputerUseStatus> =>
+    isTauriEnvironment()
+      ? invoke("get_computer_use_status")
+      : Promise.resolve({
+          supported: false,
+          paused: false,
+          emergencyShortcut: "Ctrl+Alt+Esc",
+          emergencyShortcutAvailable: false,
+          scope: "active-preview-tab-only",
+          autoApproved: true,
+        }),
   setComputerUsePaused: (paused: boolean): Promise<ComputerUseStatus> =>
-    invoke("set_computer_use_paused", { paused }),
+    isTauriEnvironment()
+      ? invoke("set_computer_use_paused", { paused })
+      : Promise.resolve({
+          supported: false,
+          paused,
+          emergencyShortcut: "Ctrl+Alt+Esc",
+          emergencyShortcutAvailable: false,
+          scope: "active-preview-tab-only",
+          autoApproved: true,
+        }),
   getDesktopComputerUseStatus: (): Promise<DesktopComputerUseStatus> =>
-    invoke("get_desktop_computer_use_status"),
+    isTauriEnvironment()
+      ? invoke("get_desktop_computer_use_status")
+      : Promise.resolve({
+          supported: false,
+          paused: false,
+          emergencyShortcut: "Ctrl+Alt+Esc",
+          emergencyShortcutAvailable: false,
+        }),
   listComputerUseTargets: (): Promise<{ windows?: ComputerUseTarget[] }> =>
-    invoke("list_computer_use_targets"),
+    isTauriEnvironment() ? invoke("list_computer_use_targets") : Promise.resolve({ windows: [] }),
   respondPreviewComputer: (
     requestId: string,
     ok: boolean,
     result?: Record<string, unknown> | null,
     error?: string | null,
-  ): Promise<void> => invoke("respond_preview_computer", {
-    requestId,
-    ok,
-    result: result ?? null,
-    error: error ?? null,
-  }),
-  setApiKey: (provider: string, key: string): Promise<void> => invoke("set_api_key", { provider, key }),
-  hasApiKey: (provider: string): Promise<boolean> => invoke("has_api_key", { provider }),
-  clearApiKey: (provider: string): Promise<void> => invoke("clear_api_key", { provider }),
-  setWebsiteSession: (token: string): Promise<void> => invoke("set_website_session", { token }),
-  getWebsiteSession: (): Promise<string | null> => invoke("get_website_session"),
-  clearWebsiteSession: (): Promise<void> => invoke("clear_website_session"),
-  openExternalUrl: (url: string): Promise<void> => invoke("open_external_url", { url }),
+  ): Promise<void> =>
+    isTauriEnvironment()
+      ? invoke("respond_preview_computer", {
+          requestId,
+          ok,
+          result: result ?? null,
+          error: error ?? null,
+        })
+      : Promise.resolve(),
+  setApiKey: (provider: string, key: string): Promise<void> =>
+    isTauriEnvironment() ? invoke("set_api_key", { provider, key }) : Promise.resolve(),
+  hasApiKey: (provider: string): Promise<boolean> =>
+    isTauriEnvironment() ? invoke("has_api_key", { provider }) : Promise.resolve(false),
+  clearApiKey: (provider: string): Promise<void> =>
+    isTauriEnvironment() ? invoke("clear_api_key", { provider }) : Promise.resolve(),
+  setWebsiteSession: async (token: string): Promise<void> => {
+    try {
+      localStorage.setItem("horma:website_session", token);
+    } catch {}
+    if (isTauriEnvironment()) {
+      return invoke("set_website_session", { token });
+    }
+  },
+  getWebsiteSession: async (): Promise<string | null> => {
+    if (isTauriEnvironment()) {
+      try {
+        const token = await invoke<string | null>("get_website_session");
+        if (token && token.trim()) return token.trim();
+      } catch {
+        /* fallback to local storage */
+      }
+    }
+    try {
+      const stored = localStorage.getItem("horma:website_session");
+      if (stored && stored.trim()) return stored.trim();
+    } catch {}
+    return null;
+  },
+  clearWebsiteSession: async (): Promise<void> => {
+    try {
+      localStorage.removeItem("horma:website_session");
+    } catch {}
+    if (isTauriEnvironment()) {
+      return invoke("clear_website_session");
+    }
+  },
+  openExternalUrl: async (url: string): Promise<void> => {
+    if (isTauriEnvironment()) {
+      return invoke("open_external_url", { url });
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  },
   respondToQuestion: (answer: string, sessionId: string): Promise<void> =>
     invoke("respond_to_question", { answer, sessionId }),
   respondToConfirm: (approved: boolean, sessionId: string): Promise<void> =>
@@ -405,11 +518,61 @@ export const api = {
       destPath: destPath ?? null,
       handoffSummary: handoffSummary ?? null,
     }),
-  getLicenseStatus: (): Promise<LicenseStatus> => invoke("get_license_status"),
-  applyLicenseKey: (key: string): Promise<LicenseStatus> => invoke("apply_license_key", { key }),
+  getLicenseStatus: async (): Promise<LicenseStatus> => {
+    if (isTauriEnvironment()) return invoke("get_license_status");
+    let email = "";
+    try {
+      const rawUser = localStorage.getItem("horma:user");
+      if (rawUser) {
+        const u = JSON.parse(rawUser);
+        email = u.email || "";
+      }
+    } catch {}
+    return {
+      plan: "free",
+      active: true,
+      expiresAt: "",
+      email,
+      tokenBudget: 1_000_000,
+      tokensUsed: 0,
+      topUpUrl: "",
+      message: "",
+      hosted: false,
+    };
+  },
+  applyLicenseKey: async (key: string): Promise<LicenseStatus> => {
+    if (isTauriEnvironment()) return invoke("apply_license_key", { key });
+    try {
+      localStorage.setItem("horma:license_key", key);
+    } catch {}
+    return {
+      plan: "pro",
+      active: true,
+      expiresAt: "",
+      email: "",
+      tokenBudget: 1_000_000,
+      tokensUsed: 0,
+      topUpUrl: "",
+      message: "License applied",
+      hosted: true,
+      licenseKey: key,
+    };
+  },
   /** Account-wide token burn (persisted in license.json — not per project). */
   recordLicenseUsage: (tokens: number): Promise<LicenseStatus> =>
-    invoke("record_license_usage", { tokens: Math.max(0, Math.floor(tokens || 0)) }),
+    isTauriEnvironment()
+      ? invoke("record_license_usage", { tokens: Math.max(0, Math.floor(tokens || 0)) })
+      : Promise.resolve({
+          plan: "free",
+          active: true,
+          expiresAt: "",
+          email: "",
+          tokenBudget: 1_000_000,
+          tokensUsed: tokens,
+          topUpUrl: "",
+          message: "",
+          hosted: false,
+        }),
   /** Save a clipboard/drag-drop image to a temp file; returns absolute path. */
   savePastedImage: (dataBase64: string, mime?: string | null): Promise<string> =>
     invoke("save_pasted_image", { dataBase64, mime: mime ?? null }),
@@ -477,7 +640,10 @@ export const api = {
     invoke("close_preview_browser", { label }),
   onPreviewBrowserEvent: (
     cb: (payload: PreviewBrowserEvent) => void,
-  ): Promise<UnlistenFn> => listen<PreviewBrowserEvent>("preview-browser-event", (event) => cb(event.payload)),
+  ): Promise<UnlistenFn> =>
+    isTauriEnvironment()
+      ? listen<PreviewBrowserEvent>("preview-browser-event", (event) => cb(event.payload))
+      : Promise.resolve(() => {}),
   /** Warm the bounded project index used by Source Lens hover inspection. */
   warmDesignSourceIndex: (): Promise<number> => invoke("warm_design_source_index"),
   /** Drop cached source data after a preview reload or project write. */
@@ -524,27 +690,34 @@ export const api = {
       runSettings: runSettings ?? null,
       requestedPermissionMode: requestedPermissionMode ?? null,
     }),
-  agentStop: (sessionId: string): Promise<void> => invoke("agent_stop", { sessionId }),
+  agentStop: (sessionId: string): Promise<void> =>
+    isTauriEnvironment() ? invoke("agent_stop", { sessionId }) : Promise.resolve(),
   /** Native source of truth for cross-project/session busy indicators. */
-  activeAgentSessions: (): Promise<string[]> => invoke("active_agent_sessions"),
+  activeAgentSessions: (): Promise<string[]> =>
+    isTauriEnvironment() ? invoke("active_agent_sessions") : Promise.resolve([]),
   openProjectInExplorer: (relativePath: string | null = null): Promise<void> =>
-    invoke("open_project_in_explorer", { relativePath }),
+    isTauriEnvironment() ? invoke("open_project_in_explorer", { relativePath }) : Promise.resolve(),
   ensureProjectDevServer: (projectRoot: string): Promise<string> =>
-    invoke("ensure_project_dev_server", { projectRoot }),
-  appVersion: (): Promise<string> => invoke("app_version"),
+    isTauriEnvironment() ? invoke("ensure_project_dev_server", { projectRoot }) : Promise.resolve(""),
+  appVersion: (): Promise<string> =>
+    isTauriEnvironment() ? invoke("app_version") : Promise.resolve("1.3.6"),
   /** True for `tauri dev` / debug exe so the GitHub installer is not offered. */
-  appIsDevBuild: (): Promise<boolean> => invoke("app_is_dev_build"),
+  appIsDevBuild: (): Promise<boolean> =>
+    isTauriEnvironment() ? invoke("app_is_dev_build") : Promise.resolve(true),
   /** Match in-app updates to the installer family already present on Windows. */
-  appInstallKind: (): Promise<"msi" | "nsis" | "unknown"> => invoke("app_install_kind"),
+  appInstallKind: (): Promise<"msi" | "nsis" | "unknown"> =>
+    isTauriEnvironment() ? invoke("app_install_kind") : Promise.resolve("unknown"),
   /** Persist WebView state outside its cache before an installer replaces the app. */
   saveUpdateBackup: (stateJson: string): Promise<void> =>
-    invoke("save_update_backup", { stateJson }),
+    isTauriEnvironment() ? invoke("save_update_backup", { stateJson }) : Promise.resolve(),
   /** Load the safety snapshot; it remains until restoration is confirmed. */
-  loadUpdateBackup: (): Promise<string | null> => invoke("load_update_backup"),
-  clearUpdateBackup: (): Promise<void> => invoke("clear_update_backup"),
+  loadUpdateBackup: (): Promise<string | null> =>
+    isTauriEnvironment() ? invoke("load_update_backup") : Promise.resolve(null),
+  clearUpdateBackup: (): Promise<void> =>
+    isTauriEnvironment() ? invoke("clear_update_backup") : Promise.resolve(),
   /** Download, verify, install, and restart without leaving the desktop app. */
   installAppUpdate: (downloadUrl: string, version: string, sha256: string): Promise<void> =>
-    invoke("install_app_update", { downloadUrl, version, sha256 }),
+    isTauriEnvironment() ? invoke("install_app_update", { downloadUrl, version, sha256 }) : Promise.resolve(),
   openFolderPicker: async (): Promise<string | null> => {
     const sel = await openDialog({ directory: true, multiple: false, title: "Select folder" });
     if (typeof sel === "string") return sel;
@@ -705,35 +878,41 @@ export type AgentEventPayload =
 export type AgentEvent = AgentEventPayload & { session_id: string };
 
 export function onAgentEvent(cb: (e: AgentEvent) => void): Promise<UnlistenFn> {
+  if (!isTauriEnvironment()) return Promise.resolve(() => {});
   return listen<AgentEvent>("agent", (ev) => cb(ev.payload));
 }
 
 export function onPreviewComputerRequest(
   cb: (request: PreviewComputerRequest) => void,
 ): Promise<UnlistenFn> {
+  if (!isTauriEnvironment()) return Promise.resolve(() => {});
   return listen<PreviewComputerRequest>("preview-computer-request", (event) => cb(event.payload));
 }
 
 export function onPreviewComputerStop(
   cb: (request: PreviewComputerStop) => void,
 ): Promise<UnlistenFn> {
+  if (!isTauriEnvironment()) return Promise.resolve(() => {});
   return listen<PreviewComputerStop>("preview-computer-stop", (event) => cb(event.payload));
 }
 
 export function onComputerUseStatus(
   cb: (status: ComputerUseStatus) => void,
 ): Promise<UnlistenFn> {
+  if (!isTauriEnvironment()) return Promise.resolve(() => {});
   return listen<ComputerUseStatus>("computer-use-status", (ev) => cb(ev.payload));
 }
 
 export function onComputerUseFx(
   cb: (event: ComputerUseFxEvent) => void,
 ): Promise<UnlistenFn> {
+  if (!isTauriEnvironment()) return Promise.resolve(() => {});
   return listen<ComputerUseFxEvent>("computer-use-fx", (ev) => cb(ev.payload));
 }
 
 export function onAppUpdateProgress(
   cb: (event: AppUpdateProgress) => void,
 ): Promise<UnlistenFn> {
+  if (!isTauriEnvironment()) return Promise.resolve(() => {});
   return listen<AppUpdateProgress>("app-update-progress", (ev) => cb(ev.payload));
 }

@@ -23,8 +23,8 @@ export type AdaptiveRouteSummary = {
 const modeAutoApproves = (mode: PermissionMode) =>
   mode === "adaptive" || mode === "agentic" || mode === "build" || mode === "multi_agent";
 
-/** Agent permission modes (OpenCode-style chip labels). */
-const MODES: {
+/** Complete registry of supported modes for runtime routing and session restore. */
+const ALL_MODES: {
   id: PermissionMode;
   chip: string;
   label: string;
@@ -35,57 +35,93 @@ const MODES: {
     id: "adaptive",
     chip: "auto",
     label: "Adaptive",
-    title:
-      "Adaptive Director (Auto) — routes each turn to Ask, Research, Plan, Build, or Parallel without changing your selection.",
+    title: "Adaptive Director (Auto) — routes each turn automatically.",
     capability: "Balanced",
   },
   {
     id: "agentic",
     chip: "agentic",
     label: "AGENTIC",
-    title:
-      "AGENTIC Workbench — an adaptive Director scopes, plans, researches, delegates read-only evidence work, and gives one writer control of implementation and verification.",
+    title: "AGENTIC Workbench — adaptive phases and isolated workers.",
     capability: "Orchestrated",
+  },
+  {
+    id: "plan",
+    chip: "plan",
+    label: "Plan",
+    title: "Plan — Generate an implementation plan",
+    capability: "Thinking",
+  },
+  {
+    id: "build",
+    chip: "debug",
+    label: "Debug",
+    title: "Debug — Pinpoint the root cause of an issue",
+    capability: "Agent",
+  },
+  {
+    id: "multi_agent",
+    chip: "multitask",
+    label: "Multitask",
+    title: "Multitask — Orchestrate multiple subagents in parallel",
+    capability: "Autonomous",
   },
   {
     id: "ask",
     chip: "ask",
     label: "Ask",
-    title:
-      "Ask — direct, bounded answers with evidence when needed; project writes stay locked.",
+    title: "Ask — Answer questions without making edits",
     capability: "Answer Max",
   },
   {
     id: "research",
     chip: "research",
     label: "Research",
-    title:
-      "Research — deep read-only investigation, source cross-checking, and one synthesized report.",
+    title: "Research — deep read-only investigation.",
     capability: "Investigate",
   },
+];
+
+/** Agent permission modes (Claude Code / OpenCode style 4-mode layout). */
+const MODES: {
+  id: PermissionMode;
+  chip: string;
+  label: string;
+  title: string;
+  description: string;
+  capability: string;
+}[] = [
   {
     id: "plan",
     chip: "plan",
     label: "Plan",
-    title:
-      "Plan — clarify scope, tradeoffs, acceptance criteria, and verification; writes stay locked until Apply.",
+    title: "Plan — Generate an implementation plan",
+    description: "Generate an implementation plan",
     capability: "Thinking",
   },
   {
     id: "build",
-    chip: "build",
-    label: "Build",
-    title:
-      "Build — one focused owner implements, validates, and repairs the requested change; high-risk actions still need approval.",
+    chip: "debug",
+    label: "Debug",
+    title: "Debug — Pinpoint the root cause of an issue",
+    description: "Pinpoint the root cause of an issue",
     capability: "Agent",
   },
   {
     id: "multi_agent",
-    chip: "parallel",
-    label: "Parallel",
-    title:
-      "Parallel (Multi-Agent) — coordinates independent workstreams, keeps dependent edits ordered, and synthesizes one verified delivery.",
+    chip: "multitask",
+    label: "Multitask",
+    title: "Multitask — Orchestrate multiple subagents in parallel",
+    description: "Orchestrate multiple subagents in parallel",
     capability: "Autonomous",
+  },
+  {
+    id: "ask",
+    chip: "ask",
+    label: "Ask",
+    title: "Ask — Answer questions without making edits",
+    description: "Answer questions without making edits",
+    capability: "Answer Max",
   },
 ];
 
@@ -651,9 +687,9 @@ export class ModelBar {
     const lockedProfile = this.activeRunProfile;
     const displaySettings = lockedProfile || this.settings;
     const modelIsLocked = this.modelSelectionLocked();
-    const modeMeta = MODES.find((m) => m.id === mode) || MODES[0];
+    const modeMeta = MODES.find((m) => m.id === mode) || ALL_MODES.find((m) => m.id === mode) || MODES[0];
     const routeMeta = mode === "adaptive" && this.activeAdaptiveRoute
-      ? MODES.find((entry) => entry.id === this.activeAdaptiveRoute?.mode)
+      ? (MODES.find((entry) => entry.id === this.activeAdaptiveRoute?.mode) || ALL_MODES.find((entry) => entry.id === this.activeAdaptiveRoute?.mode))
       : null;
     const modeChip = routeMeta ? `auto → ${routeMeta.chip}` : modeMeta.chip;
     const modeTitle = routeMeta
@@ -704,23 +740,18 @@ export class ModelBar {
         this.closeMenus();
         return;
       }
-      const menu = el("div", { class: "chip-menu", role: "listbox", "aria-label": "Permission mode" });
+      const menu = el("div", { class: "chip-menu chip-menu-modes", role: "listbox", "aria-label": "Permission mode" });
       for (const m of MODES) {
         const item = el("button", {
-          class: "chip-menu-item" + (m.id === mode ? " active" : ""),
+          class: `chip-menu-item chip-menu-row chip-menu-mode-${m.chip}` + (m.id === mode ? " active" : ""),
           type: "button",
           role: "option",
           "aria-selected": String(m.id === mode),
           title: m.title,
-        }, [
-          m.id === "multi_agent"
-            ? "parallel — Multi-Agent coordination"
-            : m.id === "agentic"
-              ? "agentic — AGENTIC Workbench"
-              : m.id === "adaptive"
-              ? "auto — Adaptive Director (recommended)"
-              : `${m.chip} — ${m.label}`,
-        ]) as HTMLButtonElement;
+          html:
+            `<span class="chip-menu-ico">${icon(m.chip === "plan" ? "planList" : m.chip === "debug" ? "bug" : m.chip === "multitask" ? "multitask" : "ask", 14)}</span>` +
+            `<span class="chip-menu-text"><span class="chip-menu-label">${escapeHtml(m.label)}</span><span class="chip-menu-desc">${escapeHtml(m.description)}</span></span>`,
+        }) as HTMLButtonElement;
         item.addEventListener("click", (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -977,18 +1008,23 @@ export class ModelBar {
       iconName: keyof typeof icons,
       opts: {
         title?: string;
+        desc?: string;
+        modeClass?: string;
         active?: boolean;
         onClick?: (e: MouseEvent) => void;
       } = {},
     ) => {
+      const descHtml = opts.desc
+        ? `<span class="chip-menu-desc">${escapeHtml(opts.desc)}</span>`
+        : "";
       const item = el("button", {
-        class: "chip-menu-item chip-menu-row" + (opts.active ? " active" : ""),
+        class: "chip-menu-item chip-menu-row" + (opts.modeClass ? ` ${opts.modeClass}` : "") + (opts.active ? " active" : ""),
         type: "button",
         role: "menuitem",
         title: opts.title || label,
         html:
           `<span class="chip-menu-ico">${icon(iconName, 14)}</span>` +
-          `<span class="chip-menu-text">${label}</span>`,
+          `<span class="chip-menu-text"><span class="chip-menu-label">${escapeHtml(label)}</span>${descHtml}</span>`,
       }) as HTMLButtonElement;
       if (opts.onClick) {
         item.addEventListener("click", (e) => {
@@ -1001,80 +1037,46 @@ export class ModelBar {
       return item;
     };
 
-    addItem("Adaptive Director", "spark", {
-      title: "Auto-route every turn by intent, complexity, and risk",
-      active: mode === "adaptive",
-      onClick: () => {
-        this.closeMenus();
-        void this.applyPlusMode("adaptive", "balanced", "Adaptive Director");
-      },
-    });
-    addItem("Ask", "ask", {
-      title: "Ask — direct bounded answer with no project writes",
-      active: mode === "ask" && cap === "answer_max",
-      onClick: () => {
-        this.closeMenus();
-        void this.applyPlusMode("ask", "answer_max", "Ask · Answer Max");
-      },
-    });
-    addItem("Research", "search", {
-      title: "Research — deep read-only evidence, cross-checking, and synthesis",
-      active: mode === "research",
-      onClick: () => {
-        this.closeMenus();
-        void this.applyPlusMode("research", "investigate", "Research · Deep evidence");
-      },
-    });
     addItem("Plan", "planList", {
-      title: "Plan — clarify decisions and verification before file changes",
+      title: "Plan — Generate an implementation plan",
+      desc: "Generate an implementation plan",
+      modeClass: "chip-menu-mode-plan",
       active: mode === "plan",
       onClick: () => {
         this.closeMenus();
-        void this.applyPlusMode("plan", undefined, "Plan mode");
+        void this.applyPlusMode("plan", "thinking", "Plan mode");
       },
     });
-    addItem("Build", "bug", {
-      title: "Build — focused implementation with a relevant verification check",
+    addItem("Debug", "bug", {
+      title: "Debug — Pinpoint the root cause of an issue",
+      desc: "Pinpoint the root cause of an issue",
+      modeClass: "chip-menu-mode-debug",
       active: mode === "build",
       onClick: () => {
         this.closeMenus();
-        void this.applyPlusMode("build", "agent", "Build mode");
+        void this.applyPlusMode("build", "agent", "Debug mode");
       },
     });
-    addItem("Parallel (Multi-Agent)", "multitask", {
-      title: "Coordinate independent workstreams and synthesize one verified result",
+    addItem("Multitask", "multitask", {
+      title: "Multitask — Orchestrate multiple subagents in parallel",
+      desc: "Orchestrate multiple subagents in parallel",
+      modeClass: "chip-menu-mode-multitask",
       active: mode === "multi_agent",
       onClick: () => {
         this.closeMenus();
-        void this.applyPlusMode("multi_agent", "autonomous", "Parallel · Multi-Agent");
+        void this.applyPlusMode("multi_agent", "autonomous", "Multitask mode");
       },
     });
-
-    addItem(
-      `Flavour memory — ${this.settings.flavour_enabled !== false ? "On" : "Off"}`,
-      "spark",
-      {
-        title: "Recall bounded project preferences and private session working memory before, during, and after AI work",
-        active: this.settings.flavour_enabled !== false,
-        onClick: () => {
-          const enabled = this.settings.flavour_enabled === false;
-          this.settings.flavour_enabled = enabled;
-          this.closeMenus();
-          void api.saveSettings(this.settings)
-            .then(async () => {
-              this.settings = await api.getSettings();
-              this.normalizeMode();
-              this.renderProviderRail();
-              this.setStatus(`Flavour memory ${enabled ? "on" : "off"}`);
-              this.onChange();
-            })
-            .catch((error) => {
-              console.error("Failed to toggle Flavour memory", error);
-              this.setStatus("Could not change Flavour memory", true);
-            });
-        },
+    addItem("Ask", "ask", {
+      title: "Ask — Answer questions without making edits",
+      desc: "Answer questions without making edits",
+      modeClass: "chip-menu-mode-ask",
+      active: mode === "ask",
+      onClick: () => {
+        this.closeMenus();
+        void this.applyPlusMode("ask", "answer_max", "Ask mode");
       },
-    );
+    });
 
     menu.appendChild(el("div", { class: "chip-menu-sep", role: "separator" }));
 
@@ -1108,7 +1110,7 @@ export class ModelBar {
     if (this.getMode() !== "adaptive") return;
     this.activeAdaptiveRoute = route;
     this.renderProviderRail();
-    const meta = MODES.find((entry) => entry.id === route.mode);
+    const meta = MODES.find((entry) => entry.id === route.mode) || ALL_MODES.find((entry) => entry.id === route.mode);
     const label = meta?.label || route.mode;
     this.setStatus(`Adaptive → ${label} · ${route.reason}`);
   }

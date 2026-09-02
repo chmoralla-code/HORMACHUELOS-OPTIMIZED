@@ -94,7 +94,19 @@ export async function fetchWebsiteAccount(token: string): Promise<WebsiteAccount
 }
 
 export async function ensureWebsiteSession(): Promise<WebsiteAccount | null> {
-  const token = await api.getWebsiteSession();
+  let token: string | null = null;
+  try {
+    token = await api.getWebsiteSession();
+  } catch {
+    /* fallback to localStorage */
+  }
+  if (!token) {
+    try {
+      token = localStorage.getItem("horma:website_session");
+    } catch {
+      /* ignore */
+    }
+  }
   if (!token) return null;
   try {
     return await fetchWebsiteAccount(token);
@@ -103,6 +115,9 @@ export async function ensureWebsiteSession(): Promise<WebsiteAccount | null> {
     // session so it can be verified again when connectivity recovers.
     if (isWebsiteSessionRejected(error)) {
       await api.clearWebsiteSession().catch(() => {});
+      try {
+        localStorage.removeItem("horma:website_session");
+      } catch {}
     }
     return null;
   }
@@ -164,9 +179,28 @@ export function showAuthGate(onSignedIn: (user: WebsiteAccount) => void): HTMLEl
     stop();
     status.textContent = "Saving sign-in…";
     try {
-      await api.setWebsiteSession(token);
-      // Confirm the website session actually works before unlocking the app.
-      const verified = await fetchWebsiteAccount(token);
+      try {
+        await api.setWebsiteSession(token);
+      } catch (err) {
+        console.warn("api.setWebsiteSession warning", err);
+      }
+      try {
+        localStorage.setItem("horma:website_session", token);
+      } catch {
+        /* ignore */
+      }
+
+      // Re-verify with /api/auth/me if reachable, or use the authenticated profile from poll
+      let verified = user;
+      try {
+        const fresh = await fetchWebsiteAccount(token);
+        if (fresh && fresh.email) {
+          verified = fresh;
+        }
+      } catch (fetchErr) {
+        console.warn("fetchWebsiteAccount verification warning, using polled user profile", fetchErr);
+      }
+
       if (verified.licenseKey) {
         try {
           await api.applyLicenseKey(verified.licenseKey);
@@ -176,8 +210,12 @@ export function showAuthGate(onSignedIn: (user: WebsiteAccount) => void): HTMLEl
         }
       }
       status.textContent = `Signed in as ${verified.email}`;
-      onSignedIn(verified);
       overlay.remove();
+      try {
+        onSignedIn(verified);
+      } catch (uiErr) {
+        console.error("onSignedIn callback error", uiErr);
+      }
     } catch (e) {
       finishing = false;
       status.textContent = `Could not save session: ${String((e as Error).message || e)}. Retrying…`;

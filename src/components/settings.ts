@@ -850,8 +850,13 @@ export async function getSettingsSafe(): Promise<Settings> {
 }
 
 /** Normalize provider settings while preserving user-entered custom model IDs. */
-export function normalizeSettings(s: Settings): Settings {
-  s.provider = String(s.provider || "").trim().toLowerCase();
+export function normalizeSettings(s?: Settings | null): Settings {
+  const base = defaultSettings();
+  if (!s || typeof s !== "object") {
+    return base;
+  }
+  s.provider = String(s.provider || base.provider).trim().toLowerCase();
+  s.model = String(s.model || base.model).trim();
   const rawMode = String(s.permission_mode || "").trim().toLowerCase();
   s.permission_mode = rawMode === "auto"
     ? "adaptive"
@@ -859,7 +864,7 @@ export function normalizeSettings(s: Settings): Settings {
       ? "build"
       : ["adaptive", "agentic", "ask", "research", "plan", "build", "multi_agent"].includes(rawMode)
         ? rawMode
-        : "adaptive";
+        : base.permission_mode;
   s.auto_approve =
     s.permission_mode === "adaptive" ||
     s.permission_mode === "agentic" ||
@@ -893,7 +898,7 @@ export function normalizeSettings(s: Settings): Settings {
   // Flavour is local, provider-neutral memory. Missing on older settings means
   // enabled so long-running and continuing sessions benefit after upgrading.
   s.flavour_enabled = s.flavour_enabled !== false;
-  s.model_effort = normalizeEffortForProvider(s.provider, s.model_effort, s.model);
+  s.model_effort = normalizeEffortForProvider(s.provider, s.model_effort || base.model_effort, s.model);
   // Older builds pointed the OpenAI label at Cursor. Keep that path for a
   // genuine Cursor key; an explicit xAI endpoint uses the native xAI route.
   if (s.provider === "openai" && s.base_url === "https://api.cursor.com/v1") {
@@ -917,7 +922,7 @@ export function normalizeSettings(s: Settings): Settings {
     s.base_url = openai.defaultBaseUrl || null;
     return s;
   }
-  if (!s.model.trim()) {
+  if (!s.model || !s.model.trim()) {
     s.model = meta.defaultModel;
   }
   if (s.provider === "cursor") {

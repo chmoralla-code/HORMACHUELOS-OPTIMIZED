@@ -4266,22 +4266,42 @@
   color: #fff;
 }
 .chip-menu-plus {
-  min-width: 200px;
+  min-width: 280px;
   max-height: none;
   padding: 6px;
+}
+.chip-menu-modes {
+  min-width: 280px;
 }
 .chip-menu-row {
   display: flex !important;
   align-items: center;
   gap: 10px;
+  padding: 7px 10px;
 }
 .chip-menu-ico {
   display: inline-flex;
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-  opacity: 0.75;
+  opacity: 0.85;
   color: inherit;
+}
+.chip-menu-mode-plan .chip-menu-ico {
+  color: #f59e0b;
+  opacity: 1;
+}
+.chip-menu-mode-debug .chip-menu-ico {
+  color: #f43f5e;
+  opacity: 1;
+}
+.chip-menu-mode-multitask .chip-menu-ico {
+  color: #a855f7;
+  opacity: 1;
+}
+.chip-menu-mode-ask .chip-menu-ico {
+  color: #10b981;
+  opacity: 1;
 }
 .chip-menu-ico .ico,
 .chip-menu-ico svg {
@@ -4291,6 +4311,22 @@
 .chip-menu-text {
   flex: 1;
   text-align: left;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.chip-menu-label {
+  font-weight: 500;
+  color: #fff;
+  font-size: 12px;
+}
+.chip-menu-desc {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .chip-menu-meta {
   font-size: 10px;
