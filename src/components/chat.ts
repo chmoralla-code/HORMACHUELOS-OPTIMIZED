@@ -1691,6 +1691,7 @@ export class Chat {
       this.freezeAllWorkingDots();
       this.clearRunningIndicator();
       this.sealToolBatch();
+      this.sealWrapCurrentTurn();
     }
     this.node.setAttribute("aria-busy", String(running));
     // Always keep input open so the user can queue more messages
@@ -2057,6 +2058,8 @@ export class Chat {
               agent_id: msg.agentId,
               phase: msg.phase,
             });
+            this.queueTool(msg.id, msg.name, msg.arguments);
+            this.tagAgenticToolCard(msg.id, (msg as any)?.agentId);
           } else {
             this.queueTool(msg.id, msg.name, msg.arguments);
           }
@@ -2071,6 +2074,7 @@ export class Chat {
               agent_id: msg.agentId,
               phase: msg.phase,
             });
+            this.appendToolResult(msg.id, msg.name, msg.ok, msg.content, msg.at);
           } else {
             this.appendToolResult(msg.id, msg.name, msg.ok, msg.content, msg.at);
           }
@@ -2099,6 +2103,7 @@ export class Chat {
     this.replaying = false;
     this.coalesceAllTurnsChrome();
     this.placeTurnChromeInOrder();
+    this.sealWrapAllTurns(!!opts?.running);
     if (opts?.running) this.resumeOpenRunAfterLoad();
     const terminal = [...msgs].reverse().find(
       (m) => m.type === "done" || m.type === "end" || m.type === "cancelled",
@@ -3690,6 +3695,141 @@ export class Chat {
     return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
   }
 
+  /** Coarse header phase for the run timeline (visual only, no backend change). */
+  private runStatusPhase(detail: string): string {
+    const text = String(detail || "");
+    if (/waiting/i.test(text)) return "waiting";
+    if (/preparing|running|completed|tool failed/i.test(text)) return "tools";
+    if (/finalizing|finishing/i.test(text)) return "writing";
+    return "thinking";
+  }
+
+  /** Tag a unified tool card with its worker attribution (visual only). */
+  private tagAgenticToolCard(id: string, worker: unknown) {
+    const tc = this.toolCards.get(id);
+    const wrap = tc?.card.parentElement;
+    if (!wrap || !(wrap instanceof HTMLElement)) return;
+    if (wrap.dataset.workerTagged) return;
+    wrap.dataset.workerTagged = "true";
+    const label = typeof worker === "string" && worker.trim()
+      ? worker.trim().slice(0, 24)
+      : "Worker";
+    wrap.dataset.worker = label;
+    if (!tc!.head.querySelector(".tool-worker-badge")) {
+      const badge = el("span", { class: "tool-worker-badge" }, [label]);
+      const chev = tc!.head.querySelector(".chev");
+      if (chev) tc!.head.insertBefore(badge, chev);
+      else tc!.head.appendChild(badge);
+    }
+  }
+
+  /** Collect one turn's reply chrome in document order (never crosses a user turn). */
+  private collectTurnChrome(lastUser: HTMLElement | null): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    let node: Element | null = lastUser ? lastUser.nextElementSibling : this.node.firstElementChild;
+    while (node) {
+      const current = node as HTMLElement;
+      node = node.nextElementSibling;
+      if (!(current instanceof HTMLElement)) continue;
+      if (current.classList.contains("msg") && current.classList.contains("user")) break;
+      if (current.classList.contains("run-container")) continue;
+      if (
+        current.classList.contains("run-status-wrap") ||
+        current.classList.contains("thinking-wrap") ||
+        current.classList.contains("tool-batch-wrap") ||
+        current.classList.contains("tool-card-wrap") ||
+        current.classList.contains("thinking-running") ||
+        current.classList.contains("progress-step") ||
+        current.classList.contains("tool-confirm-wrap") ||
+        current.classList.contains("multi-agent-batch") ||
+        current.classList.contains("question-card") ||
+        (current.classList.contains("msg") && current.classList.contains("assistant")) ||
+        current.classList.contains("done-card") ||
+        current.classList.contains("summary-card")
+      ) {
+        out.push(current);
+      }
+    }
+    return out;
+  }
+
+  /** Wrap one turn's chrome into a single ChatGPT-style run container (visual only). */
+  private wrapTurnIntoContainer(nodes: HTMLElement[], state: string) {
+    if (!nodes.length) return;
+    if (nodes.every((n) => !!n.parentElement?.classList.contains("run-container"))) return;
+    const anchor = nodes.find((n) => n.isConnected);
+    if (!anchor) return;
+    const section = document.createElement("section");
+    section.className = "run-container";
+    section.dataset.state = state;
+    section.setAttribute("aria-label", "AI run");
+    anchor.before(section);
+    for (const item of nodes) section.appendChild(item);
+  }
+
+  /** Seal the finished live turn into its run container. */
+  private sealWrapCurrentTurn() {
+    if (this.replaying) return;
+    const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
+    const lastUser = users[users.length - 1] || null;
+    const nodes = this.collectTurnChrome(lastUser);
+    if (!nodes.length) return;
+    const terminal = this.userCancelled ? "cancelled" : "done";
+    this.wrapTurnIntoContainer(nodes, terminal);
+  }
+
+  /** Frozen header for restored turns (derived from thought time, never persisted). */
+  private synthesizeSealedHeader(state: string, elapsedMs: number): HTMLElement {
+    const row = div("run-status-wrap is-sealed tool-spawn");
+    row.setAttribute("role", "status");
+    row.setAttribute("aria-live", "off");
+    row.dataset.state = state;
+    row.dataset.phase = state === "cancelled" ? "cancelled" : "done";
+    const elapsed = Number.isFinite(elapsedMs) && elapsedMs > 0 ? this.formatRunElapsed(elapsedMs) : "";
+    const copy = div("run-status-copy");
+    const elapsedEl = el("span", { class: "run-status-elapsed" }, []);
+    elapsedEl.textContent = state === "cancelled"
+      ? `Cancelled${elapsed ? ` after ${elapsed}` : ""}`
+      : state === "waiting"
+        ? "Waiting for your choice"
+        : elapsed
+          ? `Thought for ${elapsed}`
+          : "Done";
+    const detailEl = el("span", { class: "run-status-detail" }, []);
+    detailEl.textContent = state === "cancelled" ? "Run cancelled" : state === "waiting" ? "Waiting" : "Done";
+    copy.append(elapsedEl, detailEl);
+    row.append(copy);
+    row.setAttribute("aria-label", `${elapsedEl.textContent} · ${detailEl.textContent}`);
+    return row;
+  }
+
+  /** Rebuild sealed run containers for every restored turn (visual only). */
+  private sealWrapAllTurns(runningLoaded: boolean) {
+    const users = [...this.node.querySelectorAll<HTMLElement>(".msg.user")];
+    const turns: (HTMLElement | null)[] = users.length ? [...users] : [null];
+    turns.forEach((user, index) => {
+      if (runningLoaded && index === turns.length - 1 && users.length) return;
+      const nodes = this.collectTurnChrome(user);
+      if (!nodes.length) return;
+      let state = "done";
+      if (nodes.some((n) => (n.matches(".tool-confirm-wrap:not(.tool-confirm-done)") || n.matches(".question-card.is-open")))) {
+        state = "waiting";
+      } else if (nodes.some((n) => n.matches(".tool-card.cancelled") || !!n.querySelector(".tool-card.cancelled"))) {
+        state = "cancelled";
+      }
+      const header = nodes.find((n) => n.classList.contains("run-status-wrap"));
+      if (!header) {
+        const thought = nodes.find((n) => n.classList.contains("thinking-wrap"));
+        const elapsedMs = Number(thought?.getAttribute("data-elapsed-ms") || 0);
+        nodes.unshift(this.synthesizeSealedHeader(state, elapsedMs));
+      } else {
+        header.classList.add("is-sealed");
+        header.dataset.state = state;
+      }
+      this.wrapTurnIntoContainer(nodes, state);
+    });
+  }
+
   private compactRunStatusDetail(detail: string): string {
     const compact = String(detail || "").replace(/\s+/g, " ").trim();
     if (!compact) return "Working";
@@ -3712,6 +3852,7 @@ export class Chat {
       "aria-label",
       `Working for ${this.formatRunElapsed(elapsed)} · ${this.runStatusDetail}`,
     );
+    this.runStatusEl.dataset.phase = this.runStatusPhase(this.runStatusDetail);
   }
 
   private startRunStatusIndicator(detail = "Thinking") {
@@ -3750,8 +3891,37 @@ export class Chat {
       clearInterval(this.runStatusTimerId);
       this.runStatusTimerId = null;
     }
-    this.runStatusEl?.remove();
+    // Seal the header in place (Done/Finished/Cancelled) instead of removing
+    // it, so every turn keeps one ChatGPT-style run header. Backend untouched.
+    const row = this.runStatusEl;
     this.runStatusEl = null;
+    if (!row?.isConnected) {
+      row?.remove();
+      this.runStatusDetail = "Thinking";
+      return;
+    }
+    const terminal = this.userCancelled ? "cancelled" : this.runCompleted ? "done" : "interrupted";
+    const elapsed = this.runStartTime == null ? 0 : Date.now() - this.runStartTime;
+    row.classList.add("is-sealed");
+    row.dataset.state = terminal;
+    const elapsedEl = row.querySelector(".run-status-elapsed") as HTMLElement | null;
+    if (elapsedEl) {
+      elapsedEl.textContent = terminal === "done"
+        ? `Done in ${this.formatRunElapsed(elapsed)}`
+        : terminal === "cancelled"
+          ? `Cancelled after ${this.formatRunElapsed(elapsed)}`
+          : `Finished in ${this.formatRunElapsed(elapsed)}`;
+    }
+    const detailEl = row.querySelector(".run-status-detail") as HTMLElement | null;
+    if (detailEl) {
+      setShimmerText(
+        detailEl,
+        terminal === "done" ? "Done" : terminal === "cancelled" ? "Run cancelled" : this.runStatusDetail,
+        false,
+      );
+    }
+    row.setAttribute("aria-label", `${elapsedEl?.textContent || ""} · ${detailEl?.textContent || ""}`);
+    row.dataset.phase = terminal === "cancelled" ? "cancelled" : "done";
     this.runStatusDetail = "Thinking";
   }
 
@@ -6561,6 +6731,7 @@ export class Chat {
         break;
       case "agentic_plan":
         this.startAgenticWorkbench(e.payload.run_id);
+        this.updateRunStatus("Planning");
         this.agenticWorkbench?.updatePlan(e.payload);
         break;
       case "agentic_phase":
@@ -6612,8 +6783,12 @@ export class Chat {
       case "build_progress":
         this.applyBuildProgress(e.payload);
         break;
-      case "task_progress":
+      case "task_progress": {
+        // Director keeps executing; its plan detail becomes the run header line.
+        const detail = String((e.payload as any)?.detail || "").trim();
+        if (detail) this.updateRunStatus(detail);
         break;
+      }
       case "text":
         this.appendAssistantText(
           e.payload.text,
@@ -6624,6 +6799,7 @@ export class Chat {
         this.updateRunStatus(`Preparing ${this.friendlyToolName(e.payload.name)}`);
         if (this.agenticRun || e.payload.run_id) {
           this.agenticWorkbench?.previewTool(e.payload);
+          this.previewTool(e.payload.id, e.payload.name, (e.payload as any)?.arguments_delta ?? "");
         } else {
           this.previewTool(
             e.payload.id,
@@ -6639,6 +6815,7 @@ export class Chat {
             ok: false,
             content: e.payload.reason || "Provider did not finish this tool request.",
           });
+          this.appendToolResult(e.payload.id, e.payload.name, false, e.payload.reason || "Provider did not finish this tool request.");
         } else {
           this.appendToolResult(
             e.payload.id,
@@ -6655,6 +6832,8 @@ export class Chat {
         this.updateRunStatus(`Running ${this.friendlyToolName(e.payload.name)}`);
         if (this.agenticRun || e.payload.run_id) {
           this.agenticWorkbench?.queueTool(e.payload);
+          this.queueTool(e.payload.id, e.payload.name, (e.payload as any)?.arguments, (e.payload as any)?.preview_id);
+          this.tagAgenticToolCard(e.payload.id, (e.payload as any)?.agent_id ?? (e.payload as any)?.agentId);
         } else {
           this.queueTool(
             e.payload.id,
@@ -6675,6 +6854,7 @@ export class Chat {
         );
         if (this.agenticRun || e.payload.run_id) {
           this.agenticWorkbench?.finishTool(e.payload);
+          this.appendToolResult(e.payload.id, e.payload.name, e.payload.ok, e.payload.content);
         } else {
           this.appendToolResult(e.payload.id, e.payload.name, e.payload.ok, e.payload.content);
         }

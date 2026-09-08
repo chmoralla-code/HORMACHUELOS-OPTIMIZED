@@ -5861,3 +5861,137 @@ body.fps-optimized .tool-wave-dots span {
     opacity: 0.8;
   }
 }
+/* Unified ChatGPT-style run timeline: one container per assistant turn.
+   Visual-only consolidation; backend events, persistence and schemas frozen. */
+.run-container {
+  width: 100%;
+  max-width: 880px;
+  margin: 8px auto 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+}
+.run-container > .run-status-wrap {
+  max-width: none;
+  margin: 0;
+}
+.run-container > .thinking-wrap,
+.run-container > .tool-batch-wrap,
+.run-container > .tool-card-wrap,
+.run-container > .msg,
+.run-container > .done-card,
+.run-container > .summary-card,
+.run-container > .multi-agent-batch,
+.run-container > .question-card,
+.run-container > .tool-confirm-wrap,
+.run-container > .progress-step {
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
+  margin-bottom: 0;
+}
+.run-container > .thinking-wrap + .thinking-wrap,
+.run-container > .thinking-wrap + .tool-batch-wrap,
+.run-container > .tool-batch-wrap + .thinking-wrap,
+.run-container > .tool-batch-wrap + .tool-batch-wrap,
+.run-container > .multi-agent-batch + .thinking-wrap {
+  margin-top: 0;
+}
+/* Perf parity: keep sealed history cheap to paint inside containers. */
+.run-container > .thinking-wrap.thinking-done,
+.run-container > .tool-batch-wrap.is-done,
+.run-container > .tool-card-wrap,
+.run-container > .done-card,
+.run-container > .summary-card,
+.run-container > .multi-agent-batch.complete {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 72px;
+}
+.run-container > .msg.history-virtualized {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--history-item-height, 72px);
+}
+/* Sealed run header: timer stops, spinner rests, terminal text stays. */
+.run-status-wrap.is-sealed .run-status-spinner {
+  display: none;
+}
+.run-status-wrap.is-sealed[data-state="cancelled"] .run-status-elapsed {
+  color: var(--text);
+}
+/* Build timeline keeps its look when grouped inside a run container. */
+#chat.chat-build-timeline .run-container > .thinking-wrap.is-build-progress {
+  margin: 6px auto 2px;
+}
+#chat.chat-build-timeline .run-container > .thinking-wrap.is-build-progress .thinking-simple-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  max-width: min(100%, 720px);
+  color: var(--text-2);
+}
+#chat.chat-build-timeline .run-container > .thinking-wrap.is-build-summary .thinking-simple-label {
+  font-weight: 600;
+  color: var(--text);
+}
+#chat.chat-build-timeline .run-container > .thinking-wrap.is-build-progress .thinking-panel {
+  max-width: min(100%, 720px);
+}
+#chat.chat-build-timeline .run-container > .thinking-wrap.is-build-summary {
+  margin-top: 8px;
+}
+@media (max-width: 430px) {
+  #chat.chat-build-timeline .run-container > .thinking-wrap.is-build-progress,
+  #chat.chat-build-timeline .run-container > .tool-batch-wrap {
+    max-width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #chat.chat-build-timeline .run-container > .thinking-wrap.thinking-enter,
+  #chat.chat-build-timeline .run-container > .tool-batch-wrap.tool-spawn,
+  .run-container.tool-spawn,
+  .run-status-wrap.tool-spawn {
+    animation: none;
+  }
+}
+/* Consolidation: workbench grid no longer renders as a separate surface.
+   Its backend keeps running and feeds the unified tool cards above. */
+.agentic-workbench {
+  display: none;
+}
+/* Consolidation: Director steps collapse to the summary line. */
+#smart-agent-status .smart-agent-steps,
+#smart-agent-status .smart-agent-progress {
+  display: none;
+}
+/* Worker attribution on unified tool cards. */
+.tool-worker-badge {
+  font-size: 10.5px;
+  line-height: 1.6;
+  padding: 0 7px;
+  margin-left: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+/* Frame budget: no animation work for sealed runs. */
+body.fps-optimized .run-status-spinner span {
+  animation: none !important;
+  opacity: 0.8;
+}
+body.fps-optimized .run-container > .tool-spawn {
+  animation: none !important;
+}
+@media (max-width: 640px) {
+  .run-container {
+    margin: 6px auto 14px;
+  }
+  .run-container > .run-status-wrap .run-status-detail {
+    white-space: normal;
+  }
+}
