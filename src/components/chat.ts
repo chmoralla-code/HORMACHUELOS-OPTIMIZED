@@ -159,6 +159,10 @@ export class Chat {
   private thinkingLastElapsed = 0;
   /** Wall-clock start of the current agent run (for “Worked for …” under the date). */
   private runStartTime: number | null = null;
+  /** Persistent ChatGPT-style activity row for the active run. */
+  private runStatusEl: HTMLElement | null = null;
+  private runStatusTimerId: ReturnType<typeof setInterval> | null = null;
+  private runStatusDetail = "Thinking";
   /** Full text we want to type into the thinking body. */
   private thinkingTarget = "";
   /** How many characters of thinkingTarget are currently revealed. */
@@ -1396,6 +1400,7 @@ export class Chat {
     // Drop queued messages immediately so cancel doesn't auto-continue them
     this.clearPendingQueue();
     this.finalizeThinking();
+    this.updateRunStatus("Stopping…");
     this.clearRunningIndicator();
     if (this.stopBtn) {
       this.stopBtn.classList.add("stopping");
@@ -1669,16 +1674,11 @@ export class Chat {
       this.runCompleted = false;
       this.stopping = false;
       this.runStartTime = Date.now();
+      this.startRunStatusIndicator(this.liveThinkingLabel());
       this.startDotsPulse();
-      if (
-        !this.latestActivityAfterLastUser(".thinking-wrap") &&
-        !this.latestActivityAfterLastUser(".tool-batch-wrap") &&
-        !this.hasVisibleAssistantReplyAfterLastUser()
-      ) {
-        this.ensureLiveActivity(this.liveThinkingLabel());
-      }
     } else {
       this.stopping = false;
+      this.stopRunStatusIndicator();
       this.runStartTime = null;
       this.stopDotsPulse();
       this.clearIdleActivityTimer();
@@ -3196,12 +3196,13 @@ export class Chat {
     if (this.isBuildTimeline()) {
       const users = this.node.querySelectorAll<HTMLElement>(".msg.user");
       const lastUser = users[users.length - 1] || null;
+      const runStatus = this.runStatusEl?.isConnected ? this.runStatusEl : null;
       const answer = this.pendingAssistantMsg?.isConnected
         ? this.pendingAssistantMsg
         : this.latestAssistantMsgAfterLastUser();
       const summaryThought = this.latestActivityAfterLastUser(".thinking-wrap.is-build-summary");
       const delivery = this.latestActivityAfterLastUser(".done-card, .summary-card");
-      const tail = [answer, summaryThought, delivery].filter(
+      const tail = [runStatus, answer, summaryThought, delivery].filter(
         (node): node is HTMLElement => !!node?.isConnected,
       );
       if (!tail.length) return;
@@ -3237,6 +3238,9 @@ export class Chat {
     const running = this.runningIndicator?.isConnected
       ? this.runningIndicator
       : this.latestActivityAfterLastUser(".thinking-running");
+    const runStatus = this.runStatusEl?.isConnected
+      ? this.runStatusEl
+      : this.latestActivityAfterLastUser(".run-status-wrap");
     const question = this.latestActivityAfterLastUser(".question-card");
     const answer = this.pendingAssistantMsg?.isConnected
       ? this.pendingAssistantMsg
@@ -3253,6 +3257,7 @@ export class Chat {
     }
 
     const chrome = [
+      ...(runStatus?.isConnected ? [runStatus] : []),
       ...(thought?.isConnected ? [thought] : []),
       ...batchGroup,
       ...(running?.isConnected ? [running] : []),
@@ -3675,6 +3680,79 @@ export class Chat {
       return Date.now() - this.thinkingStartTime;
     }
     return this.thinkingLastElapsed;
+  }
+
+  private formatRunElapsed(ms: number): string {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+
+  private compactRunStatusDetail(detail: string): string {
+    const compact = String(detail || "").replace(/\s+/g, " ").trim();
+    if (!compact) return "Working";
+    return compact.length > 120 ? compact.slice(0, 117).trimEnd() + "…" : compact;
+  }
+
+  private updateRunStatus(detail?: string) {
+    if (!this.runStatusEl?.isConnected) return;
+    if (detail !== undefined) {
+      this.runStatusDetail = this.compactRunStatusDetail(detail);
+      const detailEl = this.runStatusEl.querySelector(".run-status-detail") as HTMLElement | null;
+      if (detailEl) {
+        setShimmerText(detailEl, this.runStatusDetail, this.running && !this.stopping);
+      }
+    }
+    const elapsedEl = this.runStatusEl.querySelector(".run-status-elapsed") as HTMLElement | null;
+    const elapsed = this.runStartTime == null ? 0 : Date.now() - this.runStartTime;
+    if (elapsedEl) elapsedEl.textContent = `Working for ${this.formatRunElapsed(elapsed)}`;
+    this.runStatusEl.setAttribute(
+      "aria-label",
+      `Working for ${this.formatRunElapsed(elapsed)} · ${this.runStatusDetail}`,
+    );
+  }
+
+  private startRunStatusIndicator(detail = "Thinking") {
+    if (this.replaying) return;
+    this.runStatusDetail = this.compactRunStatusDetail(detail);
+    if (this.runStatusEl?.isConnected) {
+      this.updateRunStatus(this.runStatusDetail);
+      return;
+    }
+    if (this.runStatusTimerId) {
+      clearInterval(this.runStatusTimerId);
+      this.runStatusTimerId = null;
+    }
+    if (this.runStartTime == null) this.runStartTime = Date.now();
+
+    const row = div("run-status-wrap tool-spawn");
+    row.setAttribute("role", "status");
+    row.setAttribute("aria-live", "off");
+    const spinner = el("span", { class: "run-status-spinner", "aria-hidden": "true" });
+    spinner.append(el("span"), el("span"), el("span"));
+    const copy = div("run-status-copy");
+    copy.append(
+      el("span", { class: "run-status-elapsed" }, []),
+      el("span", { class: "run-status-detail" }, []),
+    );
+    row.append(spinner, copy);
+    this.node.appendChild(row);
+    this.runStatusEl = row;
+    this.updateRunStatus(this.runStatusDetail);
+    this.runStatusTimerId = setInterval(() => this.updateRunStatus(), 1000);
+    this.placeTurnChromeInOrder();
+  }
+
+  private stopRunStatusIndicator() {
+    if (this.runStatusTimerId) {
+      clearInterval(this.runStatusTimerId);
+      this.runStatusTimerId = null;
+    }
+    this.runStatusEl?.remove();
+    this.runStatusEl = null;
+    this.runStatusDetail = "Thinking";
   }
 
   private paintThinkingLabel(labelEl: HTMLElement | null, prefix?: string) {
@@ -6458,6 +6536,8 @@ export class Chat {
     switch (e.kind) {
       case "start":
         this.runCompleted = false;
+        this.startRunStatusIndicator(this.liveThinkingLabel());
+        this.updateRunStatus("Thinking");
         this.setActivePermissionMode(e.payload.permission_mode);
         this.agenticRun = normalizeSessionPermissionMode(e.payload.permission_mode) === "agentic";
         if (normalizeSessionPermissionMode(e.payload.permission_mode) === "build") {
@@ -6484,12 +6564,17 @@ export class Chat {
         this.agenticWorkbench?.updatePlan(e.payload);
         break;
       case "agentic_phase":
+        this.updateRunStatus(
+          e.payload.detail ||
+            `Working · ${String(e.payload.phase || "agentic phase").replace(/_/g, " ")}`,
+        );
         this.agenticWorkbench?.updatePhase(e.payload);
         break;
       case "agentic_agent":
         this.agenticWorkbench?.updateAgent(e.payload.agent);
         break;
       case "thinking":
+        this.updateRunStatus(this.liveThinkingLabel());
         if (!this.agenticRun && !this.isBuildTimeline()) this.showThinking(e.payload.iteration);
         else if (!this.agenticRun && this.isBuildTimeline()) this.openBuildThought(e.payload.iteration);
         break;
@@ -6505,6 +6590,7 @@ export class Chat {
           break;
         }
         this.clearIdleActivityTimer();
+        this.updateRunStatus(message);
         // Every status step becomes a persistent brick in the turn transcript
         // (Claude-CLI style) so earlier lines never disappear mid-run.
         this.appendProgressStep(message);
@@ -6513,6 +6599,7 @@ export class Chat {
       }
       case "reasoning":
         this.clearIdleActivityTimer();
+        this.updateRunStatus("Reasoning");
         if (this.agenticRun) {
           this.agenticWorkbench?.appendThinking(e.payload.text);
         } else if (!this.isBuildTimeline()) {
@@ -6534,6 +6621,7 @@ export class Chat {
         );
         break;
       case "tool_preview":
+        this.updateRunStatus(`Preparing ${this.friendlyToolName(e.payload.name)}`);
         if (this.agenticRun || e.payload.run_id) {
           this.agenticWorkbench?.previewTool(e.payload);
         } else {
@@ -6564,6 +6652,7 @@ export class Chat {
         this.showMultiAgentBatch(e.payload.tools);
         break;
       case "tool_call":
+        this.updateRunStatus(`Running ${this.friendlyToolName(e.payload.name)}`);
         if (this.agenticRun || e.payload.run_id) {
           this.agenticWorkbench?.queueTool(e.payload);
         } else {
@@ -6579,15 +6668,24 @@ export class Chat {
         this.showTruncatedToolArgs(e.payload.id, e.payload.preview);
         break;
       case "tool_result":
+        this.updateRunStatus(
+          e.payload.ok
+            ? `Completed ${this.friendlyToolName(e.payload.name)}`
+            : `Tool failed · ${this.friendlyToolName(e.payload.name)}`,
+        );
         if (this.agenticRun || e.payload.run_id) {
           this.agenticWorkbench?.finishTool(e.payload);
         } else {
           this.appendToolResult(e.payload.id, e.payload.name, e.payload.ok, e.payload.content);
         }
         break;
-      case "tool_confirm": this.showToolConfirm(e.payload.id, e.payload.name, e.payload.summary); break;
+      case "tool_confirm":
+        this.updateRunStatus("Waiting for approval");
+        this.showToolConfirm(e.payload.id, e.payload.name, e.payload.summary);
+        break;
       case "done":
         this.clearIdleActivityTimer();
+        this.updateRunStatus("Finalizing response");
         if (e.payload.agentic) {
           this.completeAgenticWorkbench(e.payload.agentic);
         } else {
@@ -6595,12 +6693,17 @@ export class Chat {
         }
         break;
       case "end":
+        this.updateRunStatus("Finishing");
         this.clearIdleActivityTimer();
         if (this.agenticRun) this.agenticWorkbench?.finish(e.payload.reason);
         this.appendEnd(e.payload.reason);
         break;
-      case "question": this.showQuestion(e.payload.id, e.payload.question, e.payload.options, e.payload.allow_other); break;
+      case "question":
+        this.updateRunStatus("Waiting for your choice");
+        this.showQuestion(e.payload.id, e.payload.question, e.payload.options, e.payload.allow_other);
+        break;
       case "cancelled":
+        this.updateRunStatus("Run cancelled");
         this.clearIdleActivityTimer();
         // UI cleanup only — do NOT setRunning(false) here.
         // sendPrompt's finally owns setRunning + queue drain after agent_run returns.
