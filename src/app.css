@@ -5792,3 +5792,72 @@ body.fps-optimized .tool-wave-dots span {
   transform: none !important;
   will-change: auto !important;
 }
+
+/* ChatGPT-style active run timeline. The row is ephemeral and is removed when the run seals. */
+.run-status-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  max-width: 880px;
+  margin: 8px auto 2px;
+  padding: 2px 0;
+  color: var(--text-muted);
+  font: 400 12.5px/1.45 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+.run-status-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.run-status-elapsed {
+  color: var(--text-2);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+.run-status-detail {
+  min-width: 0;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-status-spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 20px;
+  padding-top: 5px;
+}
+.run-status-spinner span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--live-blue, #6ca8ff);
+  box-shadow: 0 0 8px var(--live-blue-shadow, rgba(108, 168, 255, 0.38));
+  animation: runStatusDot 1.15s ease-in-out infinite;
+}
+.run-status-spinner span:nth-child(2) {
+  animation-delay: 0.14s;
+}
+.run-status-spinner span:nth-child(3) {
+  animation-delay: 0.28s;
+}
+@keyframes runStatusDot {
+  0%, 100% { opacity: 0.32; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-2px); }
+}
+#chat.chat-sol .run-status-spinner span {
+  background: #ff74bc;
+  box-shadow: 0 0 8px rgba(255, 75, 175, 0.52);
+}
+#chat.chat-sol .run-status-elapsed {
+  color: rgba(255, 190, 222, 0.96);
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-status-spinner span {
+    animation: none;
+    opacity: 0.8;
+  }
+}
